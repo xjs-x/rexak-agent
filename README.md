@@ -116,11 +116,16 @@ uv run python evals/runner.py --suite smoke --provider xiaomi
 uv run python evals/runner.py --suite acceptance --provider xiaomi --trials 3
 ```
 
+只能在 Linux 执行岛验证的部分（进程控制 / 软链接逃逸 / 工作区文件实机链路）：
+
+```bash
+uv run python scripts/executor_process_check.py
+```
+
 进程级重启演练（需要真实模型与可达执行岛）：
 
-```powershell
-$env:XIAOMI_API_KEY = "<本机密钥>"
-uv run python scripts/restart_drill.py
+```
+XIAOMI_API_KEY=<本机密钥> uv run python scripts/restart_drill.py
 ```
 
 调试时可以只推进指定 run（避免被数据库里其它 queued run 拖住）：

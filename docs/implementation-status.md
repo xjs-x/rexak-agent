@@ -131,13 +131,13 @@
 |---|---|---|
 | Executor 常驻，SSH 断开不销毁进程服务 | ✅ | `setsid nohup` + PID 文件；见 decision 0002 |
 | `start/get/output/cancel` job 接口与远端事件补读 | ✅ | `executor/api.py` 全部实现；`GET /events?after=` 补读 |
-| `start_command` 返回 job_id；stdout/stderr 增量保存带 cursor | 🟡 | 代码完整（`processes.py` 分段读 + 不透明 cursor）；**未实机验证**慢命令的三段输出 |
-| 任务工作目录与文件 read/write/edit | ⬜ | 未实现（Executor 有 workspace 目录，无文件工具接口） |
-| 进程组启动、超时、取消升级、子孙回收、PID 身份核对 | 🟡 | `processes.py` 实现完整（SIGTERM→SIGKILL、`/proc/<pid>/stat` start_ticks）；**未实机验证**子孙进程回收 |
+| `start_command` 返回 job_id；stdout/stderr 增量保存带 cursor | ✅ | 岛上实机验证：三段输出的慢命令**退出前**即可读到第一段（此时进程仍在运行），游标分段读拼回完整输出逐字节一致；stdout/stderr 不串流。**模型侧仍不可用**：无人值守命令保持关闭，见下条 |
+| 任务工作目录与文件 read/write/edit | ✅ | `executor/.../filesystem.py` + `tools/files.py`（4 个工具）。只接受 UUID 形式的 `workspace_id`；三层路径检查挡住 `..`、绝对路径与**软链接逃逸**；覆盖/编辑必须先读后改（内容 sha256 版本）。单测 20 项 + 岛上实机 20 项 |
+| 进程组启动、超时、取消升级、子孙回收、PID 身份核对 | ✅ | 岛上实机验证（`scripts/executor_process_check.py`，10 项）：取消产生子进程的命令后，用 `/proc` **独立核对**子进程确实退出；重复取消幂等；超时后进程被真正终止；PID start_ticks 能识别退出，缺 ticks 时不误判存活 |
 | 工具资源锁：同文件/同身份写操作串行；独立任务有界并发 | ✅ | `tools/runtime.py` + 单测 `test_file_lock_serializes_shared_state` |
-| 网络范围的执行环境级约束及能力预检 | ⛔ | **明确关闭并如实暴露**：`network_isolation=unavailable`，`command_unattended_allowed=false` |
+| 网络范围的执行环境级约束及能力预检 | ⛔ | **明确关闭并如实暴露**：`network_isolation=unavailable`，`command_unattended_allowed=false`。进程控制链路已用**离线测试**验证（不经过 `kind=command`），因此没有借验证之机打开通用命令 |
 | minimal environment allowlist | ✅ | `processes.minimal_environment`（白名单 + 显式屏蔽管理类秘密） |
-| `waiting_tool` 事件唤醒，不持续询问模型 | 🟡 | 长任务返回 `accepted` + job_id（超阈值路径已实现）；**未验证**大规模并发下的唤醒时序 |
+| `waiting_tool` 事件唤醒，不持续询问模型 | ✅ | `runtime/jobs.py` 唤醒器 + 13 项测试。等待中且无待消费指令的 run **不会**被 `_candidate_runs` 取走（机制性证明不空转）；**`unknown` 不是确定结论**，不据它唤醒；执行岛不可达时保持等待且不注入消息 |
 | 暂停与取消不同语义；暂停后活动工具仍在运行时明确展示 | ✅ | `pause.md`/`cancel` 分离；`_cancel_active_jobs` 逐个核对并写 `process_confirmed_exited` |
 | 断线/重启核对所有已接收 job；不确定标 unknown，不自动重做 | ✅ | `reconcile_remote_jobs`（有界并发，`JOB_RECONCILE_CONCURRENCY=8`）；单测 `test_executor_restart_marks_unresolved_jobs_unknown`；**进程级演练通过** |
 | 远端工件同步、哈希核对、缺失状态与断点重试 | ✅ | 哈希不匹配 → `orphaned`（不作为可用证据）；`flag_orphan_artifacts` 单测 |
@@ -263,6 +263,8 @@
 8. **备份恢复演练**（P8）。
 9. **效果评测 runner 与 grader**（P9）。
 10. **systemd/容器级进程守护**（P3）——当前是 `setsid`，机器重启不自动拉起。
+11. **通用命令对模型开放**（P3）——进程控制链路已验证，但 `kind=command` 仍然拒绝，
+    直到执行环境级出站约束通过验证。
 
 > **2026-10-09 更新**：独立复核指出的三处问题（方向变更拦截、恢复顺序、命令可复现性）
 > 已全部修复并有验证证据，详见 `docs/decisions/0003-runtime-boundaries.md`。
@@ -277,12 +279,18 @@ docker compose up -d postgres
 uv run workbench db-init
 uv run python scripts/check_encoding.py
 uv run ruff check . ; uv run pyright
-uv run pytest tests/unit tests/integration -q     # 92 passed, 1 skipped（无凭据时）
-uv run pytest tests/recovery -q                   # 23 passed
+uv run pytest tests/unit tests/integration -q     # 112 passed, 3 skipped（无凭据时）
+uv run pytest tests/recovery -q                   # 36 passed
 uv run workbench doctor
 ```
 
-带真实凭据时：`uv run pytest tests -q` → **116 passed**。
+带真实凭据时：`uv run pytest tests -q` → 超过 150 passed（以实际输出为准）。
+
+只能在 Linux 验证的部分（进程控制、软链接逃逸、工作区文件实机链路）：
+
+```
+uv run python scripts/executor_process_check.py   # 岛上 20 passed
+```
 
 进程级重启演练（需要真实模型与可达执行岛）：
 
