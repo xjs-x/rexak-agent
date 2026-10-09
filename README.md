@@ -81,6 +81,10 @@ pnpm install --frozen-lockfile
 pnpm dev                    # Vite dev server，代理 /api 到 127.0.0.1:8770
 ```
 
+> 前端控制台属 **P7，尚未建立**。当前可用的只读观察窗口由 API 直接提供：
+> 启动 `uv run workbench api` 后访问 <http://127.0.0.1:8770/observer>。
+> 它显示快照、SSE 事件流、助手输出与用量；不提供项目管理与黑板图。
+
 > 默认 compose 重建应用**不删除**数据库与工件卷。
 > **禁止**把 `docker compose down -v` 当作日常启动步骤，那是破坏性操作。
 
@@ -162,4 +166,19 @@ docs/            decisions / implementation-status / acceptance-results
 
 ## 7. 当前状态
 
-见 **`docs/implementation-status.md`**。只有具备验证证据的条目才标为完成。
+见 **`docs/implementation-status.md`**（P0–P9 逐项状态 + 证据）。只有具备验证证据的条目才标完成。
+
+已完成并通过验证：**P0、P1、P2**；P3/P5/P6/P8 部分落地。
+
+明确**未做**（对外不得声称"已支持"）：
+
+| 能力 | 现状 |
+|---|---|
+| 前端控制台（P7） | 未建立；仅有 `/observer` 只读窗口 |
+| 浏览器 / 登录探针（P4） | Executor 对 `/browser-sessions` 返回 **501** |
+| 报告生成（P6） | `POST /api/sessions/{id}/reports` 返回 **501** |
+| 文件 read/write/edit 工具（P3） | 未实现 |
+| 通用命令无人值守模式 | **已关闭**：执行岛无执行环境级出站约束 |
+| 效果 grader / 配对基线（P9） | 未实现；`evals/runner.py` 只报告观察 |
+
+已锁定的技术决策与实测结论见 `docs/decisions/`。
