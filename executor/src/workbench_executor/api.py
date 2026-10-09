@@ -110,10 +110,29 @@ class CommandPayload(_Base):
     reason: str | None = None
 
 
+class FilesystemPayload(_Base):
+    """任务工作区文件操作。
+
+    **只接受 `workspace_id`（UUID）而不是路径前缀**：工作区根路径由服务端拼装，
+    客户端无法把它指向别处。`path` 只在工作区内解析，越界与软链接逃逸都会被拒。
+    """
+
+    action: Literal["list", "read", "write", "edit"]
+    workspace_id: str
+    path: str = ""
+    content: str | None = None
+    old_text: str | None = None
+    new_text: str | None = None
+    expected_version: str | None = None
+    replace_all: bool = False
+    offset: int = 0
+    limit: int | None = None
+
+
 class JobCreateRequest(_Base):
     operation_id: str
     job_id: str | None = None
-    kind: Literal["http_request", "command"]
+    kind: Literal["http_request", "command", "filesystem"]
     request_digest: str
     scope_revision: int = 1
     scope: ScopePayload = Field(default_factory=ScopePayload)
@@ -545,6 +564,8 @@ async def _run_job(
             await _run_http_job(state, job_id, request, policy)
         elif request.kind == "command":
             await _run_command_job(state, job_id, request, policy)
+        elif request.kind == "filesystem":
+            await _run_filesystem_job(state, job_id, request)
         else:  # pragma: no cover - Literal 已约束
             await state.ledger.update(job_id, state="failed", error_code="unsupported_kind")
     except PolicyDenied as exc:
@@ -732,6 +753,142 @@ async def _run_command_job(
     state.emit("job.finished", {"job_id": job_id, "exit_code": exit_code, "state": state_desc})
 
 
+async def _run_filesystem_job(state: ExecutorState, job_id: str, request: JobCreateRequest) -> None:
+    """任务工作区文件操作。
+
+    与命令能力**完全不同**：它不启动进程、不联网，只在本任务工作区内读写文件。
+    因此它不受"通用命令无人值守模式关闭"的影响 —— 那个限制针对的是任意 argv 与
+    出站网络，不是文件访问。
+
+    拦截语义：路径越界/软链接逃逸/版本冲突等都属于**确定错误**（`not_applied`），
+    调用方不应重试。
+    """
+    from workbench_executor.filesystem import WorkspaceError, workspace_for
+
+    payload = FilesystemPayload.model_validate(request.payload)
+    job_dir = state.supervisor.job_dir(job_id)
+
+    try:
+        workspace = workspace_for(state.settings.workspace_root, payload.workspace_id)
+    except WorkspaceError as exc:
+        await _write_filesystem_result(state, job_id, job_dir, ok=False, error=exc)
+        return
+
+    try:
+        if payload.action == "list":
+            entries = workspace.list_dir(payload.path)
+            result: dict[str, Any] = {
+                "action": "list",
+                "path": payload.path or ".",
+                "entries": [
+                    {
+                        "path": item.path,
+                        "kind": item.kind,
+                        "byte_size": item.byte_size,
+                        "modified_at": item.modified_at,
+                    }
+                    for item in entries
+                ],
+                "count": len(entries),
+            }
+        elif payload.action == "read":
+            content = workspace.read_file(payload.path, offset=payload.offset, limit=payload.limit)
+            result = {
+                "action": "read",
+                "path": content.path,
+                "version": content.version,
+                "byte_size": content.byte_size,
+                "offset": content.offset,
+                "truncated": content.truncated,
+                "text": content.text,
+                "encoding_note": content.encoding_note,
+            }
+        elif payload.action == "write":
+            if payload.content is None:
+                raise WorkspaceError("invalid_request", "write 需要提供 content")
+            result = {
+                "action": "write",
+                **workspace.write_file(
+                    payload.path,
+                    payload.content,
+                    expected_version=payload.expected_version,
+                ),
+            }
+        else:  # edit
+            if payload.old_text is None or payload.new_text is None:
+                raise WorkspaceError("invalid_request", "edit 需要提供 old_text 与 new_text")
+            if not payload.expected_version:
+                raise WorkspaceError(
+                    "invalid_request",
+                    "edit 必须提供 expected_version（先读后改），避免覆盖并发改动",
+                )
+            result = {
+                "action": "edit",
+                **workspace.edit_file(
+                    payload.path,
+                    old_text=payload.old_text,
+                    new_text=payload.new_text,
+                    expected_version=payload.expected_version,
+                    replace_all=payload.replace_all,
+                ),
+            }
+    except WorkspaceError as exc:
+        await _write_filesystem_result(state, job_id, job_dir, ok=False, error=exc)
+        return
+
+    await _write_filesystem_result(state, job_id, job_dir, ok=True, result=result)
+
+
+async def _write_filesystem_result(
+    state: ExecutorState,
+    job_id: str,
+    job_dir: Any,
+    *,
+    ok: bool,
+    result: dict[str, Any] | None = None,
+    error: Any = None,
+) -> None:
+    """把结果写成 `result.json`，控制端用既有的工件下载接口取回。"""
+    payload: dict[str, Any] = {"ok": ok}
+    if ok:
+        payload["result"] = result or {}
+    else:
+        payload["error"] = {"code": error.code, "message": error.message}
+
+    (job_dir / "result.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    preview = json.dumps(payload.get("result") or payload.get("error"), ensure_ascii=False)[:2000]
+    (job_dir / "stdout.log").write_text(preview + "\n", encoding="utf-8", newline="\n")
+
+    if ok:
+        await state.ledger.update(
+            job_id,
+            state="succeeded",
+            exit_code=0,
+            output_path=str(job_dir / "stdout.log"),
+            finished_at=datetime.now(UTC).isoformat(),
+            error_code=None,
+            error_message=None,
+        )
+        state.emit(
+            "job.succeeded",
+            {"job_id": job_id, "kind": "filesystem", "action": (result or {}).get("action")},
+        )
+    else:
+        code = getattr(error, "code", "workspace_error")
+        await state.ledger.update(
+            job_id,
+            state="failed",
+            error_code=code,
+            error_message=getattr(error, "message", str(error)),
+            finished_at=datetime.now(UTC).isoformat(),
+        )
+        state.emit("job.failed", {"job_id": job_id, "code": code})
+
+
 @app.get(
     "/jobs/{job_id}",
     response_model=JobStatusResponse,
@@ -747,6 +904,7 @@ async def get_job(job_id: str) -> JobStatusResponse:
     artifacts: list[dict[str, Any]] = []
     for name, media in (
         ("response.body", "application/octet-stream"),
+        ("result.json", "application/json"),
         ("stdout.log", "text/plain"),
     ):
         path = job_dir / name

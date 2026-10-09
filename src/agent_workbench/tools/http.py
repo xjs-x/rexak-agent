@@ -34,7 +34,6 @@ from agent_workbench.contracts.enums import (
     Sensitivity,
     ToolEffectClass,
 )
-from agent_workbench.contracts.events import EventType
 from agent_workbench.contracts.tool import ArtifactRef, ToolError, ToolResult
 from agent_workbench.domain.scope import ScopeViolation
 from agent_workbench.evidence.artifacts import redact_text
@@ -43,13 +42,15 @@ from agent_workbench.execution.client import (
     ExecutorProtocolError,
     ExecutorRejected,
 )
-from agent_workbench.observability.events import append_event
 from agent_workbench.persistence.repositories import (
     ArtifactRepository,
-    ToolJobRepository,
-    ToolOperationRepository,
 )
-from agent_workbench.tools.operation import OperationRegistry
+from agent_workbench.tools.remote import (
+    json_text,
+    prepare_operation,
+    record_result,
+    record_submitted,
+)
 from agent_workbench.tools.runtime import Toolbox, origin_lock_key
 
 # --------------------------------------------------------------------------- #
@@ -76,80 +77,6 @@ READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 # --------------------------------------------------------------------------- #
 # 内部辅助
 # --------------------------------------------------------------------------- #
-
-
-async def _prepare_operation(
-    toolbox: Toolbox,
-    tool_call_id: str,
-    tool_name: str,
-    arguments: dict[str, Any],
-    *,
-    effect_class: ToolEffectClass,
-) -> tuple[UUID, bool]:
-    """在一个**短事务**内准备操作身份。
-
-    禁止在事务里等待网络或模型（§4.3）。
-    """
-    async with toolbox.db.transaction() as db:
-        registry = OperationRegistry(db)
-        prepared = await registry.prepare(
-            run_id=toolbox.run_id,
-            session_id=toolbox.session_id,
-            tool_call_id=tool_call_id,
-            tool_name=tool_name,
-            arguments=arguments,
-            effect_class=effect_class,
-            policy_revision=toolbox.policy_revision,
-            scope_revision=toolbox.scope_revision,
-            identity_id=toolbox.identity_id,
-        )
-        return prepared.operation_id, prepared.replayed
-
-
-async def _record_submitted(toolbox: Toolbox, operation_id: UUID, job_id: UUID) -> None:
-    async with toolbox.db.transaction() as db:
-        await ToolOperationRepository(db).attach_job(operation_id, job_id, status="running")
-        await ToolJobRepository(db).upsert(
-            job_id=job_id,
-            operation_id=operation_id,
-            executor_id=toolbox.settings.executor_id,
-            state="received",
-        )
-
-
-async def _record_result(
-    toolbox: Toolbox,
-    *,
-    operation_id: UUID,
-    job_id: UUID | None,
-    status: str,
-    refs: list[ArtifactRef],
-    failure: str | None = None,
-) -> None:
-    async with toolbox.db.transaction() as db:
-        await ToolOperationRepository(db).mark_result(
-            operation_id, status=status, artifact_ids=[str(r.artifact_id) for r in refs]
-        )
-        if job_id is not None:
-            await ToolJobRepository(db).upsert(
-                job_id=job_id,
-                operation_id=operation_id,
-                executor_id=toolbox.settings.executor_id,
-                state=status,
-            )
-        if failure is not None:
-            await append_event(
-                db,
-                session_id=toolbox.session_id,
-                run_id=toolbox.run_id,
-                event_type=EventType.ERROR,
-                payload={
-                    "scope": "tool_submit",
-                    "operation_id": str(operation_id),
-                    "message": failure,
-                    "execution_certainty": str(ExecutionCertainty.NOT_APPLIED),
-                },
-            )
 
 
 async def _store_response_artifacts(
@@ -304,11 +231,6 @@ def _job_state_to_status(state: str) -> OperationStatus:
     }.get(state, OperationStatus.UNKNOWN)
 
 
-def _result_text(result: ToolResult) -> str:
-    """工具进入模型上下文的形态：统一结果契约的 JSON 文本。"""
-    return json.dumps(result.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":"))
-
-
 async def _load_job_meta(toolbox: Toolbox, job_id: UUID) -> dict[str, Any]:
     try:
         data, _headers = await toolbox.executor.download_artifact(
@@ -455,7 +377,7 @@ async def run_http_request(
 
     async with toolbox.locks.acquire(keys, timeout=90.0):
         arguments = args.model_dump(exclude={"note"})
-        operation_id, _replayed = await _prepare_operation(
+        operation_id, _replayed = await prepare_operation(
             toolbox,
             tool_call_id or f"http_request:{method}:{args.url}",
             "http_request",
@@ -488,7 +410,7 @@ async def run_http_request(
             receipt = await toolbox.executor.submit(operation)
         except ExecutorRejected as exc:
             # 明确拒绝 => 操作**确定没有执行**
-            await _record_result(
+            await record_result(
                 toolbox,
                 operation_id=operation_id,
                 job_id=None,
@@ -532,7 +454,7 @@ async def run_http_request(
                 finished_at=datetime.now(UTC),
             )
 
-        await _record_submitted(toolbox, operation_id, receipt.job_id)
+        await record_submitted(toolbox, operation_id, receipt.job_id)
 
         # 5) 交互阈值内等待；超时返回 accepted，模型调用链不被占住
         try:
@@ -627,7 +549,7 @@ async def run_http_request(
         finished_at=datetime.now(UTC),
     )
 
-    await _record_result(
+    await record_result(
         toolbox,
         operation_id=operation_id,
         job_id=receipt.job_id,
@@ -692,7 +614,7 @@ async def http_request(
         save_body_artifact=save_body_artifact,
     )
     result = await run_http_request(args, toolbox, runtime.tool_call_id or "")
-    return _result_text(result)
+    return json_text(result)
 
 
 @tool("session_info")
@@ -727,7 +649,7 @@ async def session_info(
         started_at=datetime.now(UTC),
         finished_at=datetime.now(UTC),
     )
-    return _result_text(result)
+    return json_text(result)
 
 
 def _parse_json_object(raw: str | None, field: str) -> dict[str, str]:

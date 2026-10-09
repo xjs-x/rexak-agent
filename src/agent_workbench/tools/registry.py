@@ -15,6 +15,7 @@ from typing import Any
 from agent_workbench.config.settings import Settings, get_settings
 from agent_workbench.tools.completion import COMPLETION_TOOLS
 from agent_workbench.tools.evidence import EVIDENCE_TOOLS
+from agent_workbench.tools.files import FILE_TOOLS
 from agent_workbench.tools.http import HTTP_TOOLS
 from agent_workbench.tools.jobs import JOB_TOOLS
 from agent_workbench.tools.knowledge import KNOWLEDGE_TOOLS
@@ -26,6 +27,9 @@ class ToolSelection:
     """一次 run 的工具选择。reason 用于把"为什么关掉某组"写进诊断。"""
 
     http: bool = True
+    #: 任务工作区文件工具。**不受**通用命令无人值守模式关闭的影响：
+    #: 它不启动进程、不联网，只在本任务工作区内读写。
+    files: bool = True
     evidence: bool = True
     jobs: bool = True
     task: bool = True
@@ -36,6 +40,7 @@ class ToolSelection:
     def to_manifest(self) -> dict[str, Any]:
         return {
             "http": self.http,
+            "files": self.files,
             "evidence": self.evidence,
             "jobs": self.jobs,
             "task": self.task,
@@ -72,6 +77,8 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
     tools: list[Any] = []
     if chosen.http:
         tools.extend(HTTP_TOOLS)
+    if chosen.files:
+        tools.extend(FILE_TOOLS)
     if chosen.evidence:
         tools.extend(EVIDENCE_TOOLS)
     if chosen.jobs:
