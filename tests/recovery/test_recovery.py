@@ -23,7 +23,12 @@ from agent_workbench.contracts.enums import (
 )
 from agent_workbench.contracts.events import EventType
 from agent_workbench.contracts.identity import PolicySnapshot, ScopeRule, ScopeSnapshot
-from agent_workbench.domain.run_state import claim_run, create_run, set_run_status
+from agent_workbench.domain.run_state import (
+    bump_control_version,
+    claim_run,
+    create_run,
+    set_run_status,
+)
 from agent_workbench.observability.events import append_event, read_events_after
 from agent_workbench.persistence.repositories import (
     CommandRepository,
@@ -275,47 +280,90 @@ async def test_usage_persist_failure_marks_pending_sync_without_retrying_model(
 
 
 async def test_late_owner_response_is_not_dispatched(database, unique_name) -> None:
-    """取消后，旧 owner 的迟到响应在派发前检查时被拒绝（§4.3）。"""
-    from agent_workbench.agent.signals import GraphRunAborted, LeaseLostError
-    from agent_workbench.domain.run_state import is_current_owner
+    """取消后，旧 owner 的迟到响应在派发前检查时被拒绝（§4.3）。
 
-    _session_row, run = await _make_session_and_run(database, unique_name, status=RunStatus.RUNNING)
+    这个用例**直接调用真实的派发检查**（`AgentRunner._assert_dispatch_allowed`），
+    而不是自己 `raise GraphRunAborted` 再断言异常类型 —— 后者只证明了 pytest 能抛异常。
+    """
+    from agent_workbench.agent.signals import GraphRunAborted, LeaseLostError
+    from agent_workbench.runtime.runner import AgentRunner
+
+    session_row, run = await _make_session_and_run(database, unique_name, status=RunStatus.RUNNING)
     async with database.transaction() as session:
         acquired, generation = await claim_run(
             session, run_id=run.id, owner="runner-a", lease_seconds=60
         )
     assert acquired
 
-    # 用户取消：run 进入 cancelling，所有权被释放
+    runner = AgentRunner(owner="runner-a", database=database)
+
+    # 取消前：派发检查通过
+    await runner._assert_dispatch_allowed(run.id, "runner-a", generation)
+
+    # 用户取消：run 进入 cancelling
     async with database.transaction() as session:
         await set_run_status(session, run_id=run.id, target=RunStatus.CANCELLING)
 
-    async with database.session() as session:
-        alive = await is_current_owner(
-            session, run_id=run.id, owner="runner-a", generation=generation
-        )
-        refreshed = (await session.execute(select(RunRow).where(RunRow.id == run.id))).scalar_one()
-
-    # 取消期间**保留** owner 是刻意的：`cancelling -> cancelled` 还要靠当前 owner
-    # 去取消活动工具并核对结果（§4.2）。因此这里断言的是"状态已进入 CANCELLING"，
-    # 而不是"所有权已被释放"。
-    assert RunStatus(refreshed.status) is RunStatus.CANCELLING
-    assert alive is True and refreshed.owner == "runner-a"
-
-    # 真正的派发拦截条件是「所有权 + 运行状态」的组合检查：
-    # Runner 的 _assert_dispatch_allowed 在状态为 cancelling 时抛 GraphRunAborted。
+    # 真实路径：派发检查必须拒绝（取消期间保留 owner 是刻意的，§4.2）
     with pytest.raises(GraphRunAborted) as excinfo:
-        raise GraphRunAborted("cancelled", detail="派发前检查：运行已进入取消流程")
+        await runner._assert_dispatch_allowed(run.id, "runner-a", generation)
     assert excinfo.value.reason == "cancelled"
 
-    # 而所有权被真正转移（换 owner）时，旧 owner 会拿到 LeaseLostError。
+    async with database.session() as session:
+        refreshed = (await session.execute(select(RunRow).where(RunRow.id == run.id))).scalar_one()
+    assert RunStatus(refreshed.status) is RunStatus.CANCELLING
+    assert refreshed.owner == "runner-a"
+    assert session_row.id == run.session_id
+
+    # 所有权真正转移（另一个 Runner 接管**前一任的过期 lease**）后，旧 owner 也必须被拒。
+    # 注意：必须保留旧 owner 且让 lease 过期，才会触发 generation 递增；
+    # 把 owner 清空再接管属于"无主接管"，按设计**不**递增 generation。
     async with database.transaction() as session:
-        await set_run_status(session, run_id=run.id, target=RunStatus.CANCELLED)
-        transferred, new_generation = await claim_run(
+        row = (await session.execute(select(RunRow).where(RunRow.id == run.id))).scalar_one()
+        row.status = str(RunStatus.RUNNING)
+        row.owner = "runner-a"
+        row.lease_until = datetime.now(UTC) - timedelta(seconds=30)
+    async with database.transaction() as session:
+        taken, new_generation = await claim_run(
             session, run_id=run.id, owner="runner-b", lease_seconds=60
         )
-    assert transferred is False, "终态 run 不应再被任何 Runner 取得所有权"
-    _ = (LeaseLostError, new_generation)
+    assert taken is True and new_generation > generation
+    with pytest.raises(LeaseLostError):
+        await runner._assert_dispatch_allowed(run.id, "runner-a", generation)
+
+
+async def test_late_response_after_direction_change_is_rejected(database, unique_name) -> None:
+    """用户改变方向（control_version +1）后，旧轮次的派发检查必须抛 StaleResponseError。
+
+    同样走真实路径 `_assert_dispatch_allowed`，并把**固定版本**显式传入 ——
+    这正是早期实现漏掉的参数（不传就等于拿当前值比当前值，永远通过）。
+    """
+    from agent_workbench.agent.signals import StaleResponseError
+    from agent_workbench.runtime.runner import AgentRunner
+
+    session_row, run = await _make_session_and_run(database, unique_name, status=RunStatus.RUNNING)
+    async with database.transaction() as session:
+        acquired, generation = await claim_run(
+            session, run_id=run.id, owner="runner-a", lease_seconds=60
+        )
+    assert acquired
+    runner = AgentRunner(owner="runner-a", database=database)
+    pinned = int(run.control_version)
+
+    # 用户改变方向
+    async with database.transaction() as session:
+        version = await bump_control_version(session, run_id=run.id)
+    assert version == pinned + 1
+
+    with pytest.raises(StaleResponseError) as excinfo:
+        await runner._assert_dispatch_allowed(run.id, "runner-a", generation, pinned)
+    assert excinfo.value.pinned_version == pinned
+    assert excinfo.value.current_version == pinned + 1
+
+    # 不传固定版本时，这个检查**无法**发现过期 —— 用注释固定这个事实，
+    # 防止未来有人把参数去掉又以为检查还在。
+    await runner._assert_dispatch_allowed(run.id, "runner-a", generation)
+    assert session_row.id == run.session_id
 
 
 # --------------------------------------------------------------------------- #
@@ -343,7 +391,7 @@ async def test_stale_running_run_is_requeued_not_failed(database, unique_name) -
     assert RunStatus(row.status) is RunStatus.RECOVERING
     assert row.owner is None, "恢复时先释放所有权，避免旧 owner 继续派发"
     assert any(
-        item.type is EventType.RUN_STATUS
+        str(item.type) == str(EventType.RUN_STATUS)
         and item.payload.get("reason") == "lease_expired_on_startup"
         for item in events
     )

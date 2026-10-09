@@ -10,9 +10,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -20,9 +22,11 @@ from sqlalchemy import select
 from agent_workbench.config.settings import Settings, get_settings
 from agent_workbench.contracts.enums import RunStatus
 from agent_workbench.contracts.events import EventType
+from agent_workbench.domain.run_state import set_run_status
 from agent_workbench.execution.client import (
     ExecutorConnectionError,
     ExecutorProtocolError,
+    ExecutorRejected,
     HttpExecutorClient,
 )
 from agent_workbench.execution.tunnel import SshTunnel, TunnelUnavailable
@@ -40,15 +44,21 @@ class ReconciliationReport:
     """恢复核对结果。每一项都要能说明"为什么这样判定"。"""
 
     runs_requeued: list[str] = field(default_factory=list)
+    #: 核对通过、允许继续的 run
+    allowed_to_resume: list[str] = field(default_factory=list)
+    #: 因远端状态无法核实而保持 recovering、等待用户显式确认的 run
+    blocked_pending_user: list[str] = field(default_factory=list)
     jobs_reconciled: list[dict[str, str]] = field(default_factory=list)
     jobs_unverifiable: list[str] = field(default_factory=list)
     orphan_artifacts_flagged: list[str] = field(default_factory=list)
     executor_reachable: bool = False
     notes: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, Any]:
         return {
-            "runs_requeued": self.runs_requeued,
+            "runs_marked_recovering": self.runs_requeued,
+            "allowed_to_resume": self.allowed_to_resume,
+            "blocked_pending_user": self.blocked_pending_user,
             "jobs_reconciled": self.jobs_reconciled,
             "jobs_unverifiable": self.jobs_unverifiable,
             "orphan_artifacts_flagged": self.orphan_artifacts_flagged,
@@ -61,10 +71,14 @@ async def recover_stale_runs(db: Database, settings: Settings | None = None) -> 
     """把 lease 已过期的 `running` run 置为 `recovering` 并**重新排队**。
 
     不直接跑：先让核对流程检查远端副作用，再决定继续还是等待用户。
+
+    判定口径是**"lease 是否真的过期"**：`lease_until < now`。
+    早先实现用 `now - run_lease_seconds` 当截止，等价于要求"过期之后又过了一个完整
+    lease 周期才算 stale"，与文档承诺的"lease 过期即恢复"不一致，并且把恢复时间
+    整体推迟一个 lease 周期（演练里因此出现"进程早被杀掉、run 却仍不算 stale"）。
     """
-    cfg = settings or get_settings()
+    _ = settings  # 保留参数以便调用方统一传入；判定不再依赖 lease 长度
     now = datetime.now(UTC)
-    stale_cutoff = now - timedelta(seconds=cfg.run_lease_seconds)
     recovered: list[UUID] = []
 
     async with db.transaction() as session:
@@ -73,7 +87,7 @@ async def recover_stale_runs(db: Database, settings: Settings | None = None) -> 
                 await session.execute(
                     select(RunRow).where(
                         RunRow.status == str(RunStatus.RUNNING),
-                        (RunRow.lease_until.is_(None)) | (RunRow.lease_until < stale_cutoff),
+                        (RunRow.lease_until.is_(None)) | (RunRow.lease_until < now),
                     )
                 )
             )
@@ -116,6 +130,18 @@ async def reconcile_remote_jobs(
 
     async with db.session() as session:
         tracked = list(await ToolJobRepository(session).list_active(cfg.executor_id))
+        session_by_operation: dict[UUID, UUID] = {}
+        if tracked:
+            from agent_workbench.persistence.tables import ToolOperationRow
+
+            rows = (
+                await session.execute(
+                    select(ToolOperationRow.operation_id, ToolOperationRow.session_id).where(
+                        ToolOperationRow.operation_id.in_([item.operation_id for item in tracked])
+                    )
+                )
+            ).all()
+            session_by_operation = dict(rows)
     if not tracked:
         report.notes.append("没有需要核对的进行中任务")
         return report
@@ -133,19 +159,61 @@ async def reconcile_remote_jobs(
             "这些任务标为 unknown，不自动重跑。"
         )
         for row in tracked:
-            await _mark_unknown(db, row.job_id, row.operation_id, str(row.executor_id))
+            await _mark_unknown(
+                db,
+                row.job_id,
+                row.operation_id,
+                str(row.executor_id),
+                reason="执行岛不可达，本轮无法核对；未自动重跑。",
+                session_id=session_by_operation.get(row.operation_id),
+            )
             report.jobs_unverifiable.append(str(row.job_id))
         await _close(tunnel, client)
         return report
 
     try:
-        for row in tracked:
-            try:
-                snapshot = await client.get_job(row.job_id)
-            except (ExecutorConnectionError, ExecutorProtocolError) as exc:
-                await _mark_unknown(db, row.job_id, row.operation_id, str(row.executor_id))
+        # 有界并发核对：每个 job 都要经 SSH 隧道往返一次；串行在 job 数量上百时
+        # 会把恢复流程拖到几分钟（演练里真实发生过，导致 Runner 迟迟不进入正常调度）。
+        semaphore = asyncio.Semaphore(JOB_RECONCILE_CONCURRENCY)
+
+        async def _probe(row: Any) -> tuple[Any, Any, str | None]:
+            async with semaphore:
+                try:
+                    return row, await client.get_job(row.job_id), None
+                except ExecutorRejected as exc:
+                    return row, None, f"rejected:{exc.status_code}"
+                except (ExecutorConnectionError, ExecutorProtocolError) as exc:
+                    return row, None, f"unreachable:{exc}"
+                except Exception as exc:
+                    return row, None, f"unexpected:{type(exc).__name__}: {exc}"
+
+        probed = await asyncio.gather(*(_probe(row) for row in tracked))
+
+        for row, snapshot, problem in probed:
+            if problem is not None:
+                kind, _, detail = problem.partition(":")
+                if kind == "rejected":
+                    # 执行岛明确说"没有这个 job"。这**不等于**"没有发生副作用"：
+                    # 可能是执行岛重启/台账被清理，也可能是任务从未被接收。
+                    # 无法区分 -> 记 unknown，并要求用户确认（不自动重跑）。
+                    note = (
+                        f"job {row.job_id} 在执行岛不存在（HTTP {detail}）："
+                        "无法区分『从未接收』与『执行岛已无记录』，标为 unknown。"
+                    )
+                elif kind == "unreachable":
+                    note = f"job {row.job_id} 无法查询：{detail}"
+                else:
+                    note = f"job {row.job_id} 核对时出现意外错误：{detail}"
+                await _mark_unknown(
+                    db,
+                    row.job_id,
+                    row.operation_id,
+                    str(row.executor_id),
+                    reason=note,
+                    session_id=session_by_operation.get(row.operation_id),
+                )
                 report.jobs_unverifiable.append(str(row.job_id))
-                report.notes.append(f"job {row.job_id} 无法查询：{exc}")
+                report.notes.append(note)
                 continue
 
             async with db.transaction() as session:
@@ -167,7 +235,15 @@ async def reconcile_remote_jobs(
     return report
 
 
-async def _mark_unknown(db: Database, job_id: UUID, operation_id: UUID, executor_id: str) -> None:
+async def _mark_unknown(
+    db: Database,
+    job_id: UUID,
+    operation_id: UUID,
+    executor_id: str,
+    *,
+    reason: str | None = None,
+    session_id: UUID | None = None,
+) -> None:
     async with db.transaction() as session:
         await ToolJobRepository(session).upsert(
             job_id=job_id,
@@ -176,6 +252,17 @@ async def _mark_unknown(db: Database, job_id: UUID, operation_id: UUID, executor
             state="unknown",
             sync_status="uncertain",
         )
+        if session_id is not None:
+            await append_event(
+                session,
+                session_id=session_id,
+                event_type=EventType.ERROR,
+                payload={
+                    "scope": "job_state_unknown",
+                    "job_id": str(job_id),
+                    "message": reason or "任务状态无法核实；未自动重跑。",
+                },
+            )
 
 
 async def _close(tunnel: SshTunnel, client: HttpExecutorClient) -> None:
@@ -216,36 +303,171 @@ async def flag_orphan_artifacts(db: Database) -> list[str]:
 
 async def run_startup_recovery(
     db: Database | None = None, settings: Settings | None = None
-) -> dict[str, object]:
-    """Runner 启动时的核对入口。"""
+) -> dict[str, Any]:
+    """Runner 启动时的核对入口。
+
+    **顺序不能颠倒**（这是被验收指出的一处真实设计缺陷）：
+
+    1. 把 lease 过期的 `running` run 标成 `recovering`（**只标记，不做排队决定**）；
+    2. **核对远端 job**：这是判断"能不能继续"的前提。框架 checkpoint 不包含远端
+       进程状态；不核对就继续，等于在无证据的情况下假设副作用没发生；
+    3. **按核对结果决定归宿**：
+       - 相关 job 全部能确认终态 -> 可以 `queued` 继续；
+       - 存在 `unknown` / `sync_status=uncertain` / 执行岛不可达 -> **保持 `recovering`**，
+         写清原因与处置入口，**绝不自动续跑**。
+
+    早期实现是"先排队、后核对"，顺序做反了：远端状态未知的 run 也会被重新排队。
+    """
     database = db or get_database()
     cfg = settings or get_settings()
     report = ReconciliationReport()
 
+    # 1) 只标记，不决定归宿
     report.runs_requeued = [str(item) for item in await recover_stale_runs(database, cfg)]
+    report.notes.append("已把 lease 过期的 running run 标为 recovering；归宿在远端核对之后决定。")
 
-    if report.runs_requeued:
-        async with database.transaction() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(RunRow).where(
-                            RunRow.status == str(RunStatus.RECOVERING),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            for run in rows:
-                # 核对过远端副作用后才允许继续；这里保守地先转为 queued，
-                # 由 Runner 在真正派发前再次检查控制版本与所有权。
-                run.status = str(RunStatus.QUEUED)
-
+    # 2) 先核对远端真实状态
     reconciled = await reconcile_remote_jobs(database, cfg)
     report.jobs_reconciled = reconciled.jobs_reconciled
     report.jobs_unverifiable = reconciled.jobs_unverifiable
     report.orphan_artifacts_flagged = reconciled.orphan_artifacts_flagged
     report.executor_reachable = reconciled.executor_reachable
     report.notes.extend(reconciled.notes)
+
+    # 3) 再决定每个 recovering run 能不能继续
+    decision = await decide_recovering_runs(
+        database, executor_reachable=reconciled.executor_reachable
+    )
+    report.allowed_to_resume = decision["requeued"]
+    report.blocked_pending_user = decision["blocked"]
+    report.notes.extend(decision["notes"])
     return report.to_dict()
+
+
+#: 核对远端 job 的并发上限：这是**资源初值**，不是任务总时长限制
+JOB_RECONCILE_CONCURRENCY = 8
+
+#: 这些 job 状态意味着"无法确认终态"，此时不允许自动续跑
+UNVERIFIABLE_JOB_STATES = frozenset({"unknown"})
+UNVERIFIABLE_SYNC_STATUSES = frozenset({"uncertain"})
+
+
+async def decide_recovering_runs(db: Database, *, executor_reachable: bool) -> dict[str, list[str]]:
+    """按远端核对结果决定每个 `recovering` run 的归宿。
+
+    判定规则：
+    - 该 run 名下存在 `unknown` job 或 `sync_status=uncertain` 的任务 -> **阻塞**；
+    - 执行岛不可达（本轮根本没核对成功）-> **阻塞**（"没查到"不等于"没有副作用"）；
+    - 其余 -> 允许 `queued` 继续。
+
+    阻塞的 run 写 `stop_reason` + `input.required` 事件；用户必须显式确认才能 resume。
+    """
+    from agent_workbench.persistence.tables import ToolJobRow, ToolOperationRow
+
+    requeued: list[str] = []
+    blocked: list[str] = []
+    notes: list[str] = []
+
+    async with db.session() as session:
+        runs = (
+            (
+                await session.execute(
+                    select(RunRow).where(RunRow.status == str(RunStatus.RECOVERING))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not runs:
+            return {
+                "requeued": [],
+                "blocked": [],
+                "notes": ["没有待决定的 recovering run"],
+            }
+
+        rows = (
+            await session.execute(
+                select(
+                    ToolOperationRow.run_id,
+                    ToolJobRow.job_id,
+                    ToolJobRow.state,
+                    ToolJobRow.sync_status,
+                )
+                .join(ToolJobRow, ToolJobRow.job_id == ToolOperationRow.job_id)
+                .where(ToolOperationRow.run_id.in_([item.id for item in runs]))
+            )
+        ).all()
+
+    unresolved: dict[UUID, list[str]] = {}
+    for run_id, job_id, state, sync_status in rows:
+        if state in UNVERIFIABLE_JOB_STATES or sync_status in UNVERIFIABLE_SYNC_STATUSES:
+            unresolved.setdefault(run_id, []).append(f"{job_id}:{state}/{sync_status}")
+
+    for run_row in runs:
+        reasons: list[str] = []
+        if not executor_reachable:
+            reasons.append("执行岛不可达，本轮无法核对远端任务的真实状态")
+        if unresolved.get(run_row.id):
+            reasons.append(f"存在无法确认终态的任务：{unresolved[run_row.id][:5]}")
+
+        async with db.transaction() as session:
+            run = (
+                await session.execute(
+                    select(RunRow).where(RunRow.id == run_row.id).with_for_update()
+                )
+            ).scalar_one()
+
+            if reasons:
+                detail = "；".join(reasons)
+                run.stop_reason = (
+                    f"启动核对未能确认远端副作用，保持 recovering 且不自动续跑。"
+                    f"原因：{detail}。"
+                    "处置：确认这些任务的实际影响后，用 resume 显式确认未知任务再继续。"
+                )
+                await append_event(
+                    session,
+                    session_id=run.session_id,
+                    run_id=run.id,
+                    event_type=EventType.INPUT_REQUIRED,
+                    payload={
+                        "status": str(RunStatus.RECOVERING),
+                        "reason": "remote_state_unverifiable",
+                        "detail": detail,
+                        "unresolved_jobs": unresolved.get(run.id, []),
+                        "executor_reachable": executor_reachable,
+                        "requires_user_action": "resume_with_acknowledgement",
+                        "message": (
+                            "无法确认远端副作用是否已经发生，因此**没有**自动重跑。"
+                            "请先确认这些任务的实际影响，再显式恢复。"
+                        ),
+                    },
+                )
+                blocked.append(str(run.id))
+                continue
+
+            # 走统一的状态迁移入口，而不是直接改字段：
+            # 这样 `ALLOWED_TRANSITIONS` 才是唯一真源，非法迁移会被立刻发现
+            # （recovering -> queued 曾经漏在迁移表里，就是靠这条路径暴露的）。
+            await set_run_status(session, run_id=run.id, target=RunStatus.QUEUED)
+            run.stop_reason = None
+            await append_event(
+                session,
+                session_id=run.session_id,
+                run_id=run.id,
+                event_type=EventType.RUN_STATUS,
+                payload={
+                    "status": str(RunStatus.QUEUED),
+                    "reason": "reconciled_before_requeue",
+                    "message": "远端任务已全部核对到终态，允许继续。",
+                },
+            )
+            requeued.append(str(run.id))
+
+    if blocked:
+        notes.append(
+            f"{len(blocked)} 个 run 因远端状态无法核实而保持 recovering，"
+            "需要用户显式确认后才能恢复。"
+        )
+    if requeued:
+        notes.append(f"{len(requeued)} 个 run 在核对通过后重新排队。")
+    return {"requeued": requeued, "blocked": blocked, "notes": notes}

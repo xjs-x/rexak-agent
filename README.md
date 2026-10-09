@@ -116,6 +116,19 @@ uv run python evals/runner.py --suite smoke --provider xiaomi
 uv run python evals/runner.py --suite acceptance --provider xiaomi --trials 3
 ```
 
+进程级重启演练（需要真实模型与可达执行岛）：
+
+```powershell
+$env:XIAOMI_API_KEY = "<本机密钥>"
+uv run python scripts/restart_drill.py
+```
+
+调试时可以只推进指定 run（避免被数据库里其它 queued run 拖住）：
+
+```powershell
+uv run workbench runner --once --only-run-id <run_id> --no-recover
+```
+
 **无凭据时相关测试标记 `NOT_RUN`，不能算通过。模拟通过不代表真实模型通过。**
 
 ---

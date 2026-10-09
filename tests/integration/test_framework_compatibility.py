@@ -18,13 +18,13 @@ import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
-from tests.support.scripted_model import ScriptedChatModel, final_text, tool_call
 
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.persistence.bootstrap import (
     open_checkpointer_connection,
     open_store_connection,
 )
+from tests.support.scripted_model import ScriptedChatModel, final_text, tool_call
 
 pytestmark = pytest.mark.integration
 

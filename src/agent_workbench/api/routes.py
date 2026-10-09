@@ -322,8 +322,14 @@ async def resume_run(
     request: Request,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
     content: Annotated[str | None, Body(embed=True)] = None,
+    acknowledge_unknown_operations: Annotated[bool, Body(embed=True)] = False,
 ) -> dict[str, Any]:
-    """resume **只作用于可恢复的 run**；已 completed 的 run 必须创建新 run。"""
+    """resume **只作用于可恢复的 run**；已 completed 的 run 必须创建新 run。
+
+    处于 `recovering` 的 run 说明**启动核对未能确认远端副作用**，此时必须带
+    `acknowledge_unknown_operations=true` 显式确认，否则拒绝恢复 ——
+    不能让"无法核实"被一次普通的 resume 悄悄盖过去。
+    """
     auth = get_auth()
     auth.check_origin(request)
     ticket = auth.require_session(request)
@@ -333,20 +339,55 @@ async def resume_run(
 
     async with get_database().transaction() as session:
         run = await assert_resumable(session, run_id)
+
+        if RunStatus(run.status) is RunStatus.RECOVERING and not acknowledge_unknown_operations:
+            unresolved = await _unresolved_jobs(session, run_id)
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "该 run 处于 recovering：启动核对未能确认远端副作用是否已经发生。"
+                "请先确认这些任务的实际影响，再带 acknowledge_unknown_operations=true 恢复；"
+                "系统不会自动重跑未知任务。",
+                details={
+                    "status": str(RunStatus.RECOVERING),
+                    "stop_reason": run.stop_reason,
+                    "unresolved_jobs": unresolved,
+                    "required_field": "acknowledge_unknown_operations",
+                },
+            )
+
         receipt = await submit_control(
             session,
             run=run,
             kind=CommandKind.RESUME,
             idempotency_key=idempotency_key,
-            payload={"content": content} if content else {},
+            payload={
+                "content": content,
+                "acknowledge_unknown_operations": acknowledge_unknown_operations,
+            },
         )
         await set_run_status(session, run_id=run_id, target=RunStatus.QUEUED)
     return {
         "run_id": str(run_id),
         "status": str(RunStatus.QUEUED),
         "command_id": str(receipt.command_id),
+        "acknowledged_unknown_operations": acknowledge_unknown_operations,
         "message": "已校验可恢复状态并重新排队",
     }
+
+
+async def _unresolved_jobs(session: Any, run_id: UUID) -> list[str]:
+    """该 run 名下无法确认终态的 job 明细（供 resume 拒绝时给出具体对象）。"""
+    from agent_workbench.persistence.tables import ToolJobRow, ToolOperationRow
+
+    rows = (
+        await session.execute(
+            select(ToolJobRow.job_id, ToolJobRow.state, ToolJobRow.sync_status)
+            .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+            .where(ToolOperationRow.run_id == run_id)
+            .where(ToolJobRow.state.in_(["unknown"]) | ToolJobRow.sync_status.in_(["uncertain"]))
+        )
+    ).all()
+    return [f"{job_id}:{state}/{sync_status}" for job_id, state, sync_status in rows]
 
 
 async def _control(

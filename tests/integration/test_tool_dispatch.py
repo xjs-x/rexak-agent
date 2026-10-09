@@ -31,12 +31,28 @@ class _FakeRuntime:
 
 
 class _FakeRequest:
-    """最小工具调用请求替身：只含中间件真正读取的字段。"""
+    """最小工具调用请求替身：只含中间件真正读取的字段。
 
-    def __init__(self, runtime: Any, name: str, args: dict[str, Any], tool_call_id: str) -> None:
+    `state` 必须包含 `dispatch_control_version` —— 真实运行时由
+    `CommandGuardMiddleware.abefore_model` 在模型请求前写入。缺失时中间件会
+    fail-closed（见 `tests/integration/test_control_version.py`），
+    这不是可选的装饰字段。
+    """
+
+    def __init__(
+        self,
+        runtime: Any,
+        name: str,
+        args: dict[str, Any],
+        tool_call_id: str,
+        *,
+        dispatch_control_version: int | None = 0,
+    ) -> None:
         self.runtime = runtime
         self.tool_call = {"name": name, "args": args, "id": tool_call_id}
         self.state: dict[str, Any] = {}
+        if dispatch_control_version is not None:
+            self.state["dispatch_control_version"] = dispatch_control_version
 
 
 async def _build_context(database, name: str, *, executor_stub: Any = None) -> RunContext:
@@ -94,9 +110,21 @@ async def _build_context(database, name: str, *, executor_stub: Any = None) -> R
     return RunContext(toolbox=toolbox, thread_id=session_row.thread_id)
 
 
-async def _run_middleware(context: RunContext, handler: Any, name: str = "http_request") -> Any:
+async def _run_middleware(
+    context: RunContext,
+    handler: Any,
+    name: str = "http_request",
+    *,
+    pinned_version: int | None = 0,
+) -> Any:
     middleware = ToolDispatchMiddleware()
-    request = _FakeRequest(_FakeRuntime(context), name, {}, f"call-{uuid.uuid4().hex[:8]}")
+    request = _FakeRequest(
+        _FakeRuntime(context),
+        name,
+        {},
+        f"call-{uuid.uuid4().hex[:8]}",
+        dispatch_control_version=pinned_version,
+    )
     # 这是刻意的协议替身：只实现中间件真正读取的字段（tool_call / runtime / state）。
     # 用真实 ToolCallRequest 需要构造完整图运行时，对"异常分类"这个被测点没有增益。
     return await middleware.awrap_tool_call(request, handler)  # type: ignore[arg-type]

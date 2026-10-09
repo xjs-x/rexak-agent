@@ -12,7 +12,17 @@ Windows 的默认 `ProactorEventLoop` **不能**用于 psycopg 异步连接
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+
+#: 子进程必须使用的 I/O 编码。控制端的源码、日志、CLI 输出与子进程输出全部是
+#: UTF-8；如果让子进程跟随 Windows 的 locale（cp936），父进程按 UTF-8 读取时会在
+#: 读线程里抛 UnicodeDecodeError，表现成 `proc.stdout is None` 这种莫名其妙的错误。
+CHILD_IO_ENV = {
+    "PYTHONUTF8": "1",
+    "PYTHONIOENCODING": "utf-8",
+    "PYTHONUNBUFFERED": "1",
+}
 
 _applied = False
 
@@ -28,6 +38,35 @@ def configure_event_loop_policy() -> str:
         return "WindowsSelectorEventLoopPolicy"
     _applied = True
     return type(asyncio.get_event_loop_policy()).__name__
+
+
+def configure_stdio_utf8() -> str | None:
+    """把本进程的标准输出/错误流切到 UTF-8。
+
+    默认 Windows 控制台是 cp936，直接打印中文会 `UnicodeEncodeError`；
+    日志与 CLI 输出是本项目的主要诊断手段，不能因为终端 locale 就崩。
+    返回实际生效的编码名（无法重配时返回 None）。
+    """
+    encodings: list[str] = []
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError, AttributeError):
+            continue
+        encodings.append(str(getattr(stream, "encoding", "?")))
+    return encodings[0] if encodings else None
+
+
+def child_process_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """构造子进程环境：继承当前环境，但强制 UTF-8 I/O。"""
+    env = dict(os.environ)
+    env.update(CHILD_IO_ENV)
+    if extra:
+        env.update(extra)
+    return env
 
 
 def is_configured() -> bool:

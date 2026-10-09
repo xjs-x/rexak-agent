@@ -61,6 +61,8 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.CANCELLED: frozenset(),
     RunStatus.RECOVERING: frozenset(
         {
+            # 核对通过后由恢复流程排队；也允许用户显式确认后走 resume 进入 queued
+            RunStatus.QUEUED,
             RunStatus.RUNNING,
             RunStatus.PAUSED,
             RunStatus.WAITING_USER,

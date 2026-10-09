@@ -96,6 +96,10 @@ class AgentGraphState(AgentState):
     objective: NotRequired[str]
     #: 用户原文与最新约束（**永不**被摘要替换）
     user_constraints: NotRequired[list[str]]
+    #: **本模型轮次开始时固定下来的** control_version。
+    #: 派发工具前必须与数据库当前值比较，不一致 => 该响应已过期，工具不得执行（§4.3）。
+    #: 不能"用当前值对比当前值"，那就是没有检查。
+    dispatch_control_version: NotRequired[int | None]
     work_summary: NotRequired[WorkSummary]
     plan: NotRequired[list[PlanStep]]
     plan_revision: NotRequired[int]

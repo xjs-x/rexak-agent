@@ -105,6 +105,10 @@ class Toolbox:
     policy_revision: int = 1
     scope_revision: int = 1
     identity_id: UUID | None = None
+    #: **本模型轮次固定下来的** control_version（由 CommandGuardMiddleware 在模型请求
+    #: 开始时写入）。派发前必须与数据库当前值比较；不一致说明该响应已过期，
+    #: 其工具调用不得执行（§4.3）。
+    control_version: int = 0
     #: 交互等待阈值：超过则工具返回 accepted + job_id，而不是占着模型调用链（§8.3）
     interactive_threshold_seconds: float = 20.0
     #: 由 Runner 注入：在当前一致边界检查控制版本与暂停/取消
@@ -127,10 +131,16 @@ class Toolbox:
         return int(self._stats.get("segment_work_units", 0))
 
     async def assert_control_current(self) -> None:
-        """派发前检查控制版本。过期响应**不得**自动执行工具（§4.3）。"""
+        """派发前检查控制版本。过期响应**不得**自动执行工具（§4.3）。
+
+        这里比较的是**本模型轮次固定下来的** `control_version`，
+        而不是"读取数据库当前值再和自己比"（那样永远相等，等于没检查）。
+        """
         if self.control_check is None:
             return
-        await self.control_check(self.run_id, self.owner, self.owner_generation)
+        await self.control_check(
+            self.run_id, self.owner, self.owner_generation, self.control_version
+        )
 
     async def wait_for_terminal(self, job_id: UUID, *, poll_interval: float = 0.5) -> Any:
         """有界轮询到 Terminal 状态。

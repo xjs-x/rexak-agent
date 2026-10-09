@@ -29,9 +29,16 @@ class RunStatus(StrEnum):
 
 TERMINAL_RUN_STATUSES = frozenset({RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED})
 
-#: 只有这些状态的 run 可以 resume
+#: 只有这些状态的 run 可以 resume。
+#: `recovering` 也在内，但恢复它需要**显式确认未知的远端副作用**（见 API resume）。
 RESUMABLE_RUN_STATUSES = frozenset(
-    {RunStatus.PAUSED, RunStatus.WAITING_USER, RunStatus.WAITING_TOOL, RunStatus.FAILED}
+    {
+        RunStatus.PAUSED,
+        RunStatus.WAITING_USER,
+        RunStatus.WAITING_TOOL,
+        RunStatus.FAILED,
+        RunStatus.RECOVERING,
+    }
 )
 
 #: 这些状态算"活动"，用于 session 单一活动 run 约束

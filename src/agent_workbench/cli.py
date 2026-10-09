@@ -16,12 +16,17 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import UUID
 
 import typer
 
 from agent_workbench import __version__
 from agent_workbench.config.settings import get_settings
-from agent_workbench.platform_compat import configure_event_loop_policy
+from agent_workbench.platform_compat import (
+    child_process_env,
+    configure_event_loop_policy,
+    configure_stdio_utf8,
+)
 
 app = typer.Typer(
     name="workbench",
@@ -32,6 +37,8 @@ app = typer.Typer(
 
 
 def _echo(message: str) -> None:
+    """打印一行。确保输出流是 UTF-8，避免在 cp936 控制台下中文报 UnicodeEncodeError。"""
+    configure_stdio_utf8()
     typer.echo(message)
 
 
@@ -85,12 +92,25 @@ def serve_runner(
     once: Annotated[bool, typer.Option("--once", help="只跑一轮就退出（调试用）")] = False,
     owner: Annotated[str | None, typer.Option(help="Runner 实例标识")] = None,
     recover: Annotated[bool, typer.Option(help="启动时执行恢复核对")] = True,
+    only_run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--only-run-id",
+            help="只推进指定的 run（演练/调试用）。不传则按常规候选扫描。",
+        ),
+    ] = None,
 ) -> None:
-    """启动 Agent Runner。需要有效 run lease 才会推进任务。"""
-    asyncio.run(_run_runner(once=once, owner=owner, recover=recover))
+    """启动 Agent Runner。需要有效 run lease 才会推进任务。
+
+    `--only-run-id` 用于**定向驱动**：当数据库里还堆着其它 queued run 时，
+    调试/演练需要确定性地只处理目标 run，而不是被前面的 run 拖住。
+    """
+    asyncio.run(_run_runner(once=once, owner=owner, recover=recover, only_run_id=only_run_id))
 
 
-async def _run_runner(*, once: bool, owner: str | None, recover: bool) -> None:
+async def _run_runner(
+    *, once: bool, owner: str | None, recover: bool, only_run_id: str | None = None
+) -> None:
     from agent_workbench.observability.logging import configure_logging, get_logger
     from agent_workbench.persistence.db import get_database
     from agent_workbench.runtime.recovery import run_startup_recovery
@@ -102,6 +122,16 @@ async def _run_runner(*, once: bool, owner: str | None, recover: bool) -> None:
     settings.ensure_directories()
     db = get_database()
     await db.start()
+
+    target: UUID | None = None
+    if only_run_id:
+        try:
+            target = UUID(only_run_id)
+        except ValueError:
+            _echo(f"--only-run-id 不是合法 UUID：{only_run_id}")
+            await db.close()
+            raise typer.Exit(code=2) from None
+
     try:
         if recover:
             report = await run_startup_recovery(db, settings)
@@ -110,7 +140,7 @@ async def _run_runner(*, once: bool, owner: str | None, recover: bool) -> None:
 
         runner = AgentRunner(settings=settings, owner=owner, database=db)
         if once:
-            outcome = await runner.step()
+            outcome = await runner.step(only_run_id=target)
             if outcome is None:
                 _echo("当前没有可推进的 run")
             else:
@@ -269,6 +299,15 @@ async def _doctor(
 
 
 def _check_encoding() -> dict[str, Any]:
+    """在子进程里跑编码检查。
+
+    两个必须显式处理的点（都曾在真实验收中被踩到）：
+    1. **子进程的 I/O 编码**必须固定为 UTF-8。否则在 cp936 控制台下子进程写 GBK
+       字节，父进程按 UTF-8 解码会在读线程里抛 `UnicodeDecodeError`，
+       而 `subprocess` 会把这个异常吞掉，最终表现为 `proc.stdout is None`；
+    2. 读取时再加 `errors="replace"` 兜底，并且**允许 stdout 为 None**，
+       不能因此让整个 doctor 崩掉。
+    """
     repo_root = Path(__file__).resolve().parents[2]
     script = repo_root / "scripts" / "check_encoding.py"
     if not script.exists():
@@ -280,13 +319,20 @@ def _check_encoding() -> dict[str, Any]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="replace",
+        env=child_process_env(),
         cwd=str(repo_root),
         check=False,
     )
-    return {
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    result: dict[str, Any] = {
         "status": "PASS" if proc.returncode == 0 else "FAIL",
-        "stdout": proc.stdout.strip()[-1500:],
+        "stdout": stdout[-1500:],
     }
+    if stderr:
+        result["stderr"] = stderr[-500:]
+    return result
 
 
 async def _probe_model(provider: str | None, model: str | None) -> dict[str, Any]:
@@ -480,13 +526,15 @@ def backup(
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
+            env=child_process_env(),
             check=False,
         )
     except FileNotFoundError:
         _echo("找不到 pg_dump：请在 PATH 中提供 PostgreSQL 客户端，或用容器内 pg_dump 执行。")
         raise typer.Exit(code=1) from None
     if proc.returncode != 0:
-        _echo(f"pg_dump 失败：{proc.stderr.strip()[:500]}")
+        _echo(f"pg_dump 失败：{(proc.stderr or '').strip()[:500]}")
         raise typer.Exit(code=1)
     _echo(f"数据库已导出：{dump_file}")
 
@@ -519,8 +567,10 @@ def version() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # 入口统一设置事件循环策略（含 Windows Selector），避免子命令遗漏
+    # 入口统一设置事件循环策略（含 Windows Selector）与 UTF-8 标准输出，
+    # 避免子命令遗漏导致 cp936 控制台下中文输出崩溃。
     configure_event_loop_policy()
+    configure_stdio_utf8()
     try:
         app(args=argv, standalone_mode=False)
     except typer.Exit as exc:  # type: ignore[attr-defined]

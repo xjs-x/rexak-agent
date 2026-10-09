@@ -101,6 +101,9 @@ venv = ".venv"
 reportMissingTypeStubs = false
 
 [tool.pytest.ini_options]
+# 让 `uv run pytest`（console script，不会把 CWD 放进 sys.path）也能解析 `tests` 包。
+# 只有 `python -m pytest` 能过不算数：验收命令就是 `uv run pytest`。
+pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]

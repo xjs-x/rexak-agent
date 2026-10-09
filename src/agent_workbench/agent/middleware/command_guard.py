@@ -58,8 +58,21 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             if status in {RunStatus.PAUSING, RunStatus.PAUSED}:
                 raise GraphRunAborted("paused", detail="用户在一致边界请求暂停")
 
-        # 3) 消费一条待处理指令（高优先级优先）
-        return await self._consume_one(toolbox)
+        # 3) **固定本轮的 control_version**。
+        #
+        # 这是"方向变更能拦住旧响应"的关键：把模型请求**发出之前**的版本记下来，
+        # 派发工具时再和数据库当前值比较。用户在这期间改变方向 -> 版本变化 ->
+        # 该响应里的工具一律不执行。
+        # 同时写入图状态（可随 checkpoint 持久化）与 Toolbox（供工具内部再自查）。
+        pinned = int(run.control_version) if run is not None else 0
+        toolbox.control_version = pinned
+
+        # 4) 消费一条待处理指令（高优先级优先）
+        update = await self._consume_one(toolbox)
+        merged: dict[str, Any] = {"dispatch_control_version": pinned}
+        if update:
+            merged.update(update)
+        return merged
 
     async def _consume_one(self, toolbox: Any) -> dict[str, Any] | None:
         async with toolbox.db.transaction() as db:

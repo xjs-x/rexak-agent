@@ -19,9 +19,12 @@ from langchain_core.messages import ToolMessage
 from sqlalchemy import select
 
 from agent_workbench.agent.context import RunContext
+from agent_workbench.agent.signals import StaleResponseError
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.contracts.enums import RunStatus
+from agent_workbench.contracts.events import EventType
 from agent_workbench.domain.run_state import is_current_owner
+from agent_workbench.observability.events import append_event
 from agent_workbench.persistence.tables import RunRow
 
 
@@ -99,13 +102,34 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     "恢复后可以继续推进；已在运行的工具不会被杀死。",
                 )
 
-        # 5) 控制版本复核：过期模型响应中的工具不得自动执行
-        dispatcher_version = int(args.get("__control_version__", run.control_version if run else 0))
-        if run is not None and dispatcher_version != int(run.control_version):
+        # 5) 控制版本复核：**过期模型响应中的工具不得自动执行**（§4.3）
+        #
+        # 比较的两个值必须是"两个不同时刻的版本"：
+        #   - pinned：本模型轮次开始前，由 CommandGuardMiddleware 固定下来的版本；
+        #   - current：现在数据库里的版本。
+        # 之前的实现把"模型参数里自填的值"或"数据库当前值"当作 pinned，
+        # 等于拿当前值跟当前值比，永远相等 —— 用户改变方向拦不住旧响应。
+        pinned = request.state.get("dispatch_control_version") if request.state else None
+        current = int(run.control_version) if run is not None else 0
+
+        if pinned is None:
+            # fail-closed：无法确认"这一轮是什么版本"，就不能派发。
+            # 这只可能发生在中间件装配错误时，必须显式暴露而不是放行。
+            await self._emit_stale_block(toolbox, tool_name, None, current)
             return _tool_message(
                 request,
-                "该工具调用来自已过期的模型响应（控制版本已变化），**未执行**。"
-                "用量已记录，但不会据此产生副作用。",
+                "无法确认该工具调用所属的模型轮次版本（dispatch pinning 未生效），"
+                "为安全起见**未执行**。这是实现配置问题，请报告给用户。",
+            )
+
+        if int(pinned) != current:
+            await self._emit_stale_block(toolbox, tool_name, int(pinned), current)
+            return _tool_message(
+                request,
+                f"该工具调用来自**已过期的模型响应**（模型请求发出时 control_version="
+                f"{pinned}，当前为 {current}），**未执行**。"
+                "用户在此期间改变了方向；请基于最新状态重新决策。"
+                "该次模型调用的用量仍会被记录。",
             )
 
         # 6) 片段工作计数 + 异常转结构化结果
@@ -117,11 +141,49 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             return await handler(request)
         except asyncio.CancelledError:
             raise
+        except StaleResponseError as exc:
+            # 工具内部（例如 HTTP 工具在提交到执行岛之前）自查发现响应已过期。
+            # 与上面的前置检查同义：**未执行**，并留下事件。
+            await self._emit_stale_block(
+                toolbox, tool_name, exc.pinned_version, exc.current_version
+            )
+            return _tool_message(
+                request,
+                f"该工具调用来自**已过期的模型响应**（固定版本 {exc.pinned_version}，"
+                f"当前 {exc.current_version}），**未执行**。"
+                "用户在此期间改变了方向；请基于最新状态重新决策。",
+            )
         except Exception as exc:
             return _tool_message(request, _render_tool_failure(tool_name, exc))
         finally:
             toolbox.bump(f"tool:{tool_name}")
             toolbox.bump("segment_work_units")
+
+    @staticmethod
+    async def _emit_stale_block(
+        toolbox: Any, tool_name: str, pinned: int | None, current: int
+    ) -> None:
+        """把"拦下过期响应"写进事件流，便于 UI 与诊断复盘。"""
+        try:
+            async with toolbox.db.transaction() as db:
+                await append_event(
+                    db,
+                    session_id=toolbox.session_id,
+                    run_id=toolbox.run_id,
+                    event_type=EventType.ERROR,
+                    payload={
+                        "scope": "stale_response_blocked",
+                        "tool": tool_name,
+                        "pinned_control_version": pinned,
+                        "current_control_version": current,
+                        "message": (
+                            "该工具调用所属的模型响应已过期（用户改变了方向），"
+                            "已拒绝执行，未产生副作用。"
+                        ),
+                    },
+                )
+        except Exception:
+            return
 
 
 def _disabled_reason(context: RunContext, tool_name: str) -> str | None:

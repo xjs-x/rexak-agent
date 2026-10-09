@@ -44,6 +44,24 @@ class SegmentBoundaryReached(Exception):
         self.work_units = work_units
 
 
+class StaleResponseError(Exception):
+    """该模型响应已过期：用户在本轮模型调用期间改变了方向。
+
+    §4.3 要求："旧模型响应可以记录用量，但派发前必须重新检查版本；
+    不得把过期响应中的工具自动执行。"
+
+    抛出它的位置必须在**工具真正产生副作用之前**（HTTP 工具在提交到执行岛之前，
+    派发中间件在调用 handler 之前）。
+    """
+
+    def __init__(self, *, pinned_version: int, current_version: int) -> None:
+        super().__init__(
+            f"模型响应已过期：该轮固定 control_version={pinned_version}，当前为 {current_version}"
+        )
+        self.pinned_version = pinned_version
+        self.current_version = current_version
+
+
 class FinishGateRejected(Exception):
     """完成提议未通过确定性检查。把反馈交回模型，而不是直接结束。"""
 

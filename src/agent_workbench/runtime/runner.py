@@ -28,6 +28,7 @@ from agent_workbench.agent.signals import (
     GraphRunAborted,
     LeaseLostError,
     SegmentBoundaryReached,
+    StaleResponseError,
 )
 from agent_workbench.agent.state import next_input_state
 from agent_workbench.config.settings import Settings, get_settings
@@ -735,11 +736,22 @@ class AgentRunner:
         await self._fail(run_id, ErrorCode.INTERNAL_ERROR, f"{name}: {message}")
         return RunStatus.FAILED, f"{name}: {message}"
 
-    async def _assert_dispatch_allowed(self, run_id: UUID, owner: str, generation: int) -> None:
+    async def _assert_dispatch_allowed(
+        self,
+        run_id: UUID,
+        owner: str,
+        generation: int,
+        pinned_control_version: int | None = None,
+    ) -> None:
         """派发前检查（由工具通过 `control_check` 调用）。
 
         - 所有权丢失 -> `LeaseLostError`；
-        - 暂停/取消 -> `GraphRunAborted`。
+        - 暂停/取消 -> `GraphRunAborted`；
+        - **控制版本变化 -> `StaleResponseError`**（用户在本轮模型调用期间改变方向）。
+
+        `pinned_control_version` 是"本模型轮次固定下来的版本"，必须由调用方传入。
+        不能在这里读数据库当前值来代替 —— 那样等于拿当前值跟当前值比，
+        用户改变方向就拦不住旧响应（§4.3）。
         """
         async with self._db.session() as session:
             alive = await is_current_owner(
@@ -755,6 +767,13 @@ class AgentRunner:
             raise GraphRunAborted("paused", detail="派发前检查：运行已进入暂停流程")
         if int(generation) != int(run.owner_generation):
             raise LeaseLostError(str(run_id), owner)
+        if pinned_control_version is not None and int(pinned_control_version) != int(
+            run.control_version
+        ):
+            raise StaleResponseError(
+                pinned_version=int(pinned_control_version),
+                current_version=int(run.control_version),
+            )
 
     # ------------------------------------------------------------------ #
     # 状态落库

@@ -86,6 +86,7 @@
 | 同一工具 operation 重试只产生一个远端操作 | ✅ | ledger 去重 + `test_replayed...`（控制端）/ `test_reconnect_does_not_create_second_job`（执行岛） |
 | 快照与事件衔接不漏更新 | ✅ | `snapshot` 返回 `event_cursor`；`session_seq > cursor` 订阅 |
 | Executor 无法读取模型 API Key；密钥不出现在错误返回或事件中 | 🟡 | 架构上保证（Executor 不加载控制端配置、`.env` 里没有模型密钥、命令环境走白名单）；**未做**针对性的渗透式验证 |
+| 工具异常与远端 404 不得中断恢复流程 | ✅ | `ExecutorRejected` 被显式分类；404 -> `unknown`（不推断为"没发生副作用"）；单 job 意外只影响该 job。`tests/recovery/test_reconcile_failures.py` |
 
 ---
 
@@ -114,8 +115,13 @@
 | 真实小米模型读取本地可控目标，产出带实际证据引用的回答 | ✅ | 端到端冒烟：`run status=completed / completion_reason=goal_answered`；2 个工件（`available`，152 B + 751 B）；1 条 observation 引用两个真实 `artifact_id`；1 条 coverage `info_disclosure/checked_negative` |
 | 关闭页面再打开，任务继续且可回放输出 | ✅ | 事件持久化在 `events` 表；SSE 只轮询数据库，UI 断开不阻塞 Runner（架构保证 + `test_committed_events_are_replayable_after_broadcast_loss`） |
 | 完成后追问先前观察，能定位原始证据 | ✅ | `read_artifact` 按 `artifact_id` 读脱敏视图；`search_evidence` 检索清单 |
-| API 重启不终止 Runner；Runner 重启后恢复或明确 recovering，不重复执行工具 | 🟡 | `recover_stale_runs` + `reconcile_remote_jobs` 有代码与单测（`test_stale_running_run_is_requeued_not_failed`、`test_active_lease_run_is_not_stolen`）；**未做**进程级 kill/restart 的实机演练 |
+| API 重启不终止 Runner；Runner 重启后恢复或明确 recovering，不重复执行工具 | ✅ | **进程级演练通过**（`scripts/restart_drill.py`，见 decision 0003 §2）：硬杀 Runner 后 lease 过期 -> 核对 -> 明确决定归宿 -> 目标端 `/slow` 只执行 **1** 次 |
 | 启动第二个 Runner 不获得同 session 执行权 | ✅ | `test_lease_conflict_blocks_second_runner` |
+| **方向变更可靠拦截旧模型响应** | ✅ | `command_guard` 在模型请求前固定 `control_version`；`tool_dispatch` 用固定值与当前值比较，缺失时 fail-closed；`tests/integration/test_control_version.py` 用"模型生成期间真的改库"的真实时序验证（见 decision 0003 §1） |
+| **验收命令可原样复现** | ✅ | `uv run pytest tests/unit tests/integration -q` 通过；`uv run workbench doctor` 在 cp936 控制台下也不崩溃（见 decision 0003 §3） |
+
+**P2 验收结论：本轮修复了独立复核指出的两处运行边界缺陷与一处命令可复现性问题，
+并补了真实并发测试与进程级演练。** 未完成项见文末"本轮明确未做的清单"。
 
 ---
 
@@ -133,7 +139,7 @@
 | minimal environment allowlist | ✅ | `processes.minimal_environment`（白名单 + 显式屏蔽管理类秘密） |
 | `waiting_tool` 事件唤醒，不持续询问模型 | 🟡 | 长任务返回 `accepted` + job_id（超阈值路径已实现）；**未验证**大规模并发下的唤醒时序 |
 | 暂停与取消不同语义；暂停后活动工具仍在运行时明确展示 | ✅ | `pause.md`/`cancel` 分离；`_cancel_active_jobs` 逐个核对并写 `process_confirmed_exited` |
-| 断线/重启核对所有已接收 job；不确定标 unknown，不自动重做 | ✅ | `reconcile_remote_jobs`；单测 `test_executor_restart_marks_unresolved_jobs_unknown` |
+| 断线/重启核对所有已接收 job；不确定标 unknown，不自动重做 | ✅ | `reconcile_remote_jobs`（有界并发，`JOB_RECONCILE_CONCURRENCY=8`）；单测 `test_executor_restart_marks_unresolved_jobs_unknown`；**进程级演练通过** |
 | 远端工件同步、哈希核对、缺失状态与断点重试 | ✅ | 哈希不匹配 → `orphaned`（不作为可用证据）；`flag_orphan_artifacts` 单测 |
 
 ---
@@ -219,7 +225,7 @@
 | 任务 | 状态 |
 |---|---|
 | 模型请求中断、派发前/后崩溃、checkpoint 前崩溃的故障注入 | 🟡 数据库层切点已覆盖（`tests/recovery/` 12 项）；**进程级** kill 演练 ⬜ |
-| 旧 run owner 迟到响应不再派发，费用仍记录 | ✅ `test_late_owner_response_is_not_dispatched` + `ToolDispatchMiddleware` 所有权/版本复核 |
+| 旧 run owner 迟到响应不再派发，费用仍记录 | ✅ 迟到响应用例已改为**调用真实派发路径** `_assert_dispatch_allowed`；另有「用户改变方向 -> `StaleResponseError`」用例 |
 | Executor/control 重启、数据库不可用、磁盘满、工件同步失败 | 🟡 Executor 重启核对 ✅；数据库不可用 / 磁盘满 ⬜ |
 | interrupt 恢复前重复运行是否含非幂等副作用 | ✅ 不适用 `interrupt()`，走状态机（见 P0 偏离说明①） |
 | 密钥脱敏、提示注入资料边界、HTML/终端控制字符安全显示 | ✅ `redact_text` 先处理 Bearer 再按键值打码（曾抓出真实泄漏）；控制字符剥离；注入诱饵已在 fixture 中（`/content/notice`） |
@@ -258,6 +264,11 @@
 9. **效果评测 runner 与 grader**（P9）。
 10. **systemd/容器级进程守护**（P3）——当前是 `setsid`，机器重启不自动拉起。
 
+> **2026-10-09 更新**：独立复核指出的三处问题（方向变更拦截、恢复顺序、命令可复现性）
+> 已全部修复并有验证证据，详见 `docs/decisions/0003-runtime-boundaries.md`。
+> 修复过程中由**真实演练**额外暴露并修掉 4 个缺陷：远端 404 导致核对崩溃、
+> 单个 job 异常中断整次核对、核对串行过慢拖垮调度、stale 判定口径与文档不符。
+
 ## 复现本文件的验证
 
 ```powershell
@@ -266,6 +277,21 @@ docker compose up -d postgres
 uv run workbench db-init
 uv run python scripts/check_encoding.py
 uv run ruff check . ; uv run pyright
-uv run pytest tests/unit tests/integration tests/recovery -q     # 90 passed, 1 skipped（无凭据时）
+uv run pytest tests/unit tests/integration -q     # 92 passed, 1 skipped（无凭据时）
+uv run pytest tests/recovery -q                   # 23 passed
 uv run workbench doctor
 ```
+
+带真实凭据时：`uv run pytest tests -q` → **116 passed**。
+
+进程级重启演练（需要真实模型与可达执行岛）：
+
+```powershell
+$env:XIAOMI_API_KEY = "<本机密钥>"
+uv run python scripts/restart_drill.py
+```
+
+> **2026-10-09 更新**：独立复核指出的三处问题（方向变更拦截、恢复顺序、命令可复现性）
+> 已全部修复并有验证证据，详见 `docs/decisions/0003-runtime-boundaries.md`。
+> 修复过程中由**真实演练**额外暴露并修掉 4 个缺陷：远端 404 导致核对崩溃、
+> 单个 job 异常中断整次核对、核对串行过慢拖垮调度、stale 判定口径与文档不符。
