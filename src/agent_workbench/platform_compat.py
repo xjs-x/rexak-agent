@@ -32,3 +32,24 @@ def configure_event_loop_policy() -> str:
 
 def is_configured() -> bool:
     return _applied
+
+
+def assert_supported_event_loop() -> None:
+    """在事件循环内部校验当前循环是否可用。
+
+    psycopg 的异步连接**不能**跑在 Windows 的 `ProactorEventLoop` 上。uvicorn 在
+    `Server.run()` 里会把策略改回 Proactor，因此必须在**运行时**再确认一次，
+    否则故障表现为"第一个数据库请求 500"，而不是可操作的启动错误。
+
+    `workbench api` 已走程序化启动路径规避该问题；这里是为"有人直接用
+    `uvicorn agent_workbench.api.app:app` 启动"这种情况准备的明确失败。
+    """
+    if sys.platform != "win32":
+        return
+    loop = asyncio.get_running_loop()
+    if type(loop).__name__ == "ProactorEventLoop":
+        raise RuntimeError(
+            "当前事件循环是 ProactorEventLoop，psycopg 异步连接无法在其上工作。\n"
+            "请改用 `uv run workbench api` 启动控制端（它会在 Selector 事件循环上运行），"
+            "而不是直接调用 `uvicorn agent_workbench.api.app:app`。"
+        )

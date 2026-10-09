@@ -41,6 +41,7 @@ from agent_workbench.domain.run_state import (
     bump_control_version,
     set_run_status,
 )
+from agent_workbench.domain.scope import validate_scope
 from agent_workbench.observability.costs import summarize_costs
 from agent_workbench.observability.events import append_event, latest_seq, read_events_after
 from agent_workbench.persistence.repositories import (
@@ -129,9 +130,7 @@ async def create_project(
     ticket = auth.require_session(request)
     auth.require_csrf(request, ticket)
 
-    from agent_workbench.domain.scope import validate_scope
-
-    validate_scope(payload.default_scope)
+    _validate_scope_or_422(payload.default_scope)
 
     from agent_workbench.persistence.db import get_database
 
@@ -172,10 +171,9 @@ async def create_session(
     auth.require_csrf(request, ticket)
 
     from agent_workbench.domain.run_state import create_run
-    from agent_workbench.domain.scope import validate_scope
     from agent_workbench.persistence.db import get_database
 
-    validate_scope(payload.scope)
+    _validate_scope_or_422(payload.scope)
     settings = get_settings()
 
     async with get_database().transaction() as session:
@@ -907,6 +905,22 @@ async def change_objective(
 # --------------------------------------------------------------------------- #
 # 辅助
 # --------------------------------------------------------------------------- #
+
+
+def _validate_scope_or_422(snapshot: Any) -> None:
+    """范围校验失败必须是 **422 validation_failed**，不能漏成 500。
+
+    `validate_scope` 抛的是领域层的 `ValueError`；这里统一转成统一错误体，
+    让客户端能区分"我给的参数有问题"和"服务端出错了"。
+    """
+    try:
+        validate_scope(snapshot)
+    except ValueError as exc:
+        raise ApiError(
+            ErrorCode.VALIDATION_FAILED,
+            str(exc),
+            details={"field": "scope.rules"},
+        ) from exc
 
 
 def _count_by(rows: Sequence[Any], attribute: str) -> dict[str, int]:

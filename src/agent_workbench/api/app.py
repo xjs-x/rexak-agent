@@ -18,6 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import IntegrityError
 
 from agent_workbench import __version__
 from agent_workbench.api.auth import LocalAuth
@@ -26,7 +27,10 @@ from agent_workbench.contracts.enums import ErrorCode
 from agent_workbench.contracts.errors import ApiError, ErrorBody
 from agent_workbench.observability.logging import configure_logging, get_logger
 from agent_workbench.persistence.db import get_database
-from agent_workbench.platform_compat import configure_event_loop_policy
+from agent_workbench.platform_compat import (
+    assert_supported_event_loop,
+    configure_event_loop_policy,
+)
 
 log = get_logger("agent_workbench.api")
 
@@ -35,6 +39,9 @@ log = get_logger("agent_workbench.api")
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     settings = get_settings()
     configure_logging()
+    # 快速失败：Windows 上若事件循环是 Proactor，psycopg 异步会在第一次查询时报
+    # `InterfaceError`，表现为 500 而不是可操作的错误信息。这里提前给出明确指引。
+    assert_supported_event_loop()
     settings.ensure_directories()
     db = get_database()
     await db.start()
@@ -43,6 +50,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     finally:
         # 生命周期成对：启动与关闭都显式处理
         await db.close()
+
+
+def _constraint_name(exc: IntegrityError) -> str | None:
+    """从 psycopg 的异常里取出约束名，用于给出可理解的冲突说明。"""
+    diagnostic = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+    return str(diagnostic) if diagnostic else None
+
+
+_CONFLICT_MESSAGES = {
+    "uq_projects_owner_name": "同一用户下已存在同名项目；请换一个名称。",
+    "uq_commands_session_idem": "该幂等键已被使用；同键同内容会返回原结果，同键不同内容会被拒绝。",
+    "uq_runs_active_per_session": "该 session 已存在活动 run；请提交消息而不是新建 run。",
+    "uq_events_session_seq": "事件序号冲突，请重试本次操作。",
+}
+
+
+def _conflict_message(constraint: str | None) -> str:
+    if constraint and constraint in _CONFLICT_MESSAGES:
+        return _CONFLICT_MESSAGES[constraint]
+    return "请求与当前数据状态冲突；请检查是否重复提交或顺序有误。"
 
 
 def create_app() -> FastAPI:
@@ -88,6 +115,29 @@ def create_app() -> FastAPI:
             details={"errors": exc.errors()[:20]},
         )
         return JSONResponse(status_code=422, content=body.model_dump(mode="json"))
+
+    @app.exception_handler(IntegrityError)
+    async def _integrity_error(request: Request, exc: IntegrityError) -> JSONResponse:
+        """数据库约束冲突 -> 409，而不是 500。
+
+        典型场景：项目名在同一 owner 下重复、幂等键并发插入、同一 session 起第二个
+        活动 run。这些都是**客户端可理解的冲突**，必须给出稳定的错误码，
+        并且**不能**把完整 SQL 与参数回给客户端（可能含业务数据）。
+        """
+        constraint = _constraint_name(exc)
+        log.info(
+            "db_constraint_violation",
+            constraint=constraint,
+            path=request.url.path,
+        )
+        body = ErrorBody(
+            code=ErrorCode.CONFLICT,
+            message=_conflict_message(constraint),
+            retryable=False,
+            request_id=getattr(request.state, "request_id", None),
+            details={"constraint": constraint} if constraint else {},
+        )
+        return JSONResponse(status_code=409, content=body.model_dump(mode="json"))
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:

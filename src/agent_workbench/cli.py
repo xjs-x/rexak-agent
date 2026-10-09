@@ -46,10 +46,16 @@ def serve_api(
     port: Annotated[int | None, typer.Option(help="监听端口")] = None,
     reload: Annotated[bool, typer.Option(help="开发热重载（不用于常驻部署）")] = False,
 ) -> None:
-    """启动控制端 API + SSE。**不会自动启动 Runner。**"""
+    """启动控制端 API + SSE。**不会自动启动 Runner。**
+
+    注意：这里**程序化**启动 uvicorn，而不是 `uvicorn.run(...)`。
+    原因是 Windows 上 uvicorn 的 `Server.run()` 会调用 `config.setup_event_loop()`
+    把事件循环策略改回 `ProactorEventLoop`，而 psycopg 的异步连接在该循环上会直接
+    抛 `InterfaceError`。用 `asyncio.run(server.serve())` 跳过那一步，
+    保持我们在 `platform_compat` 里设置的 Selector 策略。
+    """
     import uvicorn
 
-    configure_event_loop_policy()
     settings = get_settings()
     bind_host = host or settings.api_host
     if bind_host not in {"127.0.0.1", "localhost", "::1"}:
@@ -58,13 +64,20 @@ def serve_api(
             "对外暴露需要先补齐鉴权与 TLS 方案。"
         )
         raise typer.Exit(code=2)
-    uvicorn.run(
+
+    policy = configure_event_loop_policy()
+    _echo(f"事件循环策略：{policy}")
+
+    config = uvicorn.Config(
         "agent_workbench.api.app:app",
         host=bind_host,
         port=port or settings.api_port,
         reload=reload,
         log_level="info",
+        loop="asyncio",
     )
+    server = uvicorn.Server(config)
+    asyncio.run(server.serve())
 
 
 @app.command("runner")
