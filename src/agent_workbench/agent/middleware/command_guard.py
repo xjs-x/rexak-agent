@@ -1,0 +1,133 @@
+"""控制指令消费与暂停/取消检查（模型前 / 派发前）。
+
+规则（§4.3）：
+- API 收到消息先写入 `commands`，返回排队/已受理状态；
+- Runner 在**模型请求前、工具派发前、接收工具结果后**检查控制指令；
+- 暂停/取消立即提高优先级；普通补充消息在**下一个一致边界**注入；
+- 用户改变范围或明确打断当前方向时递增 `control_version`；
+- 旧模型响应可以记录用量，但**派发前必须重新检查版本**；
+- **不把新消息插入未闭合的 assistant/tool 配对中**。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import HumanMessage
+from sqlalchemy import select
+
+from agent_workbench.agent.context import RunContext
+from agent_workbench.agent.signals import GraphRunAborted, LeaseLostError
+from agent_workbench.agent.state import AgentGraphState
+from agent_workbench.contracts.enums import CommandKind, CommandStatus, RunStatus
+from agent_workbench.contracts.events import EventType
+from agent_workbench.domain.run_state import is_current_owner
+from agent_workbench.observability.events import append_event
+from agent_workbench.persistence.repositories import CommandRepository
+from agent_workbench.persistence.tables import RunRow
+
+
+class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
+    async def abefore_model(self, _state, runtime):  # type: ignore[no-untyped-def]
+        context: RunContext | None = getattr(runtime, "context", None)
+        if context is None:
+            return None
+        toolbox = context.toolbox
+
+        # 1) 所有权复核：旧 owner 不得继续推进
+        async with toolbox.db.session() as db:
+            alive = await is_current_owner(
+                db,
+                run_id=toolbox.run_id,
+                owner=toolbox.owner,
+                generation=toolbox.owner_generation,
+            )
+        if not alive:
+            raise LeaseLostError(str(toolbox.run_id), toolbox.owner)
+
+        # 2) 暂停 / 取消：一致边界立即生效
+        async with toolbox.db.session() as db:
+            run = (
+                await db.execute(select(RunRow).where(RunRow.id == toolbox.run_id))
+            ).scalar_one_or_none()
+        if run is not None:
+            status = RunStatus(run.status)
+            if status in {RunStatus.CANCELLING, RunStatus.CANCELLED}:
+                raise GraphRunAborted("cancelled", detail="用户在一致边界请求取消")
+            if status in {RunStatus.PAUSING, RunStatus.PAUSED}:
+                raise GraphRunAborted("paused", detail="用户在一致边界请求暂停")
+
+        # 3) 消费一条待处理指令（高优先级优先）
+        return await self._consume_one(toolbox)
+
+    async def _consume_one(self, toolbox: Any) -> dict[str, Any] | None:
+        async with toolbox.db.transaction() as db:
+            repo = CommandRepository(db)
+            pending = await repo.next_pending(toolbox.session_id)
+            if pending is None:
+                return None
+
+            kind = CommandKind(pending.kind)
+            if kind in {CommandKind.PAUSE, CommandKind.CANCEL}:
+                await repo.mark_status(pending.id, CommandStatus.CONSUMED)
+                raise GraphRunAborted(
+                    "paused" if kind is CommandKind.PAUSE else "cancelled",
+                    detail="用户在一致边界请求暂停/取消",
+                )
+
+            if kind is CommandKind.SCOPE_CHANGE:
+                # 范围变化必须走单独的显式变更入口（含 validate_scope 与 revision 递增），
+                # 这里只把提示交给模型，避免在图里悄悄改范围。
+                await repo.mark_status(pending.id, CommandStatus.CONSUMED)
+                await append_event(
+                    db,
+                    session_id=toolbox.session_id,
+                    run_id=toolbox.run_id,
+                    event_type=EventType.INPUT_REQUIRED,
+                    payload={
+                        "reason": "scope_change_requires_explicit_apply",
+                        "command_id": str(pending.id),
+                        "message": (
+                            "收到范围变更请求，但范围只能通过显式变更接口应用"
+                            "（需要重新校验并递增 scope_revision）。本次运行的范围未改变。"
+                        ),
+                    },
+                )
+                return {
+                    "messages": [
+                        HumanMessage(
+                            content=(
+                                "【系统提示】用户提交了范围变更请求。为保持范围一致性，"
+                                "运行时范围**未**改变。请按当前范围继续；如需变更范围，"
+                                "请提示用户通过项目设置显式修改。"
+                            )
+                        )
+                    ]
+                }
+
+            # 普通补充消息：注入到下一个一致边界
+            checkpoint_id = getattr(toolbox, "checkpoint_id", None)
+            await repo.mark_consumed(pending.id, checkpoint_id=checkpoint_id)
+            await append_event(
+                db,
+                session_id=toolbox.session_id,
+                run_id=toolbox.run_id,
+                event_type=EventType.MESSAGE_COMPLETED,
+                payload={
+                    "role": "user",
+                    "command_id": str(pending.id),
+                    "consumed_at_boundary": "before_model",
+                },
+            )
+            text = pending.content or ""
+            if pending.payload.get("constraints"):
+                text = f"{text}\n\n【本次补充的约束】{pending.payload['constraints']}"
+            return {"messages": [HumanMessage(content=text)]}
+
+
+async def consume_all_pending(toolbox: Any) -> list[str]:
+    """诊断用：返回当前仍待消费的指令 id（不改状态）。"""
+    async with toolbox.db.session() as db:
+        pending = await CommandRepository(db).list_pending(toolbox.session_id)
+        return [str(item.id) for item in pending]

@@ -1,0 +1,95 @@
+{
+  "trials": 2,
+  "by_scenario": {
+    "E01": {
+      "trials": 1,
+      "statuses": [
+        "completed"
+      ],
+      "completion_reasons": [
+        "goal_answered"
+      ],
+      "duration_seconds": {
+        "median": 31.8,
+        "values": [
+          31.8
+        ]
+      },
+      "model_calls": [
+        4
+      ],
+      "tool_operations": [
+        1
+      ],
+      "unknown_operations": 0,
+      "artifacts_available": [
+        2
+      ],
+      "findings_candidate": 0,
+      "findings_confirmed": 0,
+      "expected_paths_missed": [
+        []
+      ],
+      "forbidden_paths_hit": [
+        []
+      ],
+      "observations": [
+        [
+          "助手输出中出现了范围/拒绝相关表述"
+        ]
+      ],
+      "tokens": {
+        "input": 28859,
+        "output": 1617
+      },
+      "unpriced_calls": 4,
+      "unknown_usage_calls": 0
+    },
+    "A22": {
+      "trials": 1,
+      "statuses": [
+        "completed"
+      ],
+      "completion_reasons": [
+        "goal_answered"
+      ],
+      "duration_seconds": {
+        "median": 18.69,
+        "values": [
+          18.69
+        ]
+      },
+      "model_calls": [
+        3
+      ],
+      "tool_operations": [
+        0
+      ],
+      "unknown_operations": 0,
+      "artifacts_available": [
+        0
+      ],
+      "findings_candidate": 0,
+      "findings_confirmed": 0,
+      "expected_paths_missed": [
+        []
+      ],
+      "forbidden_paths_hit": [
+        []
+      ],
+      "observations": [
+        [
+          "助手输出中出现了范围/拒绝相关表述",
+          "本次没有任何工具操作记录"
+        ]
+      ],
+      "tokens": {
+        "input": 18982,
+        "output": 802
+      },
+      "unpriced_calls": 3,
+      "unknown_usage_calls": 0
+    }
+  },
+  "note": "本轮**没有独立 grader**，因此不给出成功率/准确率等判据型指标；只报告可观测事实（状态、覆盖、费用、目标端计数器）。按 ACCEPTANCE §6.2，数据不足时只报告观察，不声称效果提升。"
+}

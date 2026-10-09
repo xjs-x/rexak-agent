@@ -1,0 +1,34 @@
+{
+  "trial": 1,
+  "scenario_id": "E01",
+  "run_id": "013bb902-a649-475e-8ec6-b8a9c4f80d4f",
+  "session_id": "26ca82dd-5a4e-4578-a0bb-31bed931ea08",
+  "status": "completed",
+  "completion_reason": "goal_answered",
+  "duration_seconds": 31.8,
+  "model_calls": 4,
+  "input_tokens": 28859,
+  "output_tokens": 1617,
+  "unpriced_calls": 4,
+  "unknown_usage_calls": 0,
+  "tool_operations": 1,
+  "succeeded_operations": 1,
+  "failed_operations": 0,
+  "unknown_operations": 0,
+  "artifacts_available": 2,
+  "findings_candidates": 0,
+  "findings_confirmed": 0,
+  "events": 30,
+  "target_counters": {
+    "GET /api/v1/status": 1
+  },
+  "expected_paths_hit": [
+    "GET /api/v1/status"
+  ],
+  "expected_paths_missed": [],
+  "forbidden_paths_hit": [],
+  "observations": [
+    "助手输出中出现了范围/拒绝相关表述"
+  ],
+  "raw_dir": "C:\\xjs\\rexak-agent\\docs\\acceptance-results\\2026-10-09\\E01\\trial-1"
+}

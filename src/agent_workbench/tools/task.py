@@ -1,0 +1,440 @@
+"""任务资料工具：`update_plan`、`record_lead`、`record_observation`、`propose_finding`。
+
+规则（§8.2）：
+- 输入校验 + 来源检查；
+- **模型不能直接标记 verified**；
+- 计划写入图状态（LangGraph checkpoint 为权威）；线索/观察/发现写入业务表；
+- 模型猜测只形成 `candidate`，`confirmed` 只能由验证服务写入。
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from typing import Annotated, Any
+from uuid import UUID
+
+from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import InjectedToolCallId, tool
+from langgraph.types import Command
+
+from agent_workbench.agent.context import RunContext
+from agent_workbench.agent.state import PlanStep
+from agent_workbench.contracts.enums import CoverageStatus, FindingCategory, LeadStatus
+from agent_workbench.domain.assets import record_asset
+from agent_workbench.domain.findings import CoverageService, FindingService
+from agent_workbench.domain.leads import LeadService, lead_summary
+from agent_workbench.domain.observations import record_observation_ref
+from agent_workbench.tools.params import coerce_str_list
+from agent_workbench.tools.runtime import Toolbox
+
+PLAN_STEP_STATUSES = {"pending", "in_progress", "done", "dropped", "blocked"}
+MAX_PLAN_STEPS = 20
+
+
+def _parse_json(raw: str, field: str) -> Any:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{field} 不是合法 JSON：{exc}") from exc
+
+
+def _tool_message(tool_call_id: str, text: str) -> ToolMessage:
+    return ToolMessage(content=text, tool_call_id=tool_call_id, name="plan")
+
+
+# --------------------------------------------------------------------------- #
+# 计划
+# --------------------------------------------------------------------------- #
+
+
+@tool("update_plan")
+async def update_plan(
+    runtime: ToolRuntime[RunContext],
+    steps_json: str,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    rationale: str | None = None,
+) -> Command:
+    """更新**当前计划**（有界、可修订，不是预先锁死的 DAG）。
+
+    Args:
+        steps_json: 计划步骤的 JSON 数组字符串。每项：
+            `{"step_id": "s1", "description": "...", "status": "pending|in_progress|done|dropped|blocked",
+              "rationale": "为什么做这一步", "lead_id": "可选关联线索"}`
+        rationale: 本次计划变更的原因（会被记录，便于复盘方向变化）。
+        tool_call_id: 由框架注入，不要自己填写。
+
+    Returns:
+        更新确认（同时把计划写回图状态）。
+    """
+    runtime.context.note_progress(f"plan:{rationale or ''}")
+    raw = _parse_json(steps_json, "steps_json")
+    if not isinstance(raw, list):
+        raise ValueError("steps_json 必须是 JSON 数组")
+    if len(raw) > MAX_PLAN_STEPS:
+        raise ValueError(f"计划最多 {MAX_PLAN_STEPS} 步；请合并或删除已完成步骤")
+
+    seen: set[str] = set()
+    steps: list[PlanStep] = []
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"第 {index} 项不是对象")
+        step_id = str(item.get("step_id") or f"s{index}")
+        if step_id in seen:
+            raise ValueError(f"step_id 重复：{step_id}")
+        seen.add(step_id)
+        status = str(item.get("status", "pending"))
+        if status not in PLAN_STEP_STATUSES:
+            raise ValueError(f"第 {index} 项 status 非法：{status}")
+        description = str(item.get("description") or "").strip()
+        if not description:
+            raise ValueError(f"第 {index} 项缺少 description")
+        if status == "blocked" and not item.get("rationale"):
+            raise ValueError(f"第 {index} 项状态为 blocked，必须写 rationale（受阻原因）")
+        steps.append(
+            PlanStep(
+                step_id=step_id,
+                description=description,
+                status=status,  # type: ignore[typeddict-item]
+                rationale=item.get("rationale"),
+                lead_id=item.get("lead_id"),
+            )
+        )
+
+    revision = int(runtime.state.get("plan_revision") or 0) + 1
+    text = json.dumps(
+        {
+            "ok": True,
+            "plan_revision": revision,
+            "steps": len(steps),
+            "note": "计划已写入图状态（LangGraph checkpoint 为权威）；前端只做只读投影。",
+        },
+        ensure_ascii=False,
+    )
+    return Command(
+        update={
+            "plan": steps,
+            "plan_revision": revision,
+            "messages": [_tool_message(tool_call_id, text)],
+        }
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 线索
+# --------------------------------------------------------------------------- #
+
+
+@tool("record_lead")
+async def record_lead(
+    runtime: ToolRuntime[RunContext],
+    hypothesis: str,
+    impact: int = 3,
+    evidence_strength: int = 1,
+    feasibility: int = 3,
+    information_gain: int = 3,
+    url: str | None = None,
+    identity_refs_json: list[str] | str | None = None,
+    next_action: str | None = None,
+    evidence_refs_json: list[str] | str | None = None,
+    lead_id: str | None = None,
+    status: str | None = None,
+    blocked_reason: str | None = None,
+    resume_condition: str | None = None,
+) -> str:
+    """登记或更新一条**假设（线索）**。
+
+    Args:
+        hypothesis: 假设内容，例如"该接口可能缺少服务端权限校验"。
+        impact: 影响程度 0-5。
+        evidence_strength: 已有证据强度 0-5（仅凭猜测请填 0-1）。
+        feasibility: 可执行性 0-5（当前条件下能否验证）。
+        information_gain: 预期信息增益 0-5（验证后能排除多少不确定性）。
+        url: 关联的入口 URL（可选，会自动登记资产）。
+        identity_refs_json: 关联身份标识的 JSON 数组字符串。
+        next_action: 下一步具体动作。
+        evidence_refs_json: 支持该线索的工件 ID 的 JSON 数组字符串。
+        lead_id: 更新已有线索时填写。
+        status: 可选，设置为 new/investigating/needs_verification/confirmed/disproved/
+            blocked/deferred。
+        blocked_reason: blocked/deferred 时**必填**。
+        resume_condition: 恢复条件（什么条件下可以继续推进）。
+
+    Returns:
+        线索记录摘要（JSON）。
+
+    Notes:
+        - 优先级由影响、证据强度、可执行性、预期信息增益共同决定，不是只看"扫描器严重等级"；
+        - `confirmed` 只能由确定性核验器写入，这里**不接受**把线索直接标为 confirmed。
+    """
+    toolbox: Toolbox = runtime.context.toolbox
+    identity_refs = coerce_str_list(identity_refs_json, "identity_refs_json")
+    evidence_refs = coerce_str_list(evidence_refs_json, "evidence_refs_json")
+
+    target_status: LeadStatus | None = None
+    if status:
+        try:
+            target_status = LeadStatus(status)
+        except ValueError as exc:
+            raise ValueError(f"status 非法：{status}") from exc
+        if target_status is LeadStatus.CONFIRMED:
+            raise ValueError(
+                "confirmed 必须由确定性核验器写入；请先 record_observation + 运行核验，"
+                "再把线索标为 needs_verification 并提交证据。"
+            )
+
+    async with toolbox.db.transaction() as db:
+        asset_id: UUID | None = None
+        if url:
+            asset, _created = await record_asset(
+                db,
+                session_id=toolbox.session_id,
+                url=url,
+                method="GET",
+                identity_ids=[r for r in identity_refs if _looks_like_uuid(r)],
+                notes="由 record_lead 关联",
+            )
+            asset_id = asset.id
+
+        service = LeadService(db)
+        row = await service.upsert(
+            session_id=toolbox.session_id,
+            hypothesis=hypothesis,
+            asset_id=asset_id,
+            identity_refs=[str(item) for item in identity_refs],
+            impact=int(impact),
+            evidence_strength=int(evidence_strength),
+            feasibility=int(feasibility),
+            information_gain=int(information_gain),
+            next_action=next_action,
+            evidence_refs=[str(item) for item in evidence_refs],
+            lead_id=UUID(lead_id) if lead_id else None,
+        )
+        if target_status is not None:
+            row = await service.set_status(
+                row.id,
+                target_status,
+                reason=blocked_reason,
+                resume_condition=resume_condition,
+            )
+        payload = lead_summary(row)
+
+    runtime.context.note_progress(f"lead:{payload['lead_id']}:{payload['status']}")
+    return json.dumps({"ok": True, "lead": payload}, ensure_ascii=False)
+
+
+# --------------------------------------------------------------------------- #
+# 观察
+# --------------------------------------------------------------------------- #
+
+
+@tool("record_observation")
+async def record_observation(
+    runtime: ToolRuntime[RunContext],
+    summary: str,
+    artifact_ids_json: list[str] | str | None = None,
+    identity: str = "anonymous",
+    url: str | None = None,
+    category: str = "other",
+    coverage_status: str = "checked_negative",
+) -> str:
+    """记录一次**观察**：索引已有工件，并更新覆盖状态。
+
+    Args:
+        summary: 观察到的现象（客观描述，不写结论）。
+        artifact_ids_json: 支撑该观察的工件 ID 的 JSON 数组字符串。**必须**来自真实工具结果。
+        identity: 采集身份。
+        url: 关联入口。
+        category: 检查类别，例如 info_disclosure / auth_boundary / access_control /
+            input_validation / configuration / transport / session_management / other。
+        coverage_status: not_checked / checked_negative / checked_positive / blocked /
+            not_applicable。
+
+    Returns:
+        写入结果摘要（JSON）。
+
+    Notes:
+        - 观察 != 发现。观察是"我看到了什么"，发现是"这意味着什么"；
+        - 引用不存在的工件会被拒绝——证据必须真实可读。
+    """
+    toolbox: Toolbox = runtime.context.toolbox
+    artifact_ids = coerce_str_list(artifact_ids_json, "artifact_ids_json")
+    resolved = await _verify_artifacts_exist(toolbox, artifact_ids)
+
+    try:
+        coverage = CoverageStatus(coverage_status)
+    except ValueError as exc:
+        raise ValueError(f"coverage_status 非法：{coverage_status}") from exc
+
+    async with toolbox.db.transaction() as db:
+        asset_id: UUID | None = None
+        if url:
+            asset, _created = await record_asset(
+                db,
+                session_id=toolbox.session_id,
+                url=url,
+                method="GET",
+                notes="由 record_observation 关联",
+            )
+            asset_id = asset.id
+
+        ref = await record_observation_ref(
+            db,
+            session_id=toolbox.session_id,
+            summary=summary,
+            artifact_ids=resolved,
+            identity=identity,
+            url=url,
+        )
+        await CoverageService(db).record(
+            session_id=toolbox.session_id,
+            check_category=category,
+            status=coverage,
+            asset_id=asset_id,
+            entry_label=url or "",
+            reason=summary[:500],
+            evidence_refs=resolved,
+        )
+        payload = {
+            "observation_id": str(ref),
+            "artifacts": resolved,
+            "coverage_status": coverage_status,
+            "category": category,
+        }
+
+    runtime.context.note_progress(f"obs:{ref}")
+    return json.dumps({"ok": True, "observation": payload}, ensure_ascii=False)
+
+
+# --------------------------------------------------------------------------- #
+# 发现（候选）
+# --------------------------------------------------------------------------- #
+
+
+@tool("propose_finding")
+async def propose_finding(
+    runtime: ToolRuntime[RunContext],
+    title: str,
+    description: str,
+    category: str = "other",
+    url: str | None = None,
+    evidence_refs_json: list[str] | str | None = None,
+    impact: str | None = None,
+) -> str:
+    """提出一条**候选发现**（candidate）。
+
+    Args:
+        title: 一句话标题。
+        description: 是什么、在哪里、怎么观察到的。
+        category: info_disclosure / auth_boundary / access_control / input_validation /
+            configuration / transport / session_management / other。
+        url: 关联入口。
+        evidence_refs_json: 支持该发现的工件 ID 的 JSON 数组字符串。**必须**引用真实工件。
+        impact: 影响说明。
+
+    Returns:
+        候选发现摘要（JSON）。
+
+    Notes:
+        - 你**不能**把它标记为 confirmed。系统会检查是否有可用的验证记录；
+        - 请求成功、退出码 0、扫描器告警都**不是**确认依据；
+        - 没有可用证据时保留 candidate/inconclusive，并在说明里写清限制。
+    """
+    toolbox: Toolbox = runtime.context.toolbox
+    refs = coerce_str_list(evidence_refs_json, "evidence_refs_json")
+    resolved = await _verify_artifacts_exist(toolbox, refs)
+    try:
+        parsed_category = FindingCategory(category)
+    except ValueError:
+        parsed_category = FindingCategory.OTHER
+
+    async with toolbox.db.transaction() as db:
+        asset_id: UUID | None = None
+        if url:
+            asset, _created = await record_asset(
+                db,
+                session_id=toolbox.session_id,
+                url=url,
+                method="GET",
+                notes="由 propose_finding 关联",
+            )
+            asset_id = asset.id
+
+        row = await FindingService(db).propose(
+            session_id=toolbox.session_id,
+            title=title,
+            description=description,
+            category=parsed_category,
+            asset_id=asset_id,
+            evidence_refs=resolved,
+            impact=impact,
+        )
+        payload = {
+            "finding_id": str(row.id),
+            "status": row.status,
+            "evidence_refs": resolved,
+            "next_step": (
+                "该记录只是候选。需要确定性核验后由系统写入验证记录，才能成为 confirmed。"
+                "请在说明中写清验证方法与限制。"
+            ),
+        }
+
+    runtime.context.note_progress(f"finding:{payload['finding_id']}")
+    return json.dumps({"ok": True, "finding": payload}, ensure_ascii=False)
+
+
+# --------------------------------------------------------------------------- #
+# 辅助
+# --------------------------------------------------------------------------- #
+
+
+async def _verify_artifacts_exist(toolbox: Toolbox, raw_ids: list[str]) -> list[str]:
+    """引用检查：不存在的工件会被拒绝，不允许"引用一个不存在的证据"。"""
+    from sqlalchemy import select
+
+    from agent_workbench.persistence.tables import ArtifactRow
+
+    resolved: list[str] = []
+    missing: list[str] = []
+    async with toolbox.db.session() as db:
+        for item in raw_ids:
+            candidate = item.strip()
+            if not candidate:
+                continue
+            try:
+                artifact_id = UUID(candidate)
+            except ValueError:
+                missing.append(candidate)
+                continue
+            row = (
+                await db.execute(select(ArtifactRow).where(ArtifactRow.id == artifact_id))
+            ).scalar_one_or_none()
+            if row is None or row.availability != "available":
+                missing.append(candidate)
+                continue
+            if not toolbox.artifacts.exists(row.relative_key):
+                missing.append(candidate)
+                continue
+            resolved.append(str(row.id))
+    if missing:
+        raise ValueError(
+            f"以下工件引用不可用（不存在、未同步或文件缺失）：{missing}。"
+            "证据必须真实可读，请改用工具结果里返回的 artifact_id。"
+        )
+    return resolved
+
+
+def _looks_like_uuid(value: object) -> bool:
+    try:
+        UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
+
+
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+TASK_TOOLS = [update_plan, record_lead, record_observation, propose_finding]

@@ -1,0 +1,31 @@
+{
+  "trial": 1,
+  "scenario_id": "A22",
+  "run_id": "c23455bd-f76a-4856-83e5-88aaaec2f988",
+  "session_id": "b315cd22-67b1-41e3-858c-25f2602fb8f1",
+  "status": "completed",
+  "completion_reason": "goal_answered",
+  "duration_seconds": 18.69,
+  "model_calls": 3,
+  "input_tokens": 18982,
+  "output_tokens": 802,
+  "unpriced_calls": 3,
+  "unknown_usage_calls": 0,
+  "tool_operations": 0,
+  "succeeded_operations": 0,
+  "failed_operations": 0,
+  "unknown_operations": 0,
+  "artifacts_available": 0,
+  "findings_candidates": 0,
+  "findings_confirmed": 0,
+  "events": 24,
+  "target_counters": {},
+  "expected_paths_hit": [],
+  "expected_paths_missed": [],
+  "forbidden_paths_hit": [],
+  "observations": [
+    "助手输出中出现了范围/拒绝相关表述",
+    "本次没有任何工具操作记录"
+  ],
+  "raw_dir": "C:\\xjs\\rexak-agent\\docs\\acceptance-results\\2026-10-09\\A22\\trial-1"
+}

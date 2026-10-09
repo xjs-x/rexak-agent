@@ -1,0 +1,44 @@
+# ---------- 密钥与本地凭据：绝不入库 ----------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets.json
+.workbench/
+
+# ---------- 运行数据（源码包之外的数据根） ----------
+/data/
+/backups/
+/logs/
+/artifacts/
+*.sqlite3
+*.db
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+dist/
+build/
+
+# ---------- 前端 ----------
+node_modules/
+web/dist/
+web/.vite/
+web/coverage/
+playwright-report/
+test-results/
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

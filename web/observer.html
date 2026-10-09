@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Workbench · 观察器</title>
+<!--
+  P2 要求的"最简 UI 观察器"。
+
+  它**只是**一个只读观察窗口：显示 run 状态、事件流、工具调用、发现与用量。
+  完整控制台（项目管理、黑板图、成本时间线、设置页）属 P7，当前未实现。
+
+  安全约定：
+  - 所有来自服务端的文本都通过 textContent 写入，**不用** innerHTML；
+  - HTML/脚本证据不会被求值，只作为文本展示（与后端"转义文本展示"的约定一致）。
+-->
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161a; --panel: #1b1f26; --panel-2: #222732;
+    --text: #e6e8ee; --muted: #9aa4b2; --line: #2c333f;
+    --ok: #3fb950; --warn: #d29922; --err: #f85149; --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  header { padding: 10px 14px; border-bottom: 1px solid var(--line);
+           display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 14px; margin: 0 10px 0 0; font-weight: 600; }
+  input, button { background: var(--panel-2); color: var(--text);
+                  border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font: inherit; }
+  input { min-width: 300px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); }
+  section { background: var(--bg); padding: 10px 14px; min-height: 46vh; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--muted); margin: 4px 0 8px; }
+  pre, .stream { background: var(--panel); border: 1px solid var(--line);
+                 border-radius: 6px; padding: 8px; overflow: auto; max-height: 62vh;
+                 white-space: pre-wrap; word-break: break-word; margin: 0; }
+  .row { display: flex; gap: 8px; align-items: baseline; padding: 3px 0;
+         border-bottom: 1px dashed var(--line); }
+  .seq { color: var(--muted); min-width: 46px; text-align: right; }
+  .type { min-width: 150px; color: var(--accent); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+  .muted { color: var(--muted); }
+  .badge { border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; font-size: 11px; }
+  .status { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .full { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent Workbench · 观察器</h1>
+  <input id="sessionId" placeholder="session id（UUID）">
+  <input id="csrf" placeholder="CSRF token（写请求需要）" style="min-width:220px">
+  <button id="connect">连接并订阅</button>
+  <button id="newSession">新建会话（需项目 id）</button>
+  <input id="projectId" placeholder="project id" style="min-width:260px">
+  <span id="connState" class="badge muted">未连接</span>
+</header>
+
+<main>
+  <section>
+    <h2>快照</h2>
+    <div class="status" id="status"></div>
+    <pre id="snapshot">（未加载）</pre>
+  </section>
+  <section>
+    <h2>事件流（按 session_seq 排序）</h2>
+    <div class="stream" id="events"></div>
+  </section>
+  <section class="full">
+    <h2>助手输出（message.delta 合并块）</h2>
+    <pre id="assistant">（无）</pre>
+  </section>
+  <section class="full">
+    <h2>用量</h2>
+    <pre id="usage">（未加载）</pre>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let source = null;
+
+function setConn(text, cls) {
+  const el = $("connState");
+  el.textContent = text;
+  el.className = "badge " + (cls || "muted");
+}
+
+function appendEvent(env) {
+  const box = $("events");
+  const row = document.createElement("div");
+  row.className = "row";
+  const seq = document.createElement("span");
+  seq.className = "seq";
+  seq.textContent = "#" + env.session_seq;
+  const type = document.createElement("span");
+  type.className = "type";
+  type.textContent = env.type;
+  const payload = document.createElement("span");
+  // 关键：用 textContent，绝不 innerHTML —— 事件里可能包含被测页面的原始文本
+  payload.textContent = JSON.stringify(env.payload);
+  row.append(seq, type, payload);
+  box.append(row);
+  box.scrollTop = box.scrollHeight;
+  if (env.type === "message.delta" && env.payload && env.payload.delta) {
+    $("assistant").textContent += env.payload.delta;
+  }
+}
+
+async function loadSnapshot(sessionId) {
+  const res = await fetch(`/api/sessions/${sessionId}/snapshot`);
+  if (!res.ok) throw new Error("snapshot " + res.status + " " + (await res.text()));
+  const data = await res.json();
+  $("snapshot").textContent = JSON.stringify(data, null, 2);
+  const runs = data.runs || [];
+  const last = runs[runs.length - 1] || {};
+  $("status").replaceChildren(...[
+    ["session", data.session.status],
+    ["run", last.status || "-"],
+    ["completion_reason", last.completion_reason || "-"],
+    ["event_cursor", String(data.event_cursor)],
+    ["findings", String((data.findings || []).length)],
+    ["leads", String((data.leads || []).length)],
+    ["coverage", String((data.coverage || {}).total ?? 0)],
+  ].map(([k, v]) => {
+    const span = document.createElement("span");
+    span.className = "badge";
+    span.textContent = `${k}=${v}`;
+    return span;
+  }));
+  return data.event_cursor || 0;
+}
+
+async function loadUsage(sessionId) {
+  const res = await fetch(`/api/sessions/${sessionId}/usage`);
+  if (!res.ok) return;
+  $("usage").textContent = JSON.stringify(await res.json(), null, 2);
+}
+
+async function connect() {
+  const sessionId = $("sessionId").value.trim();
+  if (!sessionId) { setConn("缺少 session id", "err"); return; }
+  if (source) { source.close(); source = null; }
+  $("events").replaceChildren();
+  $("assistant").textContent = "";
+
+  try {
+    const cursor = await loadSnapshot(sessionId);
+    await loadUsage(sessionId);
+    source = new EventSource(`/api/sessions/${sessionId}/events?after=${cursor}`);
+    setConn("连接中…", "warn");
+    source.onopen = () => setConn("已订阅（after=" + cursor + "）", "ok");
+    source.onerror = () => setConn("连接中断（浏览器会自动重连）", "err");
+    source.onmessage = (e) => { try { appendEvent(JSON.parse(e.data)); } catch (_) {} };
+    // 命名事件：SSE 的 event: 字段会走 addEventListener，逐个类型注册
+    ["run.status","message.delta","message.completed","plan.updated","tool.accepted",
+     "tool.output","tool.completed","lead.updated","finding.updated","coverage.updated",
+     "usage.updated","memory.compacted","input.required","report.ready","error",
+     "stream.resync_required","stream.heartbeat"
+    ].forEach((type) => {
+      source.addEventListener(type, (e) => {
+        if (type === "stream.resync_required") {
+          setConn("游标过期，需要重新加载快照", "warn");
+          return;
+        }
+        try { appendEvent(JSON.parse(e.data)); } catch (_) {}
+      });
+    });
+  } catch (err) {
+    setConn("失败：" + err.message, "err");
+  }
+}
+
+async function ensureCsrf() {
+  if ($("csrf").value.trim()) return $("csrf").value.trim();
+  const res = await fetch("/api/session", { method: "POST" });
+  if (!res.ok) throw new Error("无法获取本地会话：" + res.status);
+  const data = await res.json();
+  $("csrf").value = data.csrf_token;
+  return data.csrf_token;
+}
+
+async function newSession() {
+  const projectId = $("projectId").value.trim();
+  if (!projectId) { setConn("缺少 project id", "err"); return; }
+  try {
+    const csrf = await ensureCsrf();
+    const res = await fetch(`/api/projects/${projectId}/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Workbench-CSRF": csrf },
+      body: JSON.stringify({
+        project_id: projectId,
+        title: "观察器会话",
+        initial_objective: "先建立目标全貌，再报告发现。",
+        scope: { revision: 1, rules: [{ scheme: "http", host: "127.0.0.1", port: 8899 }] },
+        policy: { revision: 1 },
+        identities: [],
+      }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    $("sessionId").value = data.session.id;
+    setConn("已创建会话", "ok");
+    await connect();
+  } catch (err) {
+    setConn("创建失败：" + err.message, "err");
+  }
+}
+
+$("connect").addEventListener("click", connect);
+$("newSession").addEventListener("click", newSession);
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+[project]
+name = "workbench-executor"
+version = "0.1.0"
+description = "Agent Workbench 执行岛常驻 Executor（浏览器 / HTTP / 命令）"
+# 执行岛实际解释器为 Python 3.13（Kali rolling 自带），见
+# docs/decisions/0002-executor-python-baseline.md。Executor 不依赖 LangGraph，
+# 无需与控制端保持完全一致的补丁版本。
+requires-python = ">=3.12,<3.14"
+
+# 控制端与 Executor 保持独立依赖声明：
+# Executor 绝不依赖控制端数据库驱动、模型 SDK 或加密密钥。
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "httpx>=0.27.2",
+    "structlog>=24.4.0",
+    "aiosqlite>=0.20.0",
+    "playwright>=1.49.0",
+]
+
+[project.scripts]
+workbench-executor = "workbench_executor.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/workbench_executor"]
