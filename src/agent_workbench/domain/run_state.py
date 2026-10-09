@@ -48,7 +48,14 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
         }
     ),
     RunStatus.WAITING_TOOL: frozenset(
-        {RunStatus.RUNNING, RunStatus.PAUSING, RunStatus.CANCELLING, RunStatus.FAILED}
+        {
+            # 后台任务到终态后由唤醒器重新排队（而不是继续用同一个 run 空转）
+            RunStatus.QUEUED,
+            RunStatus.RUNNING,
+            RunStatus.PAUSING,
+            RunStatus.CANCELLING,
+            RunStatus.FAILED,
+        }
     ),
     RunStatus.WAITING_USER: frozenset(
         {RunStatus.RUNNING, RunStatus.PAUSING, RunStatus.CANCELLING, RunStatus.FAILED}

@@ -46,12 +46,34 @@ Web/API 自主黑盒测试工作台。设计基线在 `C:/xjs/xak-agent-rebuild-
 - `alembic.ini` 必须纯 ASCII（Alembic 用 locale 编码读它，中文会直接崩）。
 - Windows 上 psycopg 异步必须用 `SelectorEventLoop`：
   入口统一调 `platform_compat.configure_event_loop_policy()`。
+  **注意 uvicorn 的 `Server.run()` 会把策略改回 Proactor** —— API 必须程序化启动
+  （`asyncio.run(server.serve())`），不能直接 `uvicorn.run(...)`。
+- **子进程必须固定 UTF-8**：用 `platform_compat.child_process_env()`。
+  否则 cp936 控制台下子进程写 GBK、父进程按 UTF-8 解码，异常会被 `subprocess`
+  在读线程里吞掉，表现为莫名其妙的 `proc.stdout is None`。
+- **`uv run pytest` ≠ `python -m pytest`**：console script 不把 CWD 放进 `sys.path`，
+  所以 `from tests...` 只在后者可用。验收命令是 `uv run pytest`，别只用后者自测。
+- `EventType` 在 `contracts.events`，**不在** `contracts.enums`（有 AST 回归测试）。
+  另外 `EventRow.type` 是 str，和枚举比较要用 `str(...) == str(...)`，不能用 `is`。
 - `AgentMiddleware.name` 是 property，子类**不能**用类属性覆盖。
 - `SummarizationMiddleware` 的 `fraction` 触发要求模型 profile；
   用 `ProviderProfile.input_budget_tokens` 算绝对 token 数传给 `("tokens", N)`。
 - `tools/__init__.py` 保持不导出，避免
   `agent.context → tools.runtime → tools/__init__ → tools.http → agent.context` 循环。
 - 工件内容寻址：写测试时相同内容会命中同一 sha256 行，用唯一内容避免误判。
+- **控制版本检查要比较"两个不同时刻"的值**：一个在模型请求前固定、一个在派发前读。
+  拿当前值比当前值等于没检查。
+- **恢复必须先核对远端、再决定是否续跑**；"没查到"不等于"没有副作用"。
+- **状态迁移要走 `set_run_status`**，不要直接改 `run.status`；否则
+  `ALLOWED_TRANSITIONS` 就不是真源（`recovering -> queued` 曾因此漏掉）。
+- 改代码不要用"按行号切片替换"的脚本 —— 曾误伤另一个分支的循环块。
+  优先用精确字符串匹配的编辑。
+
+## 真实演练（不是可选）
+
+`scripts/restart_drill.py` 这类"真实进程 + 真实远端 + 真实时序"的验证
+抓到了单元测试抓不到的缺陷：本轮 7 个修复里 **4 个**来自演练
+（404 崩溃、单 job 异常中断、核对串行过慢、stale 判定口径不符）。
 
 ## 常用命令
 

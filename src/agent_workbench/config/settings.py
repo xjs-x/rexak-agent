@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     run_lease_seconds: int = 60
     lease_heartbeat_seconds: int = 15
     segment_step_threshold: int = 40
+    #: 后台任务唤醒巡检间隔。等待期间**不调用模型**，只按这个间隔核对远端状态。
+    #: 这是资源初值，不是任务总时长限制。
+    job_wakeup_interval_seconds: float = 3.0
 
     # ---------- 保留与上限 ----------
     event_retention_days: int = 30

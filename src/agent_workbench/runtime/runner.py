@@ -170,12 +170,22 @@ class AgentRunner:
 
             from agent_workbench.persistence.repositories import CommandRepository
 
+            # 去重：`queued` 与 `resumable` 两个分支可能命中同一个 run
+            # （例如刚被唤醒的 run 同时是 queued 又有待消费指令）。
+            # 不去重会让 `step()` 对同一个 run 连续驱动两次。
             candidates: list[RunRow] = []
+            seen: set[UUID] = set()
             for run in list(queued):
+                if run.id in seen:
+                    continue
+                seen.add(run.id)
                 candidates.append(run)
             for run in resumable:
+                if run.id in seen:
+                    continue
                 repo = CommandRepository(session)
                 if await repo.list_pending(run.session_id):
+                    seen.add(run.id)
                     candidates.append(run)
             return candidates[:limit]
 
@@ -221,14 +231,30 @@ class AgentRunner:
         return None
 
     async def serve(self, *, poll_interval: float = 1.0) -> None:
-        """常驻循环。SSE/浏览器断开不影响它。"""
+        """常驻循环。SSE/浏览器断开不影响它。
+
+        每一轮先做一次**后台任务唤醒巡检**，再找一个 run 推进。
+        巡检在"没有等待中的 run"时只是一次廉价查询，不会触碰执行岛；
+        有等待中的 run 时按 `job_wakeup_interval_seconds` 节流。
+        **等待期间不调用模型**（§8.3 "等待工具期间模型空转"）。
+        """
+        from agent_workbench.runtime.jobs import probe_and_wake
+
         await self._db.start()
+        last_probe = 0.0
         try:
             while not self._stopping:
+                outcome = None
                 try:
+                    now = time.monotonic()
+                    if now - last_probe >= self._settings.job_wakeup_interval_seconds:
+                        last_probe = now
+                        wake = await probe_and_wake(self._db, settings=self._settings)
+                        if wake["woken"]:
+                            log.info("jobs_woken", **wake)
                     outcome = await self.step()
                 except Exception as exc:
-                    log.error("runner_step_failed", error=f"{type(exc).__name__}: {exc}")
+                    log.error("runner_loop_failed", error=f"{type(exc).__name__}: {exc}")
                     outcome = None
                 if outcome is None:
                     await asyncio.sleep(poll_interval)
@@ -380,6 +406,30 @@ class AgentRunner:
                         break
                     if await self._segment_should_continue(run):
                         continue
+
+                    # 还有非终态后台任务 -> 进入 waiting_tool 并**返回**，
+                    # 由唤醒器在任务到终态后重新排队。这里绝不继续调模型
+                    # （否则就是"等待工具期间模型空转"，§8.3）。
+                    from agent_workbench.runtime.jobs import pending_jobs_for_run
+
+                    pending = await pending_jobs_for_run(self._db, run.id)
+                    if pending:
+                        status = RunStatus.WAITING_TOOL
+                        detail = (
+                            f"等待 {len(pending)} 个后台任务到达终态；"
+                            "等待期间不调用模型，由任务唤醒器触发续跑。"
+                        )
+                        await self._emit(
+                            run,
+                            EventType.RUN_STATUS,
+                            {
+                                "status": str(RunStatus.WAITING_TOOL),
+                                "pending_jobs": [str(item.job_id) for item in pending],
+                                "note": detail,
+                            },
+                        )
+                        break
+
                     status = RunStatus.WAITING_USER
                     detail = "本片段结束，等待新的输入或事件"
                     break
