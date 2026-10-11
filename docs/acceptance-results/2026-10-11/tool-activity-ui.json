@@ -1,0 +1,27 @@
+{
+  "collapsed_default": "passed",
+  "live_progress": "passed",
+  "details_and_redaction": "passed",
+  "error_display": "passed",
+  "history_after_reload": "passed",
+  "font_darkened": "passed",
+  "multi_level_collapse": "passed",
+  "collapsed_live_updates": "passed",
+  "author_label_removed": "passed",
+  "compact_layout": {
+    "tool_font": 12,
+    "body_font": 15,
+    "title_weight": "400",
+    "row_height": 24,
+    "row_pitch": 24
+  },
+  "mobile_layout": {
+    "width": 354,
+    "content": 354
+  },
+  "model": "scripted",
+  "model_thinking_progress": "passed",
+  "model_timeout_resume_without_false_unknown_job": "passed",
+  "real_model": "not_run",
+  "session_id": "e249c6ae-02f5-48e2-83c3-82d46fbba0b2"
+}

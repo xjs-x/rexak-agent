@@ -19,11 +19,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import subprocess
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
+
+import asyncssh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -40,67 +43,40 @@ TEST_RELATIVE = "executor/tests"
 PIP_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
 
-def _ssh_base(settings) -> list[str]:
-    return [
-        "ssh",
-        "-o",
-        "BatchMode=yes",
-        "-i",
-        str(Path(settings.executor_ssh_key).expanduser()),
-        "-o",
-        f"UserKnownHostsFile={Path(settings.executor_known_hosts).expanduser()}",
-        f"{settings.executor_user}@{settings.executor_host}",
-    ]
-
-
-def _scp_base(settings) -> list[str]:
-    return [
-        "scp",
-        "-q",
-        "-o",
-        "BatchMode=yes",
-        "-i",
-        str(Path(settings.executor_ssh_key).expanduser()),
-        "-o",
-        f"UserKnownHostsFile={Path(settings.executor_known_hosts).expanduser()}",
-    ]
-
-
-def _run_remote_script(command: list[str], script: str) -> subprocess.CompletedProcess[str]:
-    """把一段 shell 脚本喂给远端 bash，并回收输出。
-
-    **为什么用文件 + 二进制 stdin，而不是 `input=` 字符串**：
-    Windows 上 `subprocess` 在 text 模式下会把输入里的 `\\n` 翻译成 `\\r\\n`，
-    远端 bash 会看到 `set -e\\r` 而报 `set: -\\r: 无效的选项`
-    （第一次跑本脚本时就踩到了，报错信息完全看不出真正原因）。
-    用二进制流 + 写入 LF 字节，才能保证远端拿到的是干净的 LF 脚本。
-    """
-    with tempfile.NamedTemporaryFile("wb", suffix=".sh", delete=False) as handle:
-        handle.write(script.replace("\r\n", "\n").encode("utf-8"))
-        script_path = Path(handle.name)
+async def _remote_exec(settings, command: str, data: bytes) -> subprocess.CompletedProcess[str]:
+    """使用与正式隧道相同的 AsyncSSH 凭据，不依赖 Windows scp 的 ACL 判定。"""
+    key = Path(settings.executor_ssh_key).expanduser()
+    known_hosts = Path(settings.executor_known_hosts).expanduser()
+    connection = await asyncssh.connect(
+        settings.executor_host,
+        port=settings.executor_port,
+        username=settings.executor_user,
+        client_keys=[str(key)],
+        known_hosts=str(known_hosts) if known_hosts.exists() else None,
+        connect_timeout=15,
+    )
     try:
-        with script_path.open("rb") as stdin:
-            return subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdin=stdin,
-                check=False,
-            )
+        result = await connection.run(command, input=data, encoding=None, check=False)
+        stdout = result.stdout or b""
+        stderr = result.stderr or b""
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=int(result.exit_status or 0),
+            stdout=(stdout if isinstance(stdout, bytes) else stdout.encode()).decode(
+                "utf-8", errors="replace"
+            ),
+            stderr=(stderr if isinstance(stderr, bytes) else stderr.encode()).decode(
+                "utf-8", errors="replace"
+            ),
+        )
     finally:
-        script_path.unlink(missing_ok=True)
+        connection.close()
+        await connection.wait_closed()
 
 
-def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
+def _run_remote_script(settings, script: str) -> subprocess.CompletedProcess[str]:
+    return asyncio.run(
+        _remote_exec(settings, "bash -s", script.replace("\r\n", "\n").encode("utf-8"))
     )
 
 
@@ -115,15 +91,13 @@ def main() -> int:
         print(f"找不到测试文件：{test_file}")
         return 2
 
-    remote_home = f"{settings.executor_user}@{settings.executor_host}"
-
     print(f"== 目标执行岛：{settings.executor_host}（{settings.executor_id}）==")
 
     # 1) 确保目录与 pytest
     if not args.skip_install:
         print("== 1) 确认执行岛上有 pytest ==")
         install = _run_remote_script(
-            [*_ssh_base(settings), "bash -s"],
+            settings,
             script=(
                 "set -euo pipefail\n"
                 f"cd {REMOTE_ROOT}\n"
@@ -153,12 +127,21 @@ def main() -> int:
                 arcname="executor/src/workbench_executor",
             )
             tar.add(REPO_ROOT / "executor" / "pyproject.toml", arcname="executor/pyproject.toml")
-        copy = _run([*_scp_base(settings), str(archive), f"{remote_home}:/tmp/executor-src.tar.gz"])
+            # fixture 目标也一起同步：浏览器用例依赖它新增的登录/表单页面。
+            # 注意目标进程加载的是仓库根的 `target_app.py`（见 start-target.sh），
+            # 不是 `evals/fixtures/` 下的那份 —— 只同步后者等于没同步。
+            fixtures = REPO_ROOT / "evals" / "fixtures"
+            if fixtures.exists():
+                tar.add(fixtures, arcname="evals/fixtures")
+                tar.add(fixtures / "target_app.py", arcname="target_app.py")
+        copy = asyncio.run(
+            _remote_exec(settings, "cat > /tmp/executor-src.tar.gz", archive.read_bytes())
+        )
         if copy.returncode != 0:
             print("同步失败：\n" + (copy.stderr or copy.stdout))
             return 1
         unpack = _run_remote_script(
-            [*_ssh_base(settings), "bash -s"],
+            settings,
             script=(
                 "set -euo pipefail\n"
                 f"cd {REMOTE_ROOT}\n"
@@ -166,6 +149,21 @@ def main() -> int:
                 "rm -f /tmp/executor-src.tar.gz\n"
                 # 用**可编辑安装**：以后同步源码就立即生效，不必每次重装
                 ".venv/bin/python -m pip install -q --no-deps -e ./executor\n"
+                # 重启目标与 Executor，确保跑的是刚同步的代码（不是旧进程里的）
+                "if [ -x ./stop.sh ]; then ./stop.sh >/dev/null 2>&1 || true; fi\n"
+                "sleep 1\n"
+                "if [ -x ./start.sh ]; then ./start.sh >/dev/null 2>&1 || true; fi\n"
+                # 强制重启目标：start-target.sh 发现 pid 存活会直接退出（不会加载新代码）
+                'if [ -f target.pid ]; then kill "$(cat target.pid)" 2>/dev/null || true; rm -f target.pid; sleep 1; fi\n'
+                "if [ -x ./start-target.sh ]; then ./start-target.sh >/dev/null 2>&1 || true; fi\n"
+                "for i in $(seq 1 20); do\n"
+                "  if curl -s --max-time 3 -o /dev/null http://127.0.0.1:8899/; then break; fi\n"
+                "  sleep 1\n"
+                "done\n"
+                "for i in $(seq 1 20); do\n"
+                "  if curl -s --max-time 3 -o /dev/null http://127.0.0.1:8791/health; then break; fi\n"
+                "  sleep 1\n"
+                "done\n"
                 "echo synced\n"
             ),
         )
@@ -179,7 +177,7 @@ def main() -> int:
     # `set -o pipefail` 是必须的：否则 `pytest ... | tail` 的退出码取的是 tail 的，
     # 测试失败也会被判成成功（第一次跑就出现了这个假绿）。
     result = _run_remote_script(
-        [*_ssh_base(settings), "bash -s"],
+        settings,
         script=(
             "set -euo pipefail\n"
             f"cd {REMOTE_ROOT}\n"
@@ -194,8 +192,8 @@ def main() -> int:
         print("实机验证未通过。")
         return 1
     print(
-        "实机验证通过：进程组控制 / 增量输出 / 取消回收 / PID 身份核对 / "
-        "工作区文件与软链接逃逸防护均已验证。"
+        "实机验证通过：进程组控制、增量输出、取消回收、PID 身份核对、"
+        "工作区文件与软链接边界、浏览器身份会话及 HTTP 范围测试。"
     )
     return 0
 

@@ -16,14 +16,65 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import psycopg
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from psycopg.rows import dict_row
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from agent_workbench.config.settings import Settings, get_settings
+from agent_workbench.config.settings import REPO_ROOT, Settings, get_settings
+from agent_workbench.persistence.connection import connect_postgres
+
+
+class BusinessSchemaMismatchError(RuntimeError):
+    """业务库版本与当前代码不匹配，必须先执行显式迁移。"""
+
+
+def expected_business_revisions(repo_root: Path = REPO_ROOT) -> set[str]:
+    """从实际迁移图读取当前代码的 head，不另维护硬编码版本号。"""
+    cfg = Config(str(repo_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(repo_root / "migrations"))
+    return set(ScriptDirectory.from_config(cfg).get_heads())
+
+
+def assert_business_revisions(installed: set[str], expected: set[str]) -> None:
+    if not expected or installed != expected:
+        raise BusinessSchemaMismatchError(
+            f"业务库 schema 版本不匹配：数据库 {sorted(installed)}，"
+            f"代码 {sorted(expected)}。请先备份，再运行 workbench db-init；"
+            "未完成升级前拒绝启动 API/Runner。"
+        )
+
+
+async def assert_business_schema_current(
+    session: AsyncSession, settings: Settings | None = None
+) -> set[str]:
+    """只读核对 Alembic 版本；不在服务启动时自动修改表。"""
+    cfg = settings or get_settings()
+    table = (
+        await session.execute(
+            text(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = :schema AND table_name = 'alembic_version'"
+            ),
+            {"schema": cfg.app_schema},
+        )
+    ).scalar_one_or_none()
+    installed: set[str] = set()
+    if table is not None:
+        quoted_schema = '"' + cfg.app_schema.replace('"', '""') + '"'
+        installed = set(
+            (await session.execute(text(f"SELECT version_num FROM {quoted_schema}.alembic_version")))
+            .scalars()
+            .all()
+        )
+    expected = expected_business_revisions()
+    assert_business_revisions(installed, expected)
+    return installed
 
 
 def _psycopg_conninfo(database_url: str) -> str:
@@ -33,7 +84,11 @@ def _psycopg_conninfo(database_url: str) -> str:
 
 async def create_schemas(settings: Settings) -> list[str]:
     """创建三个 schema。幂等。"""
-    engine = create_async_engine(settings.database_url, isolation_level="AUTOCOMMIT")
+    engine = create_async_engine(
+        settings.database_url,
+        isolation_level="AUTOCOMMIT",
+        connect_args={"connect_timeout": settings.db_connect_timeout_seconds},
+    )
     created: list[str] = []
     try:
         async with engine.connect() as conn:
@@ -63,9 +118,10 @@ async def create_schemas(settings: Settings) -> list[str]:
 async def open_checkpointer_connection(
     settings: Settings,
 ) -> AsyncIterator[psycopg.AsyncConnection[Any]]:
-    conn = await psycopg.AsyncConnection.connect(
+    conn = await connect_postgres(
         _psycopg_conninfo(settings.database_url),
         autocommit=True,
+        connect_timeout=settings.db_connect_timeout_seconds,
         # psycopg 的 dict_row 类型标注为 TupleRow 族，与运行时行为不符；这是 stub 限制。
         row_factory=dict_row,  # type: ignore[arg-type]
         options=f"-c search_path={settings.checkpoint_schema}",
@@ -78,9 +134,10 @@ async def open_checkpointer_connection(
 
 @contextlib.asynccontextmanager
 async def open_store_connection(settings: Settings) -> AsyncIterator[psycopg.AsyncConnection[Any]]:
-    conn = await psycopg.AsyncConnection.connect(
+    conn = await connect_postgres(
         _psycopg_conninfo(settings.database_url),
         autocommit=True,
+        connect_timeout=settings.db_connect_timeout_seconds,
         # psycopg 的 dict_row 类型标注为 TupleRow 族，与运行时行为不符；这是 stub 限制。
         row_factory=dict_row,  # type: ignore[arg-type]
         options=f"-c search_path={settings.memory_schema}",

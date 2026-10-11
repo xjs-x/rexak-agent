@@ -1,0 +1,2264 @@
+{
+  "schema_version": 1,
+  "experiment_id": "001",
+  "reviewed_at": "2026-10-11T06:00:07.201870+00:00",
+  "source_diagnostic_path": "data\\diagnostics\\568cf7d5-4245-4384-ba21-a386c0095f85\\diagnostic.json",
+  "source_diagnostic_sha256": "fa11d2c80ba9405cc03a2a9368caa1fa69e62654650f7b98918205c2def0ecfa",
+  "scope": "Run-scoped records, current session domain snapshot, latest official checkpoint; user confirms manual-stop review. No live retest.",
+  "run": {
+    "id": "568cf7d5-4245-4384-ba21-a386c0095f85",
+    "session_id": "5d09a441-d37b-4b63-8ad3-97528da4d981",
+    "status": "paused",
+    "completion_reason": null,
+    "objective": "对这个网站进行渗透测试   http://earth.local/",
+    "provider_id": "xiaomi",
+    "model_name": "mimo-v2.6-pro",
+    "code_version": "dev",
+    "prompt_version": "1",
+    "stop_reason": "已停止当前模型等待；发送新指令或点击继续即可恢复",
+    "created_at": "2026-10-11T05:11:59.194864+00:00",
+    "updated_at": "2026-10-11T05:48:45.171564+00:00"
+  },
+  "metrics": {
+    "remote_operations": 35,
+    "tool_activities": 41,
+    "jobs_by_state": {
+      "succeeded": 32,
+      "failed": 3
+    },
+    "tools_by_name": {
+      "update_plan": 2,
+      "http_request": 34,
+      "read_artifact": 2,
+      "list_files": 1,
+      "record_observation": 2
+    },
+    "reported_tokens": {
+      "input_tokens": 761338,
+      "output_tokens": 84005,
+      "reasoning_tokens": 80167,
+      "cache_read_tokens": 217728
+    },
+    "model_usage_statuses": {
+      "reported": 12,
+      "unknown": 1
+    },
+    "domain_counts": {
+      "leads": 0,
+      "findings": 0,
+      "coverage": 2,
+      "verifications": 0
+    },
+    "reports": 0,
+    "observations": 2,
+    "artifact_count": 73,
+    "verified_artifacts": 73,
+    "span_count": 0,
+    "missing_executor_started_at": 35
+  },
+  "model_calls": [
+    {
+      "model_call_id": "77476ff9-2f60-4f56-aa58-e2960600213d",
+      "logical_call_id": "f9f63940-2dae-8c31-e744-da27abfc8c2e",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 8828,
+      "output_tokens": 266,
+      "cache_read_tokens": 8576,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 17,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:12:58.042810+00:00",
+      "first_token_at": "2026-10-11T05:13:00.192031+00:00",
+      "completed_at": "2026-10-11T05:13:07.028959+00:00",
+      "pending_sync": false,
+      "response_artifact_id": "7f2c80cd-11de-44e4-bc90-524cee46c84f",
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "e3deda10-de71-4f84-82ee-6f0d332021e2",
+      "logical_call_id": "87e7c8f3-8c8c-5f25-11ac-063738876ea5",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 13302,
+      "output_tokens": 685,
+      "cache_read_tokens": 8576,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 519,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:13:07.954260+00:00",
+      "first_token_at": "2026-10-11T05:13:21.780998+00:00",
+      "completed_at": "2026-10-11T05:13:24.803261+00:00",
+      "pending_sync": false,
+      "response_artifact_id": "634cb203-bb86-4408-a0b3-612d30301ca3",
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "9bf33da1-0ab4-49e1-b3d2-f5a9e0b0ad61",
+      "logical_call_id": "04284cdd-c777-68ca-adef-a39e5250df95",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 16824,
+      "output_tokens": 338,
+      "cache_read_tokens": 13184,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 223,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:13:25.996767+00:00",
+      "first_token_at": "2026-10-11T05:13:32.608252+00:00",
+      "completed_at": "2026-10-11T05:13:34.239218+00:00",
+      "pending_sync": false,
+      "response_artifact_id": "d480ed5b-e46c-4472-90c5-e1d5fb9799f9",
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "c7ef0c53-5d43-4a0d-85d7-ee1a19d83307",
+      "logical_call_id": "8f78c1fc-ed29-e1c3-6392-c82c28dc0e92",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 23117,
+      "output_tokens": 1795,
+      "cache_read_tokens": 16768,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 1350,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:13:35.829577+00:00",
+      "first_token_at": "2026-10-11T05:14:18.608492+00:00",
+      "completed_at": "2026-10-11T05:14:26.428632+00:00",
+      "pending_sync": false,
+      "response_artifact_id": "ca900551-f969-4f60-b2f9-fbefb3eb83bb",
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "5829c684-458d-4fbe-917e-86ab8adc01e2",
+      "logical_call_id": "643ab005-9fa9-0604-cc0f-dcc4e806cd1e",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 30732,
+      "output_tokens": 4653,
+      "cache_read_tokens": 8576,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 4384,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:14:27.621013+00:00",
+      "first_token_at": "2026-10-11T05:15:48.698137+00:00",
+      "completed_at": "2026-10-11T05:15:51.749915+00:00",
+      "pending_sync": false,
+      "response_artifact_id": "8b288495-1c2c-4033-81e0-ba72ba97ff74",
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "e5b0e361-e126-4d4c-8550-5e482f8c5d16",
+      "logical_call_id": "b98d8dd1-c88f-5b66-c530-2002dacbed6f",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 42004,
+      "output_tokens": 3607,
+      "cache_read_tokens": 30720,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 3083,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:15:53.405889+00:00",
+      "first_token_at": "2026-10-11T05:17:00.964280+00:00",
+      "completed_at": "2026-10-11T05:17:05.603347+00:00",
+      "pending_sync": false,
+      "response_artifact_id": "9be4b288-e778-4907-a93a-972f1313c2e3",
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "ae75effd-a0f2-4533-8255-ec0989682b46",
+      "logical_call_id": "5a131952-0613-a278-36c0-357ed36c33dd",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 55155,
+      "output_tokens": 16851,
+      "cache_read_tokens": 41984,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 16632,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:17:07.924333+00:00",
+      "first_token_at": "2026-10-11T05:23:29.246563+00:00",
+      "completed_at": "2026-10-11T05:23:33.825883+00:00",
+      "pending_sync": false,
+      "response_artifact_id": "dc32a952-a9eb-4bdc-8899-e5ee763cf6e0",
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "28e1a598-4efb-4ce6-8a69-39571f6e0ab3",
+      "logical_call_id": "55a66fce-fab8-daff-5ca7-95a6ac51ebef",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 75670,
+      "output_tokens": 37485,
+      "cache_read_tokens": 55040,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 36498,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:23:35.926908+00:00",
+      "first_token_at": "2026-10-11T05:32:12.873752+00:00",
+      "completed_at": "2026-10-11T05:32:19.317650+00:00",
+      "pending_sync": false,
+      "response_artifact_id": "c3ae1970-22a6-4343-a3b7-18135f53336f",
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "60ff9d2c-802e-4768-aafe-baa16a9379a8",
+      "logical_call_id": "f6db6e33-1929-248e-699f-a140a548a4b1",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 116894,
+      "output_tokens": 8873,
+      "cache_read_tokens": 8576,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 8592,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:33:01.041358+00:00",
+      "first_token_at": "2026-10-11T05:35:43.915968+00:00",
+      "completed_at": "2026-10-11T05:35:48.644114+00:00",
+      "pending_sync": false,
+      "response_artifact_id": "0d739748-37fa-4b2e-b6c1-2af7035af8c6",
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "50e29574-a8a0-4423-a6a0-625dd31278e9",
+      "logical_call_id": "069b8cec-701f-43a4-c51a-0f9de01954a3",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 123286,
+      "output_tokens": 296,
+      "cache_read_tokens": 8576,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 71,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:37:17.503446+00:00",
+      "first_token_at": "2026-10-11T05:37:30.130179+00:00",
+      "completed_at": "2026-10-11T05:37:33.032328+00:00",
+      "pending_sync": false,
+      "response_artifact_id": "f5afcaed-fa24-4f90-bf71-71dc3e54ac29",
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "78f28f59-d564-4ac1-be38-9352a5ab013b",
+      "logical_call_id": "4bc99e77-c7fc-8d3c-4a64-a675101092e2",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 121449,
+      "output_tokens": 5556,
+      "cache_read_tokens": 8576,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 5365,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:39:43.345168+00:00",
+      "first_token_at": "2026-10-11T05:41:22.064215+00:00",
+      "completed_at": "2026-10-11T05:41:24.888072+00:00",
+      "pending_sync": false,
+      "response_artifact_id": "4c4d1b97-8e64-4a39-8d37-7e0c684ea7fd",
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "89d60799-8d51-4814-900c-bd5c777b47ce",
+      "logical_call_id": "42521bca-9bc6-3741-9082-948cdfec8a40",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "reported",
+      "cost_status": "unpriced",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": 134077,
+      "output_tokens": 3600,
+      "cache_read_tokens": 8576,
+      "cache_write_tokens": null,
+      "reasoning_tokens": 3433,
+      "attempts_observable": true,
+      "error_code": null,
+      "submitted_at": "2026-10-11T05:42:30.488287+00:00",
+      "first_token_at": "2026-10-11T05:43:59.325648+00:00",
+      "completed_at": "2026-10-11T05:44:01.164621+00:00",
+      "pending_sync": false,
+      "response_artifact_id": null,
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    },
+    {
+      "model_call_id": "1b91c75f-0591-44d2-a26e-a364333b3604",
+      "logical_call_id": "edae7387-5095-90de-dbb5-7d74bd64a4f0",
+      "retry_index": 0,
+      "phase": "model_complete",
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "usage_status": "unknown",
+      "cost_status": "unknown",
+      "cost_amount": null,
+      "cost_currency": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_read_tokens": null,
+      "cache_write_tokens": null,
+      "reasoning_tokens": null,
+      "attempts_observable": true,
+      "error_code": "CancelledError",
+      "submitted_at": "2026-10-11T05:45:31.146781+00:00",
+      "first_token_at": null,
+      "completed_at": "2026-10-11T05:48:45.122960+00:00",
+      "pending_sync": false,
+      "response_artifact_id": null,
+      "price_snapshot": {
+        "model_name": "mimo-v2.6-pro",
+        "provider_id": "xiaomi",
+        "catalog_version": "2026-10-08.1"
+      }
+    }
+  ],
+  "tool_activities": [
+    {
+      "accepted_seq": 8,
+      "completed_seq": 10,
+      "at": "2026-10-11T05:13:07.130389+00:00",
+      "tool_call_id": "call_9c29e8dd42e14081bc98c41e",
+      "tool_name": "update_plan",
+      "operation_id": null,
+      "method": null,
+      "path": null,
+      "port": null,
+      "status": "completed",
+      "status_code": null,
+      "error_code": null,
+      "artifact_ids": [],
+      "control_duration_seconds": 0.031213
+    },
+    {
+      "accepted_seq": 9,
+      "completed_seq": 12,
+      "at": "2026-10-11T05:13:07.917906+00:00",
+      "tool_call_id": "call_0a985378df634dcf92819ef1",
+      "tool_name": "http_request",
+      "operation_id": "0244cedf-918f-488a-bfcb-1a20cde3fd39",
+      "method": "GET",
+      "path": "/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "163904ee-776b-4a43-a3dd-733f620bfbf9",
+        "57ef55e0-96d7-448a-9105-257e77cc0ab4"
+      ],
+      "control_duration_seconds": 0.818194
+    },
+    {
+      "accepted_seq": 24,
+      "completed_seq": 27,
+      "at": "2026-10-11T05:13:24.911700+00:00",
+      "tool_call_id": "call_00456d6abcf4459b92d9366b",
+      "tool_name": "read_artifact",
+      "operation_id": "00000000-0000-0000-0000-000000000000",
+      "method": null,
+      "path": null,
+      "port": null,
+      "status": "succeeded",
+      "status_code": null,
+      "error_code": null,
+      "artifact_ids": [],
+      "control_duration_seconds": 0.055423
+    },
+    {
+      "accepted_seq": 26,
+      "completed_seq": 28,
+      "at": "2026-10-11T05:13:25.912067+00:00",
+      "tool_call_id": "call_319de643bfaa4d3a995fbedf",
+      "tool_name": "http_request",
+      "operation_id": "8ef45b9d-9823-436a-8de1-348fc559010e",
+      "method": "GET",
+      "path": "/admin/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "56535f19-4bed-4d2e-9b24-bfa3879c75c4",
+        "acc69f97-21d2-4c15-9bdc-f7298134f506"
+      ],
+      "control_duration_seconds": 1.055241
+    },
+    {
+      "accepted_seq": 25,
+      "completed_seq": 29,
+      "at": "2026-10-11T05:13:25.913256+00:00",
+      "tool_call_id": "call_76001bc7bbc34854a049e33e",
+      "tool_name": "http_request",
+      "operation_id": "e53de24b-dcc2-4c1a-8a36-145e46ef8084",
+      "method": "GET",
+      "path": "/robots.txt",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "01959871-fe48-4c69-8ea5-711e3b03815a",
+        "4ed3d204-de29-4091-a167-4ee449f2fdd1"
+      ],
+      "control_duration_seconds": 1.056979
+    },
+    {
+      "accepted_seq": 37,
+      "completed_seq": 40,
+      "at": "2026-10-11T05:13:35.177377+00:00",
+      "tool_call_id": "call_e28f29f0f52b452bae09a75d",
+      "tool_name": "http_request",
+      "operation_id": "e10f84b4-149d-4019-b5ba-3dba92d15d10",
+      "method": "GET",
+      "path": "/admin/login",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "3c085a59-e6da-466f-9013-42dfbc972a5c",
+        "94e215f5-f954-405c-9c24-b800c9ebe6a1"
+      ],
+      "control_duration_seconds": 0.853824
+    },
+    {
+      "accepted_seq": 38,
+      "completed_seq": 41,
+      "at": "2026-10-11T05:13:35.201707+00:00",
+      "tool_call_id": "call_e26e2204a9654af1a4817534",
+      "tool_name": "http_request",
+      "operation_id": "183d7f23-3336-41c4-b013-836784daf04c",
+      "method": "GET",
+      "path": "/static/styles.css",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "ea0f45c0-ed4a-4ff4-884a-5bf677833095",
+        "cd0cdbff-d59d-4317-b3ec-f16ba73bbea4"
+      ],
+      "control_duration_seconds": 0.878154
+    },
+    {
+      "accepted_seq": 39,
+      "completed_seq": 42,
+      "at": "2026-10-11T05:13:35.798906+00:00",
+      "tool_call_id": "call_7c172b04b4544ddc8c02fab7",
+      "tool_name": "http_request",
+      "operation_id": "9422a6af-7f4c-4317-9519-9ed02a4e5e83",
+      "method": "OPTIONS",
+      "path": "/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "a42d52bd-e780-4d89-90d9-b0a73f0c6617",
+        "2aaa91ea-c9cc-4433-a471-32bed536999d"
+      ],
+      "control_duration_seconds": 1.474342
+    },
+    {
+      "accepted_seq": 54,
+      "completed_seq": 58,
+      "at": "2026-10-11T05:14:26.521836+00:00",
+      "tool_call_id": "call_10574463255847e795fe5de5",
+      "tool_name": "update_plan",
+      "operation_id": null,
+      "method": null,
+      "path": null,
+      "port": null,
+      "status": "completed",
+      "status_code": null,
+      "error_code": null,
+      "artifact_ids": [],
+      "control_duration_seconds": 0.028321
+    },
+    {
+      "accepted_seq": 55,
+      "completed_seq": 60,
+      "at": "2026-10-11T05:14:27.478116+00:00",
+      "tool_call_id": "call_3eedfddff30b4333a7a62a46",
+      "tool_name": "http_request",
+      "operation_id": "c77c45f7-2b6b-43ed-86fe-19d7fac336c8",
+      "method": "POST",
+      "path": "/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "8efd5a32-3893-47e3-8a69-26bbe81dd24e",
+        "a648bfc4-d49f-46d2-999a-f4de50458870"
+      ],
+      "control_duration_seconds": 0.984086
+    },
+    {
+      "accepted_seq": 56,
+      "completed_seq": 61,
+      "at": "2026-10-11T05:14:27.485608+00:00",
+      "tool_call_id": "call_4383660008c845d2973738e1",
+      "tool_name": "http_request",
+      "operation_id": "cbdb1706-36b5-4d7c-99a7-736ee1a22cef",
+      "method": "GET",
+      "path": "/admin/cmd",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "4bdf0523-5d90-41a1-af82-e8640dabf218",
+        "c17c45c9-d5bc-4bd1-b1d6-76a360f31847"
+      ],
+      "control_duration_seconds": 0.991049
+    },
+    {
+      "accepted_seq": 57,
+      "completed_seq": 62,
+      "at": "2026-10-11T05:14:27.584489+00:00",
+      "tool_call_id": "call_b0cf41c3f7cd44a18f56706b",
+      "tool_name": "http_request",
+      "operation_id": "62f0bf6b-c667-4370-8797-6de26291175a",
+      "method": "GET",
+      "path": "/admin/dashboard",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "c2458a3b-83f6-4968-b122-04a1cbd65706",
+        "e211ef2a-04a5-4278-8ec1-bdfbe022b003"
+      ],
+      "control_duration_seconds": 1.08993
+    },
+    {
+      "accepted_seq": 77,
+      "completed_seq": 80,
+      "at": "2026-10-11T05:15:52.822611+00:00",
+      "tool_call_id": "call_3fc090df64664cb696437408",
+      "tool_name": "http_request",
+      "operation_id": "3e5bdd1b-a170-4952-a10f-a5605f6655fb",
+      "method": "GET",
+      "path": "/admin/command",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "8ab7f7b9-3be3-47b3-b980-ca3b58aab50c",
+        "d1fb8e94-6da6-40d7-bb86-1c48cca02869"
+      ],
+      "control_duration_seconds": 1.012714
+    },
+    {
+      "accepted_seq": 76,
+      "completed_seq": 81,
+      "at": "2026-10-11T05:15:52.832702+00:00",
+      "tool_call_id": "call_205d315037f24ee3b725ccf0",
+      "tool_name": "http_request",
+      "operation_id": "298afac3-4ebe-44bc-81ff-fb27d25c7ed3",
+      "method": "POST",
+      "path": "/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "a1b7f6f4-0397-47af-a3e4-00b11c605699",
+        "6b7ba1f3-001f-40dc-bccb-28c93778ba89"
+      ],
+      "control_duration_seconds": 1.023338
+    },
+    {
+      "accepted_seq": 78,
+      "completed_seq": 82,
+      "at": "2026-10-11T05:15:52.924526+00:00",
+      "tool_call_id": "call_48c44137e7cc4d3ea69f1fa0",
+      "tool_name": "http_request",
+      "operation_id": "e4e05bcc-3769-4ba4-b7dd-dca9b2866c49",
+      "method": "GET",
+      "path": "/.git/HEAD",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "d99968bd-1ba5-4acd-b3af-046dc787ff3f",
+        "7e160777-690e-44eb-a592-cb2000aa30b6"
+      ],
+      "control_duration_seconds": 1.114629
+    },
+    {
+      "accepted_seq": 79,
+      "completed_seq": 83,
+      "at": "2026-10-11T05:15:53.372749+00:00",
+      "tool_call_id": "call_e79da40442b44b9ca65f5f31",
+      "tool_name": "http_request",
+      "operation_id": "df4f9757-0a38-4608-a49c-509b6ae5903a",
+      "method": "GET",
+      "path": "/admin/exec",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "06b59024-0de5-4244-bb92-a09ca57c7fa7",
+        "a78fb1df-fa3c-4132-8d43-bedba9bcde55"
+      ],
+      "control_duration_seconds": 1.562329
+    },
+    {
+      "accepted_seq": 96,
+      "completed_seq": 99,
+      "at": "2026-10-11T05:17:06.528055+00:00",
+      "tool_call_id": "call_9ede4a7080e745a28a44d471",
+      "tool_name": "http_request",
+      "operation_id": "06b524e9-c815-47c8-9362-7aab8c168265",
+      "method": "POST",
+      "path": "/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 403,
+      "error_code": null,
+      "artifact_ids": [
+        "266530ea-3b29-4e6e-bd1b-5d7c41b092e7",
+        "b4573f4f-9c67-450c-9b85-ca371d230ce6"
+      ],
+      "control_duration_seconds": 0.854991
+    },
+    {
+      "accepted_seq": 97,
+      "completed_seq": 100,
+      "at": "2026-10-11T05:17:07.225100+00:00",
+      "tool_call_id": "call_d11918087d154a48afe5c581",
+      "tool_name": "http_request",
+      "operation_id": "f31c8072-171e-4fc0-b3c6-c33459a2fbdd",
+      "method": "POST",
+      "path": "/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "54309dae-60e3-4d3a-aa90-bc80b9503645",
+        "65e15e6f-4c7c-4e5a-8ddb-7d1c5b7a655c"
+      ],
+      "control_duration_seconds": 1.553111
+    },
+    {
+      "accepted_seq": 98,
+      "completed_seq": 101,
+      "at": "2026-10-11T05:17:07.874280+00:00",
+      "tool_call_id": "call_7f08f6fac2b34f9b92f67d33",
+      "tool_name": "http_request",
+      "operation_id": "a69ffba4-9aef-4654-b4d8-3f455cf3375b",
+      "method": "POST",
+      "path": "/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "7c4d33c0-f901-4672-bf27-defc2133e68e",
+        "fef82a81-c4b9-4131-84cb-74aa4d28cb79"
+      ],
+      "control_duration_seconds": 2.199043
+    },
+    {
+      "accepted_seq": 145,
+      "completed_seq": 150,
+      "at": "2026-10-11T05:23:34.487922+00:00",
+      "tool_call_id": "call_fba93524679e486b89c87228",
+      "tool_name": "list_files",
+      "operation_id": "a17aaf1d-437c-425c-b4b2-76ebd60edfbb",
+      "method": null,
+      "path": null,
+      "port": null,
+      "status": "succeeded",
+      "status_code": null,
+      "error_code": null,
+      "artifact_ids": [],
+      "control_duration_seconds": 0.593246
+    },
+    {
+      "accepted_seq": 147,
+      "completed_seq": 151,
+      "at": "2026-10-11T05:23:35.177119+00:00",
+      "tool_call_id": "call_186af15686dc4886a57f64f8",
+      "tool_name": "http_request",
+      "operation_id": "4914c354-4d62-4f75-9f64-beb6259b4078",
+      "method": "GET",
+      "path": "/admin/panel",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "7d54a2e9-a171-44c2-923d-bbcb6183ef7b",
+        "e5cf32d9-6405-4b29-8406-0d89ac976150"
+      ],
+      "control_duration_seconds": 1.28183
+    },
+    {
+      "accepted_seq": 146,
+      "completed_seq": 152,
+      "at": "2026-10-11T05:23:35.178723+00:00",
+      "tool_call_id": "call_c557064c71aa4f9ea078c442",
+      "tool_name": "http_request",
+      "operation_id": "d74ccb3e-1d6f-43eb-a12f-36b2ae9ddda0",
+      "method": "GET",
+      "path": "/admin/tools",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "7d5e8e30-5597-4cc8-a6d8-26d696d8f97e",
+        "ca44c1cb-2f46-4a8c-8d97-ee77eaf5ac6f"
+      ],
+      "control_duration_seconds": 1.283434
+    },
+    {
+      "accepted_seq": 148,
+      "completed_seq": 153,
+      "at": "2026-10-11T05:23:35.877788+00:00",
+      "tool_call_id": "call_9f9fc4947c9b4416a83bd56d",
+      "tool_name": "http_request",
+      "operation_id": "b6494a62-195f-4292-a656-2e92c16d693f",
+      "method": "GET",
+      "path": "/admin/terminal",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "07522812-47e9-4b1f-b8d7-b6db8104a264",
+        "bbbc9421-b260-434f-9ec7-486abf01fca5"
+      ],
+      "control_duration_seconds": 1.981862
+    },
+    {
+      "accepted_seq": 149,
+      "completed_seq": 154,
+      "at": "2026-10-11T05:23:35.879371+00:00",
+      "tool_call_id": "call_3d5a63510d5b4a37b693c9be",
+      "tool_name": "http_request",
+      "operation_id": "80827796-5a27-4cce-92ac-e9b479f74db7",
+      "method": "GET",
+      "path": "/static/main.js",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "1be762ab-7578-49ab-aa3b-b4592b5a918e",
+        "628cf489-6038-4292-ae1d-f17e6f142047"
+      ],
+      "control_duration_seconds": 1.982807
+    },
+    {
+      "accepted_seq": 211,
+      "completed_seq": 216,
+      "at": "2026-10-11T05:32:19.490702+00:00",
+      "tool_call_id": "call_b578de3a25f44d8dbb56b39f",
+      "tool_name": "record_observation",
+      "operation_id": null,
+      "method": null,
+      "path": "/",
+      "port": null,
+      "status": "completed",
+      "status_code": null,
+      "error_code": null,
+      "artifact_ids": [],
+      "control_duration_seconds": 0.114428
+    },
+    {
+      "accepted_seq": 214,
+      "completed_seq": 217,
+      "at": "2026-10-11T05:32:19.505737+00:00",
+      "tool_call_id": "call_ff3a171fa0154fc9b0bc4d58",
+      "tool_name": "record_observation",
+      "operation_id": null,
+      "method": null,
+      "path": "/",
+      "port": null,
+      "status": "completed",
+      "status_code": null,
+      "error_code": null,
+      "artifact_ids": [],
+      "control_duration_seconds": 0.128936
+    },
+    {
+      "accepted_seq": 212,
+      "completed_seq": 218,
+      "at": "2026-10-11T05:32:20.786217+00:00",
+      "tool_call_id": "call_ed9288b46d4a49a89620a050",
+      "tool_name": "http_request",
+      "operation_id": "fa6ea9ef-23e5-4536-9377-2527f3b7fe55",
+      "method": "POST",
+      "path": "/admin/login",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "0acf8770-f18a-4e33-ab00-134a8f341b7a",
+        "39f9a737-b071-47e4-9637-a43f57ad83cd"
+      ],
+      "control_duration_seconds": 1.40885
+    },
+    {
+      "accepted_seq": 213,
+      "completed_seq": 219,
+      "at": "2026-10-11T05:32:21.405480+00:00",
+      "tool_call_id": "call_465101dc6a2c4c41bcfe3417",
+      "tool_name": "http_request",
+      "operation_id": "d89fd0ce-f86b-41d3-9846-bf40f6d0a0b8",
+      "method": "POST",
+      "path": "/admin/login",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "90af160b-ebb3-4ed4-b6a8-519ad7ca6a96",
+        "f891f541-f3f0-4505-8af4-d0b9db93f980"
+      ],
+      "control_duration_seconds": 2.028679
+    },
+    {
+      "accepted_seq": 215,
+      "completed_seq": 220,
+      "at": "2026-10-11T05:32:22.041570+00:00",
+      "tool_call_id": "call_aff6292bdc3a48ada4dc94d7",
+      "tool_name": "http_request",
+      "operation_id": "cf99a1ae-3819-469f-8707-7c64b534c8e2",
+      "method": "POST",
+      "path": "/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "d386fa84-0005-45d9-9b2c-4220448095b9",
+        "80b19777-0af6-4ef6-bd59-84483b84e80d"
+      ],
+      "control_duration_seconds": 2.66366
+    },
+    {
+      "accepted_seq": 283,
+      "completed_seq": 287,
+      "at": "2026-10-11T05:37:33.788641+00:00",
+      "tool_call_id": "call_4aa3d995d78346bc92c2eff5",
+      "tool_name": "http_request",
+      "operation_id": "1d09f402-b57c-4769-aefc-2eb3882b4450",
+      "method": "POST",
+      "path": "/admin/",
+      "port": null,
+      "status": "failed",
+      "status_code": null,
+      "error_code": "csrf_unavailable",
+      "artifact_ids": [],
+      "control_duration_seconds": 0.696581
+    },
+    {
+      "accepted_seq": 284,
+      "completed_seq": 288,
+      "at": "2026-10-11T05:37:33.939156+00:00",
+      "tool_call_id": "call_8f043f0e4b6f4c92a26e83c2",
+      "tool_name": "http_request",
+      "operation_id": "b87657d7-121a-4f70-8ca9-321b10b4b620",
+      "method": "GET",
+      "path": "/admin/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "5d238c34-7355-409a-9d43-71cf3cb73473",
+        "0643839d-02d8-465b-936a-9c47b85b7136"
+      ],
+      "control_duration_seconds": 0.847096
+    },
+    {
+      "accepted_seq": 286,
+      "completed_seq": 289,
+      "at": "2026-10-11T05:37:34.607573+00:00",
+      "tool_call_id": "call_3b13b4a3b1674d73b4b7d8fe",
+      "tool_name": "http_request",
+      "operation_id": "552e27db-b53b-4394-af0d-f6170b1ffc9c",
+      "method": "GET",
+      "path": "/admin/cmd_tool",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "b596bf87-246f-4679-a73c-6004ddf2576f",
+        "533c3646-cfca-45fc-a3bf-13127fdd0f79"
+      ],
+      "control_duration_seconds": 1.514485
+    },
+    {
+      "accepted_seq": 285,
+      "completed_seq": 290,
+      "at": "2026-10-11T05:37:34.612783+00:00",
+      "tool_call_id": "call_d3718f290fbd43479f43674d",
+      "tool_name": "http_request",
+      "operation_id": "c33ae7fe-cfdc-4d27-afd9-5a53d5492fb5",
+      "method": "GET",
+      "path": "/admin/logout",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "4690e93c-b3bf-477e-99c4-f25fac6f5f35",
+        "b1973c96-7ec7-43b7-b239-b866e503fb9c"
+      ],
+      "control_duration_seconds": 1.52021
+    },
+    {
+      "accepted_seq": 308,
+      "completed_seq": 311,
+      "at": "2026-10-11T05:41:26.091180+00:00",
+      "tool_call_id": "call_5d3583af282c4fbda5c6cc88",
+      "tool_name": "http_request",
+      "operation_id": "b84d487b-7481-4cc3-bfb5-9658f910271e",
+      "method": "POST",
+      "path": "/admin/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 403,
+      "error_code": null,
+      "artifact_ids": [
+        "245bc6af-3047-4e90-a9bd-7a08fc16f1cf",
+        "259da9ab-d92d-4fcc-94e5-0b87f6bab2e9"
+      ],
+      "control_duration_seconds": 1.121527
+    },
+    {
+      "accepted_seq": 307,
+      "completed_seq": 312,
+      "at": "2026-10-11T05:41:26.092725+00:00",
+      "tool_call_id": "call_c17e9f2ba235460e86c1d162",
+      "tool_name": "http_request",
+      "operation_id": "90cef1f0-00d7-45e0-bcda-2ec937b780fc",
+      "method": "GET",
+      "path": "/admin/login/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "6d74ec6c-f469-4743-ba9c-e7a72394e471",
+        "4fbc2d46-86c3-4b4f-a600-0acda4c9cb2c"
+      ],
+      "control_duration_seconds": 1.121524
+    },
+    {
+      "accepted_seq": 310,
+      "completed_seq": 313,
+      "at": "2026-10-11T05:41:26.095297+00:00",
+      "tool_call_id": "call_3f99a1c6376441bca1b17cf9",
+      "tool_name": "http_request",
+      "operation_id": "6a645e6e-7f62-46cf-9334-e5e2ffc2c9f7",
+      "method": "GET",
+      "path": "/",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "29a79372-ea02-4ddf-98f4-5ec0277ebd98",
+        "d0fd0fd7-ad74-4cf0-866e-df11a46d7900"
+      ],
+      "control_duration_seconds": 1.123052
+    },
+    {
+      "accepted_seq": 309,
+      "completed_seq": 314,
+      "at": "2026-10-11T05:41:27.084821+00:00",
+      "tool_call_id": "call_2f12f27987ef4ccebfb08b3b",
+      "tool_name": "http_request",
+      "operation_id": "494b924a-3cff-42c1-96b1-c192e61bd065",
+      "method": "GET",
+      "path": "/static/earth1.jpg",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 200,
+      "error_code": null,
+      "artifact_ids": [
+        "ba5c44f0-f91e-4a54-806c-a063aee9a7f8",
+        "275749f2-2bf1-4c1d-8427-8a8931308f16"
+      ],
+      "control_duration_seconds": 2.113098
+    },
+    {
+      "accepted_seq": 329,
+      "completed_seq": 332,
+      "at": "2026-10-11T05:44:01.305944+00:00",
+      "tool_call_id": "call_9c6f6be97795460393232aa3",
+      "tool_name": "read_artifact",
+      "operation_id": "00000000-0000-0000-0000-000000000000",
+      "method": null,
+      "path": null,
+      "port": null,
+      "status": "succeeded",
+      "status_code": null,
+      "error_code": null,
+      "artifact_ids": [],
+      "control_duration_seconds": 0.07711
+    },
+    {
+      "accepted_seq": 330,
+      "completed_seq": 333,
+      "at": "2026-10-11T05:44:01.977205+00:00",
+      "tool_call_id": "call_437509031bd34dc2a0a7a21c",
+      "tool_name": "http_request",
+      "operation_id": "a9d18aef-78f9-4e7d-82c5-d45c348a99d0",
+      "method": "GET",
+      "path": "/",
+      "port": 8000,
+      "status": "failed",
+      "status_code": null,
+      "error_code": "http_connection_error",
+      "artifact_ids": [],
+      "control_duration_seconds": 0.746268
+    },
+    {
+      "accepted_seq": 328,
+      "completed_seq": 334,
+      "at": "2026-10-11T05:44:01.980992+00:00",
+      "tool_call_id": "call_62e043c6be494884ba20bb1c",
+      "tool_name": "http_request",
+      "operation_id": "ea289b71-55a9-412a-9cf5-031354eb77ec",
+      "method": "GET",
+      "path": "/",
+      "port": 8080,
+      "status": "failed",
+      "status_code": null,
+      "error_code": "http_connection_error",
+      "artifact_ids": [],
+      "control_duration_seconds": 0.750583
+    },
+    {
+      "accepted_seq": 331,
+      "completed_seq": 335,
+      "at": "2026-10-11T05:44:02.096724+00:00",
+      "tool_call_id": "call_ac0f79589bba4e12919a84d5",
+      "tool_name": "http_request",
+      "operation_id": "744d95aa-66dd-4f91-85c1-3ec326cf2f35",
+      "method": "GET",
+      "path": "/admin/secret",
+      "port": null,
+      "status": "succeeded",
+      "status_code": 404,
+      "error_code": null,
+      "artifact_ids": [
+        "7d7760ee-9f9b-4056-8f47-7cd66a5fefdc",
+        "ec12f85d-8a64-4963-a52b-9f5f6f5c1d5a"
+      ],
+      "control_duration_seconds": 0.865264
+    }
+  ],
+  "plans": [
+    {
+      "seq": 11,
+      "at": "2026-10-11T05:13:07.142899+00:00",
+      "node": "tools",
+      "steps": [
+        {
+          "status": "in_progress",
+          "step_id": "s1",
+          "rationale": null,
+          "description": "探测目标可达性与基础服务信息（HTTP头、首页内容）"
+        },
+        {
+          "status": "pending",
+          "step_id": "s2",
+          "rationale": null,
+          "description": "识别技术栈、框架、认证方式与入口点"
+        },
+        {
+          "status": "pending",
+          "step_id": "s3",
+          "rationale": null,
+          "description": "目录/接口枚举，发现隐藏功能面"
+        },
+        {
+          "status": "pending",
+          "step_id": "s4",
+          "rationale": null,
+          "description": "针对高价值线索深入验证（输入校验/访问控制/信息泄露等）"
+        },
+        {
+          "status": "pending",
+          "step_id": "s5",
+          "rationale": null,
+          "description": "整理证据、提交发现与结束提议"
+        }
+      ],
+      "plan_revision": 1
+    },
+    {
+      "seq": 59,
+      "at": "2026-10-11T05:14:26.535134+00:00",
+      "node": "tools",
+      "steps": [
+        {
+          "status": "done",
+          "step_id": "s1",
+          "rationale": null,
+          "description": "探测目标可达性与基础服务信息（HTTP头、首页内容）"
+        },
+        {
+          "status": "in_progress",
+          "step_id": "s2",
+          "rationale": null,
+          "description": "识别技术栈、框架、认证方式与入口点"
+        },
+        {
+          "status": "in_progress",
+          "step_id": "s3",
+          "rationale": null,
+          "description": "目录/接口枚举，发现隐藏功能面"
+        },
+        {
+          "status": "pending",
+          "step_id": "s4",
+          "rationale": null,
+          "description": "针对高价值线索深入验证（输入校验/访问控制/信息泄露等）"
+        },
+        {
+          "status": "pending",
+          "step_id": "s5",
+          "rationale": null,
+          "description": "整理证据、提交发现与结束提议"
+        }
+      ],
+      "plan_revision": 2
+    }
+  ],
+  "compactions": [
+    {
+      "seq": 222,
+      "at": "2026-10-11T05:33:01.022037+00:00",
+      "note": "压缩只压缩对话内容，不能替代证据归档；旧 checkpoint 仍可回退。",
+      "problems": [],
+      "summary_version": 1,
+      "to_message_count": 35,
+      "from_message_count": 38
+    },
+    {
+      "seq": 276,
+      "at": "2026-10-11T05:37:17.475578+00:00",
+      "note": "压缩只压缩对话内容，不能替代证据归档；旧 checkpoint 仍可回退。",
+      "problems": [],
+      "summary_version": 2,
+      "to_message_count": 37,
+      "from_message_count": 41
+    },
+    {
+      "seq": 292,
+      "at": "2026-10-11T05:39:43.326611+00:00",
+      "note": "压缩只压缩对话内容，不能替代证据归档；旧 checkpoint 仍可回退。",
+      "problems": [],
+      "summary_version": 3,
+      "to_message_count": 38,
+      "from_message_count": 42
+    },
+    {
+      "seq": 316,
+      "at": "2026-10-11T05:42:30.470302+00:00",
+      "note": "压缩只压缩对话内容，不能替代证据归档；旧 checkpoint 仍可回退。",
+      "problems": [],
+      "summary_version": 4,
+      "to_message_count": 43,
+      "from_message_count": 43
+    },
+    {
+      "seq": 337,
+      "at": "2026-10-11T05:45:31.127966+00:00",
+      "note": "压缩只压缩对话内容，不能替代证据归档；旧 checkpoint 仍可回退。",
+      "problems": [],
+      "summary_version": 5,
+      "to_message_count": 43,
+      "from_message_count": 48
+    }
+  ],
+  "control_events": [
+    {
+      "seq": 1,
+      "at": "2026-10-11T05:11:59.207208+00:00",
+      "reason": "session_created",
+      "status": "queued"
+    },
+    {
+      "seq": 2,
+      "at": "2026-10-11T05:12:57.432197+00:00",
+      "reason": "runner_acquired",
+      "status": "running"
+    },
+    {
+      "seq": 244,
+      "at": "2026-10-11T05:35:48.721517+00:00",
+      "note": "completed 表示本阶段已正常结束，**不意味着**网站安全或测试穷尽；failed 表示基础设施/实现故障，**不能**当成阴性安全结论。",
+      "detail": "达到片段内的图步数上限。这不是任务完成，也不是失败：checkpoint 已保存，下一次片段会从该点继续。",
+      "status": "recovering",
+      "completion_reason": null
+    },
+    {
+      "seq": 245,
+      "at": "2026-10-11T05:36:02.303483+00:00",
+      "note": "已受理控制请求；实际停止/暂停以工具核对结果为准，在核对完成前显示『正在取消/正在暂停』。",
+      "requested": "resume",
+      "command_id": "5d5b2ea2-17e7-4a69-b4be-a1cd72c72895"
+    },
+    {
+      "seq": 246,
+      "at": "2026-10-11T05:36:03.351012+00:00",
+      "reason": "runner_acquired",
+      "status": "running"
+    },
+    {
+      "seq": 357,
+      "at": "2026-10-11T05:48:44.215513+00:00",
+      "note": "已受理控制请求；实际停止/暂停以工具核对结果为准，在核对完成前显示『正在取消/正在暂停』。",
+      "requested": "pause",
+      "command_id": "7292050f-ad7f-4a91-92e8-49d34ccfe122"
+    },
+    {
+      "seq": 360,
+      "at": "2026-10-11T05:48:45.194921+00:00",
+      "note": "completed 表示本阶段已正常结束，**不意味着**网站安全或测试穷尽；failed 表示基础设施/实现故障，**不能**当成阴性安全结论。",
+      "detail": "已停止当前模型等待；发送新指令或点击继续即可恢复",
+      "status": "paused",
+      "completion_reason": null
+    }
+  ],
+  "commands": [
+    {
+      "id": "5d5b2ea2-17e7-4a69-b4be-a1cd72c72895",
+      "run_id": "568cf7d5-4245-4384-ba21-a386c0095f85",
+      "kind": "resume",
+      "status": "consumed",
+      "control_version": 0,
+      "created_at": "2026-10-11T05:36:02.285630+00:00",
+      "updated_at": "2026-10-11T05:36:04.287155+00:00"
+    },
+    {
+      "id": "7292050f-ad7f-4a91-92e8-49d34ccfe122",
+      "run_id": "568cf7d5-4245-4384-ba21-a386c0095f85",
+      "kind": "pause",
+      "status": "consumed",
+      "control_version": 0,
+      "created_at": "2026-10-11T05:48:44.205538+00:00",
+      "updated_at": "2026-10-11T05:48:45.180871+00:00"
+    }
+  ],
+  "checkpoint": {
+    "plan_revision": 2,
+    "plan": [
+      {
+        "step_id": "s1",
+        "description": "探测目标可达性与基础服务信息（HTTP头、首页内容）",
+        "status": "done",
+        "rationale": null,
+        "lead_id": null
+      },
+      {
+        "step_id": "s2",
+        "description": "识别技术栈、框架、认证方式与入口点",
+        "status": "in_progress",
+        "rationale": null,
+        "lead_id": null
+      },
+      {
+        "step_id": "s3",
+        "description": "目录/接口枚举，发现隐藏功能面",
+        "status": "in_progress",
+        "rationale": null,
+        "lead_id": null
+      },
+      {
+        "step_id": "s4",
+        "description": "针对高价值线索深入验证（输入校验/访问控制/信息泄露等）",
+        "status": "pending",
+        "rationale": null,
+        "lead_id": null
+      },
+      {
+        "step_id": "s5",
+        "description": "整理证据、提交发现与结束提议",
+        "status": "pending",
+        "rationale": null,
+        "lead_id": null
+      }
+    ],
+    "no_progress_streak": 0,
+    "completion_proposal": null,
+    "finish_gate_attempts": 0,
+    "active_lead_ids": null,
+    "pending_job_ids": [],
+    "checkpoint_id": "1f1c536f-8647-6ea8-8057-bef880e99d7c",
+    "checkpoint_timestamp": "2026-10-11T05:45:31.143748+00:00",
+    "context_manifest_present": false,
+    "message_types": {
+      "human": 2,
+      "ai": 8,
+      "tool": 33
+    },
+    "content_chars": 76152,
+    "reasoning_chars": 163857,
+    "approximate_tokens_with_reasoning": 21913,
+    "approximate_tokens_without_reasoning": 21913,
+    "summary_version": 5,
+    "summary_text_chars": 5163,
+    "summary_source_message_count": 21,
+    "structured_summary_field_lengths": {
+      "key_findings": 0,
+      "failed_approaches": 0,
+      "unverified_hypotheses": 0,
+      "open_questions": 0,
+      "next_steps": 0
+    },
+    "summary_contains_original_objective": true,
+    "interrupted_tool_call_ids": [
+      "call_86622cfb36c34debb8cf2f6b",
+      "call_4626b34a52614430bab8c2e9",
+      "call_07080911eeb94d2cbfb28a9c",
+      "call_3cd4f640503f4e48a85ed5a9"
+    ]
+  },
+  "offline_artifact_checks": [
+    {
+      "operation_id": "c77c45f7-2b6b-43ed-86fe-19d7fac336c8",
+      "artifact_ids": [
+        "8efd5a32-3893-47e3-8a69-26bbe81dd24e"
+      ],
+      "sample_prediction_present": true,
+      "scope": "offline sample relationship only; no cross-identity vulnerability confirmation",
+      "occurrences_in_initial_homepage": 0,
+      "occurrences_in_previous_sample_response": 0,
+      "occurrences_in_response": 1
+    },
+    {
+      "operation_id": "298afac3-4ebe-44bc-81ff-fb27d25c7ed3",
+      "artifact_ids": [
+        "a1b7f6f4-0397-47af-a3e4-00b11c605699"
+      ],
+      "sample_prediction_present": true,
+      "scope": "offline sample relationship only; no cross-identity vulnerability confirmation",
+      "occurrences_in_initial_homepage": 0,
+      "occurrences_in_previous_sample_response": 0,
+      "occurrences_in_response": 1
+    }
+  ],
+  "observation_refs": [
+    {
+      "id": "57b4eb06-7255-45a9-9a9d-d653e9c04c54",
+      "source_run_id": "568cf7d5-4245-4384-ba21-a386c0095f85",
+      "source_operation_id": null,
+      "artifact_ids": [
+        "8efd5a32-3893-47e3-8a69-26bbe81dd24e",
+        "a1b7f6f4-0397-47af-a3e4-00b11c605699"
+      ],
+      "observed_at": "2026-10-11T05:32:19.453132+00:00"
+    },
+    {
+      "id": "1fa0642d-6284-4e6b-b573-85141c2cb016",
+      "source_run_id": "568cf7d5-4245-4384-ba21-a386c0095f85",
+      "source_operation_id": null,
+      "artifact_ids": [
+        "163904ee-776b-4a43-a3dd-733f620bfbf9"
+      ],
+      "observed_at": "2026-10-11T05:32:19.489591+00:00"
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "7f2c80cd-11de-44e4-bc90-524cee46c84f",
+      "sha256": "4a51ad7d3acd588abffbf9a1ebe57ad5187bc7b5f44f514def75e95f1d09632a",
+      "byte_size": 78,
+      "media_type": "text/plain; charset=utf-8",
+      "source_operation_id": null,
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "163904ee-776b-4a43-a3dd-733f620bfbf9",
+      "sha256": "df401d0fda98799a92899c1de7f00f9552fa62b7270b6ad9e9b48ae297b9e1ab",
+      "byte_size": 4062,
+      "media_type": "text/html",
+      "source_operation_id": "0244cedf-918f-488a-bfcb-1a20cde3fd39",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "57ef55e0-96d7-448a-9105-257e77cc0ab4",
+      "sha256": "33a653fb4fc2caee4e296a277393ac4850a2016902a27e6e923554f3f061df01",
+      "byte_size": 1269,
+      "media_type": "application/json",
+      "source_operation_id": "0244cedf-918f-488a-bfcb-1a20cde3fd39",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "634cb203-bb86-4408-a0b3-612d30301ca3",
+      "sha256": "87e5ba0688c8de20dfc53f02bd440deee46f6db62101e7718a8bdb22760588df",
+      "byte_size": 208,
+      "media_type": "text/plain; charset=utf-8",
+      "source_operation_id": null,
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "56535f19-4bed-4d2e-9b24-bfa3879c75c4",
+      "sha256": "018b2c6603667abfdc8d3ce0139972e6fe1eac8582a795288608699b758bbeb9",
+      "byte_size": 306,
+      "media_type": "text/html",
+      "source_operation_id": "8ef45b9d-9823-436a-8de1-348fc559010e",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "01959871-fe48-4c69-8ea5-711e3b03815a",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "e53de24b-dcc2-4c1a-8a36-145e46ef8084",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "acc69f97-21d2-4c15-9bdc-f7298134f506",
+      "sha256": "7228d95c52d7539b05104ceefc8e5eaaeb56b59f2d74d2bf2dcead1ccf0231a2",
+      "byte_size": 1090,
+      "media_type": "application/json",
+      "source_operation_id": "8ef45b9d-9823-436a-8de1-348fc559010e",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "4ed3d204-de29-4091-a167-4ee449f2fdd1",
+      "sha256": "35425fd430886b4f8ce9609f1df6901e6371d4e2b428f9c93b6804d58a311274",
+      "byte_size": 1066,
+      "media_type": "application/json",
+      "source_operation_id": "e53de24b-dcc2-4c1a-8a36-145e46ef8084",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "d480ed5b-e46c-4472-90c5-e1d5fb9799f9",
+      "sha256": "f6da86f611ff55274ac0ef1ff7690950dff170307dca82cd3c2fab5f6746e383",
+      "byte_size": 114,
+      "media_type": "text/plain; charset=utf-8",
+      "source_operation_id": null,
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "3c085a59-e6da-466f-9013-42dfbc972a5c",
+      "sha256": "7a82b1acba3273c76725f8e40d568e775d57dc1016073bb75320a406d7afad92",
+      "byte_size": 746,
+      "media_type": "text/html",
+      "source_operation_id": "e10f84b4-149d-4019-b5ba-3dba92d15d10",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "ea0f45c0-ed4a-4ff4-884a-5bf677833095",
+      "sha256": "c096727e68e7ba3ad6795ccb7f2cead95cc9c453d90af07f6b625f5f0c6b4c65",
+      "byte_size": 248,
+      "media_type": "text/css",
+      "source_operation_id": "183d7f23-3336-41c4-b013-836784daf04c",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "94e215f5-f954-405c-9c24-b800c9ebe6a1",
+      "sha256": "f2adcc4d7285bb0a910a6cc1bade0d685d50c7e0ddc8a823aaced7411983e81f",
+      "byte_size": 1468,
+      "media_type": "application/json",
+      "source_operation_id": "e10f84b4-149d-4019-b5ba-3dba92d15d10",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "cd0cdbff-d59d-4317-b3ec-f16ba73bbea4",
+      "sha256": "709912d0f20d1f98832ac71d471b7d6c5b948a9198330c51736bbac0a9486cc4",
+      "byte_size": 1073,
+      "media_type": "application/json",
+      "source_operation_id": "183d7f23-3336-41c4-b013-836784daf04c",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "a42d52bd-e780-4d89-90d9-b0a73f0c6617",
+      "sha256": "cb50741bbeaee21e6565fb1b765cf52bf27350a883a96580a43ad483d874ed35",
+      "byte_size": 4062,
+      "media_type": "text/html",
+      "source_operation_id": "9422a6af-7f4c-4317-9519-9ed02a4e5e83",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "2aaa91ea-c9cc-4433-a471-32bed536999d",
+      "sha256": "a715b7c300b2dbf0ed54723ab4f58bac6dd431921b453c76de11ec8ffb24cf02",
+      "byte_size": 1267,
+      "media_type": "application/json",
+      "source_operation_id": "9422a6af-7f4c-4317-9519-9ed02a4e5e83",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "ca900551-f969-4f60-b2f9-fbefb3eb83bb",
+      "sha256": "8708d00cc5d9ee1f87b063cc8283a2cc03c4301555706daf88eda45bdd4badb6",
+      "byte_size": 253,
+      "media_type": "text/plain; charset=utf-8",
+      "source_operation_id": null,
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "8efd5a32-3893-47e3-8a69-26bbe81dd24e",
+      "sha256": "2233f7380f15dc8d435ece76e4196a0cd1158cca34e24b9d35b2dd3eb7323f7a",
+      "byte_size": 4095,
+      "media_type": "text/html",
+      "source_operation_id": "c77c45f7-2b6b-43ed-86fe-19d7fac336c8",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "4bdf0523-5d90-41a1-af82-e8640dabf218",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "cbdb1706-36b5-4d7c-99a7-736ee1a22cef",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "c17c45c9-d5bc-4bd1-b1d6-76a360f31847",
+      "sha256": "2d27223c250037ae51294b9c5b8904f0f6629dc2355b3a662b6c00a8035b2b1c",
+      "byte_size": 1063,
+      "media_type": "application/json",
+      "source_operation_id": "cbdb1706-36b5-4d7c-99a7-736ee1a22cef",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "a648bfc4-d49f-46d2-999a-f4de50458870",
+      "sha256": "213a8c1eb88c382fccb092a21dba9fa2034ce3673d624d45359400951fe2cd36",
+      "byte_size": 1268,
+      "media_type": "application/json",
+      "source_operation_id": "c77c45f7-2b6b-43ed-86fe-19d7fac336c8",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "c2458a3b-83f6-4968-b122-04a1cbd65706",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "62f0bf6b-c667-4370-8797-6de26291175a",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "e211ef2a-04a5-4278-8ec1-bdfbe022b003",
+      "sha256": "ac22b5c73d89b4127a23cd5585ae4e825466f5aabcf7ef87470fd69218dc9e27",
+      "byte_size": 1080,
+      "media_type": "application/json",
+      "source_operation_id": "62f0bf6b-c667-4370-8797-6de26291175a",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "8b288495-1c2c-4033-81e0-ba72ba97ff74",
+      "sha256": "e97ed7f4b1eff4a0039dd9157c037bf249f23e381900a69bc6fe6663c4042116",
+      "byte_size": 218,
+      "media_type": "text/plain; charset=utf-8",
+      "source_operation_id": null,
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "a1b7f6f4-0397-47af-a3e4-00b11c605699",
+      "sha256": "ca11f936ccad15c468227aac0015f96bb743f468aa7d261316fe92f6104550c8",
+      "byte_size": 4127,
+      "media_type": "text/html",
+      "source_operation_id": "298afac3-4ebe-44bc-81ff-fb27d25c7ed3",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "8ab7f7b9-3be3-47b3-b980-ca3b58aab50c",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "3e5bdd1b-a170-4952-a10f-a5605f6655fb",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "d1fb8e94-6da6-40d7-bb86-1c48cca02869",
+      "sha256": "d543e586e5f44054dfb82fb6fc0621d694eb955deaef14c4017014456d80bbe9",
+      "byte_size": 1075,
+      "media_type": "application/json",
+      "source_operation_id": "3e5bdd1b-a170-4952-a10f-a5605f6655fb",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "6b7ba1f3-001f-40dc-bccb-28c93778ba89",
+      "sha256": "8d65bb5afc0dbe0a04c49cfecae728ca2266eee04967f16736414cbbeeade936",
+      "byte_size": 1268,
+      "media_type": "application/json",
+      "source_operation_id": "298afac3-4ebe-44bc-81ff-fb27d25c7ed3",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "d99968bd-1ba5-4acd-b3af-046dc787ff3f",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "e4e05bcc-3769-4ba4-b7dd-dca9b2866c49",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "7e160777-690e-44eb-a592-cb2000aa30b6",
+      "sha256": "15f457123fc7dd6c5320b942a99f3c80122d60e962fdaf3749db7799e06c3aab",
+      "byte_size": 1062,
+      "media_type": "application/json",
+      "source_operation_id": "e4e05bcc-3769-4ba4-b7dd-dca9b2866c49",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "06b59024-0de5-4244-bb92-a09ca57c7fa7",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "df4f9757-0a38-4608-a49c-509b6ae5903a",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "a78fb1df-fa3c-4132-8d43-bedba9bcde55",
+      "sha256": "6fcae91931c9de4e468e37854883cb015aa14ed7716ddcd23f9bbb1347e7de12",
+      "byte_size": 1065,
+      "media_type": "application/json",
+      "source_operation_id": "df4f9757-0a38-4608-a49c-509b6ae5903a",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "9be4b288-e778-4907-a93a-972f1313c2e3",
+      "sha256": "45746bdc1e33ee7087f1d1c22e0f132bb425206b4c1d87162d5ba746bb652ec6",
+      "byte_size": 271,
+      "media_type": "text/plain; charset=utf-8",
+      "source_operation_id": null,
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "266530ea-3b29-4e6e-bd1b-5d7c41b092e7",
+      "sha256": "86251a26142cfed74337485c0d0014d84522f40ff262f3777ac868ffbce8e339",
+      "byte_size": 1019,
+      "media_type": "text/html",
+      "source_operation_id": "06b524e9-c815-47c8-9362-7aab8c168265",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "b4573f4f-9c67-450c-9b85-ca371d230ce6",
+      "sha256": "4a6f660120b2e942dd7f8e5c31554b83ac139247975f82d0a6411baf3a237763",
+      "byte_size": 1039,
+      "media_type": "application/json",
+      "source_operation_id": "06b524e9-c815-47c8-9362-7aab8c168265",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "54309dae-60e3-4d3a-aa90-bc80b9503645",
+      "sha256": "c51eeb01048985a1d684315066d43256ce3c821eed6fdc2f9651665b83f0c548",
+      "byte_size": 4205,
+      "media_type": "text/html",
+      "source_operation_id": "f31c8072-171e-4fc0-b3c6-c33459a2fbdd",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "65e15e6f-4c7c-4e5a-8ddb-7d1c5b7a655c",
+      "sha256": "1b6df9aaf44c068fb34dcadb8049e525ad2788bd2d2b7a25935a22ed5d5947b6",
+      "byte_size": 1268,
+      "media_type": "application/json",
+      "source_operation_id": "f31c8072-171e-4fc0-b3c6-c33459a2fbdd",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "7c4d33c0-f901-4672-bf27-defc2133e68e",
+      "sha256": "dd5e2ff24794e46c8784c3a2cd7c69cf7c8997a93f341d81dd30ecca97495103",
+      "byte_size": 5216,
+      "media_type": "text/html",
+      "source_operation_id": "a69ffba4-9aef-4654-b4d8-3f455cf3375b",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "fef82a81-c4b9-4131-84cb-74aa4d28cb79",
+      "sha256": "0c9d44dfbba298e88f389c6d6ecb026917a09f770cc53424919f57c3d616333d",
+      "byte_size": 1268,
+      "media_type": "application/json",
+      "source_operation_id": "a69ffba4-9aef-4654-b4d8-3f455cf3375b",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "dc32a952-a9eb-4bdc-8899-e5ee763cf6e0",
+      "sha256": "dabfc9dba20111a4472b04219aab9841aaacb88b0eb87c43eae47c749ea3b293",
+      "byte_size": 317,
+      "media_type": "text/plain; charset=utf-8",
+      "source_operation_id": null,
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "7d5e8e30-5597-4cc8-a6d8-26d696d8f97e",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "d74ccb3e-1d6f-43eb-a12f-36b2ae9ddda0",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "7d54a2e9-a171-44c2-923d-bbcb6183ef7b",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "4914c354-4d62-4f75-9f64-beb6259b4078",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "e5cf32d9-6405-4b29-8406-0d89ac976150",
+      "sha256": "d03ed7e24a670b718fe5813b2e13b7a0b61979dc75fe1a8885afebbcf697dd5b",
+      "byte_size": 1068,
+      "media_type": "application/json",
+      "source_operation_id": "4914c354-4d62-4f75-9f64-beb6259b4078",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "ca44c1cb-2f46-4a8c-8d97-ee77eaf5ac6f",
+      "sha256": "b0915f7175a39554fba3a9e09d84e6b46df45880080071f4a882a565beca67cc",
+      "byte_size": 1069,
+      "media_type": "application/json",
+      "source_operation_id": "d74ccb3e-1d6f-43eb-a12f-36b2ae9ddda0",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "07522812-47e9-4b1f-b8d7-b6db8104a264",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "b6494a62-195f-4292-a656-2e92c16d693f",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "1be762ab-7578-49ab-aa3b-b4592b5a918e",
+      "sha256": "80c3fe2ae1062abf56456f52518bd670f9ec3917b7f85e152b347ac6b6faf880",
+      "byte_size": 196,
+      "media_type": "text/html",
+      "source_operation_id": "80827796-5a27-4cce-92ac-e9b479f74db7",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "628cf489-6038-4292-ae1d-f17e6f142047",
+      "sha256": "2dfe9b1fb9ce95989776bbf129fad0b23fa5e20fab344bc50f6c0ab54be5c1bb",
+      "byte_size": 912,
+      "media_type": "application/json",
+      "source_operation_id": "80827796-5a27-4cce-92ac-e9b479f74db7",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "bbbc9421-b260-434f-9ec7-486abf01fca5",
+      "sha256": "14be8a74281c82e8f0cc17e52251d5eee1862c0ed037be3ce465f63e3aec7108",
+      "byte_size": 1077,
+      "media_type": "application/json",
+      "source_operation_id": "b6494a62-195f-4292-a656-2e92c16d693f",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "c3ae1970-22a6-4343-a3b7-18135f53336f",
+      "sha256": "d451a34c1025e482060d22f65c9659df7f72837ec9b2a8923086e5bfc5defc9e",
+      "byte_size": 468,
+      "media_type": "text/plain; charset=utf-8",
+      "source_operation_id": null,
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "0acf8770-f18a-4e33-ab00-134a8f341b7a",
+      "sha256": "ade07f1e2e961c5c788d7e3f60bd3258dfede58eb340b18b1173642239fca93e",
+      "byte_size": 927,
+      "media_type": "text/html",
+      "source_operation_id": "fa6ea9ef-23e5-4536-9377-2527f3b7fe55",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "39f9a737-b071-47e4-9637-a43f57ad83cd",
+      "sha256": "5870c17942ebc968dd336dcba86cc9a0b7c77c9bf19759b84b107ad28b60adbb",
+      "byte_size": 1467,
+      "media_type": "application/json",
+      "source_operation_id": "fa6ea9ef-23e5-4536-9377-2527f3b7fe55",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "90af160b-ebb3-4ed4-b6a8-519ad7ca6a96",
+      "sha256": "511c3a7301751d2495bea1d6f8affd39bdbd38a54fc4b197e4f466479cf41bdb",
+      "byte_size": 896,
+      "media_type": "text/html",
+      "source_operation_id": "d89fd0ce-f86b-41d3-9846-bf40f6d0a0b8",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "f891f541-f3f0-4505-8af4-d0b9db93f980",
+      "sha256": "6f47de9f1e80ad6229331a324c59aa7a8bd1398b4781bdb159d3ae7d98b55421",
+      "byte_size": 1467,
+      "media_type": "application/json",
+      "source_operation_id": "d89fd0ce-f86b-41d3-9846-bf40f6d0a0b8",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "d386fa84-0005-45d9-9b2c-4220448095b9",
+      "sha256": "4fb550413b0a3995631fb29282f2827e6fbb0f6a79f505bb9d497e84377db3ad",
+      "byte_size": 4176,
+      "media_type": "text/html",
+      "source_operation_id": "cf99a1ae-3819-469f-8707-7c64b534c8e2",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "80b19777-0af6-4ef6-bd59-84483b84e80d",
+      "sha256": "25644e21049adf38f206e852cbf62d60266e77ffd7a96a970916ad882a926a87",
+      "byte_size": 1267,
+      "media_type": "application/json",
+      "source_operation_id": "cf99a1ae-3819-469f-8707-7c64b534c8e2",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "0d739748-37fa-4b2e-b6c1-2af7035af8c6",
+      "sha256": "479cfa7214f55b7d756328c2f32b40dc6afbd316c65fd7b1cbf78762071f6dd1",
+      "byte_size": 347,
+      "media_type": "text/plain; charset=utf-8",
+      "source_operation_id": null,
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "f5afcaed-fa24-4f90-bf71-71dc3e54ac29",
+      "sha256": "7211869410308a17e6ba917e8b667e3a0b318542567153a1eeee9dfb6fc54302",
+      "byte_size": 90,
+      "media_type": "text/plain; charset=utf-8",
+      "source_operation_id": null,
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "5d238c34-7355-409a-9d43-71cf3cb73473",
+      "sha256": "018b2c6603667abfdc8d3ce0139972e6fe1eac8582a795288608699b758bbeb9",
+      "byte_size": 306,
+      "media_type": "text/html",
+      "source_operation_id": "b87657d7-121a-4f70-8ca9-321b10b4b620",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "0643839d-02d8-465b-936a-9c47b85b7136",
+      "sha256": "f376e73004e2faeb0baf0f49740144bc16c65e76faff220abfef9200995d2891",
+      "byte_size": 1095,
+      "media_type": "application/json",
+      "source_operation_id": "b87657d7-121a-4f70-8ca9-321b10b4b620",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "b596bf87-246f-4679-a73c-6004ddf2576f",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "552e27db-b53b-4394-af0d-f6170b1ffc9c",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "4690e93c-b3bf-477e-99c4-f25fac6f5f35",
+      "sha256": "018b2c6603667abfdc8d3ce0139972e6fe1eac8582a795288608699b758bbeb9",
+      "byte_size": 306,
+      "media_type": "text/html",
+      "source_operation_id": "c33ae7fe-cfdc-4d27-afd9-5a53d5492fb5",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "533c3646-cfca-45fc-a3bf-13127fdd0f79",
+      "sha256": "a76a8509a5973b152da4a0ca5ec8f53e9bd113f13db010af57fad3f1bf96559e",
+      "byte_size": 1078,
+      "media_type": "application/json",
+      "source_operation_id": "552e27db-b53b-4394-af0d-f6170b1ffc9c",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "b1973c96-7ec7-43b7-b239-b866e503fb9c",
+      "sha256": "c0a825dc394cfba24a2e37cd9750ba4d95af70a6d82cff0155db38aeb7269e41",
+      "byte_size": 1167,
+      "media_type": "application/json",
+      "source_operation_id": "c33ae7fe-cfdc-4d27-afd9-5a53d5492fb5",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "4c4d1b97-8e64-4a39-8d37-7e0c684ea7fd",
+      "sha256": "543aadfb3599a41be736186b0db0082b16d3900d65a0968179efe82b5c18c8e6",
+      "byte_size": 113,
+      "media_type": "text/plain; charset=utf-8",
+      "source_operation_id": null,
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "29a79372-ea02-4ddf-98f4-5ec0277ebd98",
+      "sha256": "ab184a0d67bee56c2546ee0afa363ec4ea14cbd773574cadb33e2392a27a8c22",
+      "byte_size": 4152,
+      "media_type": "text/html",
+      "source_operation_id": "6a645e6e-7f62-46cf-9334-e5e2ffc2c9f7",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "6d74ec6c-f469-4743-ba9c-e7a72394e471",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "90cef1f0-00d7-45e0-bcda-2ec937b780fc",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "245bc6af-3047-4e90-a9bd-7a08fc16f1cf",
+      "sha256": "86251a26142cfed74337485c0d0014d84522f40ff262f3777ac868ffbce8e339",
+      "byte_size": 1019,
+      "media_type": "text/html",
+      "source_operation_id": "b84d487b-7481-4cc3-bfb5-9658f910271e",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "d0fd0fd7-ad74-4cf0-866e-df11a46d7900",
+      "sha256": "1b64b3d448069847b46c44d8647b243b790f581b1f801eb0c9dc729442f36b5b",
+      "byte_size": 1273,
+      "media_type": "application/json",
+      "source_operation_id": "6a645e6e-7f62-46cf-9334-e5e2ffc2c9f7",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "4fbc2d46-86c3-4b4f-a600-0acda4c9cb2c",
+      "sha256": "a3d4e40cae0685c392982d948380df5a4d9af889def7dcab493e7ecb0bde9d1c",
+      "byte_size": 1073,
+      "media_type": "application/json",
+      "source_operation_id": "90cef1f0-00d7-45e0-bcda-2ec937b780fc",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "259da9ab-d92d-4fcc-94e5-0b87f6bab2e9",
+      "sha256": "78693215a71b1766ee5647a8509769a8c91bc0aa3ae321790e4cc713b5158995",
+      "byte_size": 1056,
+      "media_type": "application/json",
+      "source_operation_id": "b84d487b-7481-4cc3-bfb5-9658f910271e",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "ba5c44f0-f91e-4a54-806c-a063aee9a7f8",
+      "sha256": "754e8b893fb74f26b1d4b9c0ecbac25058d1530c4ec88c7e37c774902f17399d",
+      "byte_size": 5242880,
+      "media_type": "image/jpeg",
+      "source_operation_id": "494b924a-3cff-42c1-96b1-c192e61bd065",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "275749f2-2bf1-4c1d-8427-8a8931308f16",
+      "sha256": "230cd95f4cba62c322d0870c52ed76f9842eb1d07cac260fd7efc91afaca6825",
+      "byte_size": 1088,
+      "media_type": "application/json",
+      "source_operation_id": "494b924a-3cff-42c1-96b1-c192e61bd065",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "7d7760ee-9f9b-4056-8f47-7cd66a5fefdc",
+      "sha256": "5547992afdadb59737c5c0feb1a35dff294cd27145bf290c031737ecf8a2577d",
+      "byte_size": 179,
+      "media_type": "text/html",
+      "source_operation_id": "744d95aa-66dd-4f91-85c1-3ec326cf2f35",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    },
+    {
+      "id": "ec12f85d-8a64-4963-a52b-9f5f6f5c1d5a",
+      "sha256": "28e003ed299e92f080598e36efc57ca0d750f825bca37b780b51f742ec2c1ef8",
+      "byte_size": 1073,
+      "media_type": "application/json",
+      "source_operation_id": "744d95aa-66dd-4f91-85c1-3ec326cf2f35",
+      "integrity_verified": true,
+      "truncated": false,
+      "availability": "available"
+    }
+  ],
+  "review_source_fingerprint": {
+    "scope": "review-time checkout, not launch-time snapshot",
+    "head": "83edd4254ba76badae37a6bd9537a06c8448ef1a",
+    "installed_packages": {
+      "langchain": "1.4.3",
+      "langgraph": "1.2.14",
+      "langchain-core": "1.6.7",
+      "langchain-openai": "1.6.7",
+      "langgraph-checkpoint-postgres": "3.1.2"
+    },
+    "sha256": {
+      "uv.lock": "e7d6797de1d851b37296b01538983984d7ed1ad12f5fe6dd9c7d4b4626693b6d",
+      "src/agent_workbench/models/xiaomi.py": "ea6746d7dab924be63ea54e688e69532d218e54316607d7ddfcfc8226cba3b1c",
+      "src/agent_workbench/agent/middleware/compaction.py": "536a9351bfc868e529add2839ec9d5a40149f431819f9eceb80e9d62152b3a22",
+      "src/agent_workbench/agent/middleware/context_builder.py": "226707480d1022e35ee7682ff259c94b6db04a55b56e8646139311066b2d5d95",
+      "src/agent_workbench/agent/middleware/progress.py": "83396ed382d9e49d4d0cf3d4ffab7031d5f55bb2ba9dbc5646669a456f205bf0",
+      "src/agent_workbench/agent/factory.py": "95831d58b71e6a2b55949ae3332b149244983798c472d98056ee416829c5dd07",
+      "src/agent_workbench/runtime/runner.py": "89252182b5db6353abff8c09d5a88a54f7ae05d422e10a1c64a1153c8aafc5aa",
+      "src/agent_workbench/agent/prompts/system.py": "5844746dfcbc6f8e7131b1b246e8b517430cdc419229988fd83ca450fccf36b0"
+    }
+  },
+  "privacy": "No request/response bodies, reasoning text, cookies, credentials, or target flags; unknown or unpriced usage is not zero.",
+  "other_run_observation": {
+    "run_id": "b9296bfe-3c86-4ac2-8c16-63bef1dea5fe",
+    "database_status": "running",
+    "database_updated_at": "2026-10-11T06:03:59.343237+00:00",
+    "last_call_status_at_initial_export": "pending",
+    "limitation": "Database state does not establish active remote consumption or causal interference; no mutation performed."
+  }
+}

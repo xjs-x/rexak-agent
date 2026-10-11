@@ -33,14 +33,25 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
     async def awrap_model_call(self, request, handler):  # type: ignore[no-untyped-def]
         state = request.state or {}
         context = _build_context_block(state)
+        runtime: Any = request.runtime
+        ctx: RunContext | None = getattr(runtime, "context", None)
+        scope = getattr(getattr(ctx, "toolbox", None), "scope", None)
+        if scope is not None:
+            snapshot = scope.snapshot
+            mode = "按指令运行，用户目标已自动应用" if snapshot.mode == "instruction" else "严格范围模式"
+            context += f"\n\n### 当前运行模式\n{mode}\n当前目标规则：" + json.dumps(
+                [rule.model_dump() for rule in snapshot.rules], ensure_ascii=False
+            )
         manifest = _build_manifest(state, request.messages, context)
+        if scope is not None:
+            manifest["source_versions"].update(
+                scope_revision=scope.revision, scope_mode=scope.snapshot.mode
+            )
 
         base_system = request.system_message
         system_text = (base_system.content if base_system is not None else "") or ""
         merged = SystemMessage(content=f"{system_text}\n\n{context}" if system_text else context)
 
-        runtime: Any = request.runtime
-        ctx: RunContext | None = getattr(runtime, "context", None)
         if ctx is not None:
             ctx.toolbox.context_manifest = manifest
 
@@ -65,6 +76,7 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
     active_leads = state.get("active_lead_ids") or []
     pending_jobs = state.get("pending_job_ids") or []
     pending_jobs_count = int(state.get("pending_job_count") or len(pending_jobs))
+    no_progress_streak = int(state.get("no_progress_streak") or 0)
 
     lines: list[str] = ["## 当前任务上下文"]
 
@@ -110,6 +122,13 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
         lines.append(
             f"### 进行中的后台任务：{pending_jobs_count} 个\n"
             "用 get_job 查询结论。**不要**在等待期间空转重复询问状态。"
+        )
+
+    if no_progress_streak >= 3:
+        lines.append(
+            f"### 探索调整提醒\n连续 {no_progress_streak} 轮未增加新的可用证据、入口、"
+            "线索状态或独立验证。请停止重复同一请求，改变测试条件或处理其他线索；"
+            "若已无可继续方向，提交带有覆盖限制的结束提议。工具失败不等于阴性结果。"
         )
 
     lines.append(

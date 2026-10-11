@@ -87,6 +87,29 @@ class TimestampMixin:
     )
 
 
+class PriceCatalogVersionRow(Base):
+    """不可变价格版本；模型调用按版本引用，旧费用不会被新配置改写。"""
+
+    __tablename__ = "price_catalog_versions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    version: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    prices: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_price_catalog_current",
+            "is_current",
+            unique=True,
+            postgresql_where=text("is_current = true"),
+        ),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 项目 / 会话 / 运行
 # --------------------------------------------------------------------------- #
@@ -118,6 +141,11 @@ class SessionRow(TimestampMixin, Base):
         ForeignKey(f"{APP_SCHEMA}.projects.id", ondelete="CASCADE"),
         nullable=False,
     )
+    active_identity_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.identities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     #: 稳定映射：同一 session always 使用同一 thread_id
     thread_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     title: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -147,6 +175,7 @@ class RunRow(TimestampMixin, Base):
     objective: Mapped[str] = mapped_column(Text, nullable=False, default="")
     provider_id: Mapped[str] = mapped_column(String(64), nullable=False)
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    price_catalog_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
     owner_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -424,6 +453,8 @@ class ToolOperationRow(TimestampMixin, Base):
     effect_class: Mapped[str] = mapped_column(String(32), nullable=False)
     policy_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     scope_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # NULL = 迁移前历史操作，不能推断它是否属于当前方向。
+    dispatch_control_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     identity_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     job_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="accepted")
@@ -450,6 +481,15 @@ class ToolJobRow(TimestampMixin, Base):
     )
     cancel_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    executor_accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    executor_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    executor_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     output_cursor: Mapped[str | None] = mapped_column(String(128), nullable=True)
     #: 连接失联时状态不可确认 -> unknown，不当作 failed
     sync_status: Mapped[str] = mapped_column(String(32), nullable=False, default="in_sync")
@@ -518,6 +558,12 @@ class ModelCallRow(TimestampMixin, Base):
     first_token_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 模型可见正文的不可变工件；只供历史浏览，不回灌图状态或长期记忆。
+    response_artifact_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.artifacts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     #: 持久化失败时的本地待同步标记；幂等重放（§11.3 规则 6）
     pending_sync: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
@@ -565,6 +611,11 @@ class ObservationRow(TimestampMixin, Base):
         ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
         nullable=False,
     )
+    source_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     identity_label: Mapped[str] = mapped_column(String(128), nullable=False, default="anonymous")
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -575,7 +626,10 @@ class ObservationRow(TimestampMixin, Base):
     )
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    __table_args__ = (Index("ix_observations_session_time", "session_id", "observed_at"),)
+    __table_args__ = (
+        Index("ix_observations_session_time", "session_id", "observed_at"),
+        Index("ix_observations_source_run", "source_run_id"),
+    )
 
 
 class SpanRow(Base):

@@ -121,7 +121,6 @@ class VerificationService:
         limitations: str | None = None,
         executed_by_identity_id: UUID | None = None,
         performed_by: str = "code",
-        force: bool = False,
     ) -> VerificationRow:
         """写入验证记录并推进发现状态。
 
@@ -132,7 +131,7 @@ class VerificationService:
         if finding is None:
             raise ApiError(ErrorCode.NOT_FOUND, f"发现不存在：{finding_id}")
 
-        if conclusion is FindingStatus.CONFIRMED and performed_by != "code" and not force:
+        if conclusion is FindingStatus.CONFIRMED and performed_by != "code":
             raise ApiError(
                 ErrorCode.VALIDATION_FAILED,
                 "只有确定性核验器（performed_by=code）可以确认发现；模型判断不能作为独立验证。",

@@ -22,6 +22,23 @@ CURRENT_STATE_SCHEMA_VERSION = 1
 StateSchemaVersion = Literal[1]
 
 
+class StateSchemaIncompatibleError(RuntimeError):
+    """已有 checkpoint 缺少兼容版本；禁止把它当作新任务重放。"""
+
+
+def assert_compatible_state(values: dict[str, Any]) -> None:
+    """恢复前校验已有图状态；空状态代表首次运行。"""
+    if not values:
+        return
+    version = values.get("state_schema_version")
+    if type(version) is not int or version != CURRENT_STATE_SCHEMA_VERSION:
+        raise StateSchemaIncompatibleError(
+            f"checkpoint 状态版本不兼容：实际 {version!r}，"
+            f"当前 {CURRENT_STATE_SCHEMA_VERSION}。请先备份并执行对应状态迁移；"
+            "在迁移前拒绝恢复，避免重复执行工具。"
+        )
+
+
 def merge_unique(left: list[str] | None, right: list[str] | None) -> list[str]:
     """稳定去重合并，保持首次出现的顺序。用于 id 集合类字段。"""
     seen: dict[str, None] = {}
@@ -60,6 +77,9 @@ class WorkSummary(TypedDict):
     open_questions: list[str]
     next_steps: list[str]
     source_message_range: list[int]
+    source_message_ids: NotRequired[list[str]]
+    summary_text: NotRequired[str]
+    previous_summary_text: NotRequired[str]
     summary_version: int
 
 
@@ -73,6 +93,7 @@ class CompletionProposal(TypedDict):
     remaining_leads: list[str]
     stop_rationale: str
     follow_up_suggestions: list[str]
+    missing_conditions: list[str]
     evidence_refs: list[str]
     proposed_at_turn: int
 
@@ -175,7 +196,7 @@ def next_input_state(
     保留旧计划、清空本阶段结束标记。
     """
     return {
-        "messages": [{"role": "user", "content": user_message}],
+        "messages": [{"role": "user", "content": user_message, "id": f"objective-{run_id}"}],
         "session_id": str(session_id),
         "active_run_id": str(run_id),
         "objective": objective,
@@ -185,6 +206,7 @@ def next_input_state(
         "finish_gate_attempts": 0,
         "pending_job_ids": [],
         "no_progress_streak": 0,
+        "last_progress_signature": "",
         "segment_work_units": 0,
         "state_schema_version": CURRENT_STATE_SCHEMA_VERSION,
     }
@@ -195,8 +217,10 @@ __all__ = [
     "AgentGraphState",
     "CompletionProposal",
     "PlanStep",
+    "StateSchemaIncompatibleError",
     "StateSchemaVersion",
     "WorkSummary",
+    "assert_compatible_state",
     "coalesce_plan",
     "merge_unique",
     "new_graph_state",

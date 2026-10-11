@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, ClassVar
@@ -38,6 +39,7 @@ HOME_HTML = """<!doctype html>
   <a href="/api/v1/items?id=1">商品接口</a>
   <a href="/content/notice">公告</a>
   <a href="/private/profile">我的资料</a>
+  <a id="download-sample" href="/download-sample">下载样本</a>
 </nav>
 </body></html>
 """
@@ -157,6 +159,35 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self._json(200, {"user": "alice", "role": "customer", "orders": 3})
             return
 
+        if path == "/download-sample":
+            self._send(
+                200,
+                "本地下载样本\n".encode(),
+                "text/plain; charset=utf-8",
+                extra_headers={"Content-Disposition": 'attachment; filename="sample.txt"'},
+            )
+            return
+
+        if path == "/redirect-localhost":
+            self._send(
+                302,
+                b"",
+                "text/plain; charset=utf-8",
+                extra_headers={"Location": "http://localhost:8899/echo-auth"},
+            )
+            return
+
+        if path == "/echo-auth":
+            self._json(
+                200,
+                {
+                    "authorization": self.headers.get("Authorization"),
+                    "cookie": self.headers.get("Cookie"),
+                    "host": self.headers.get("Host"),
+                },
+            )
+            return
+
         if path == "/private/profile-as-bob":
             cookie = self.headers.get("Cookie") or ""
             if "fixture_session=alice" in cookie:
@@ -212,7 +243,127 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self._json(401, {"error": "invalid_credentials"})
             return
 
+        if path == "/login-form":
+            fields = parse_qs(raw.decode("utf-8", errors="replace"))
+            if fields.get("username") == ["alice"] and fields.get("password") == ["alice-pw"]:
+                self._send(
+                    303,
+                    b"",
+                    "text/plain; charset=utf-8",
+                    extra_headers={
+                        "Location": "/login-status",
+                        "Set-Cookie": "fixture_session=alice; Path=/; HttpOnly",
+                    },
+                )
+                return
+            self._json(401, {"error": "invalid_credentials"})
+            return
+
+        if path == "/csrf-submit":
+            fields = parse_qs(raw.decode("utf-8", errors="replace"))
+            token = (fields.get("csrf_token") or [""])[0]
+            cookie = self.headers.get("Cookie") or ""
+            if token and f"fixture_csrf={token}" in cookie:
+                self._json(200, {"submitted": True, "message": (fields.get("message") or [""])[0]})
+            else:
+                self._json(403, {"error": "csrf_invalid"})
+            return
+
         self._json(404, {"error": "not_found", "path": path})
+
+
+# --------------------------------------------------------------------------- #
+# 浏览器能力用的页面（P4）
+# --------------------------------------------------------------------------- #
+
+LOGIN_HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>登录</title></head><body>
+<h1>已登录：{user}</h1>
+<div id="whoami">当前会话身份：{user}</div>
+<p><a id="to-profile" href="/private/profile">我的资料</a></p>
+</body></html>"""
+
+LOGIN_FORM_HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>账号登录</title></head><body>
+<form method="post" action="/login-form">
+<input name="username" id="username" />
+<input name="password" id="password" type="password" />
+<button id="submit" type="submit">登录</button>
+</form></body></html>"""
+
+FORM_HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>查询表单</title></head><body>
+<h1>查询表单</h1>
+<form id="query-form" method="get" action="/form">
+  <label for="q">关键词</label>
+  <input id="q" name="q" type="text" value="" />
+  <button id="go" type="submit">提交</button>
+</form>
+<div id="result">尚未提交</div>
+</body></html>"""
+
+OUTBOUND_HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>越界子资源</title></head><body>
+<h1>这个页面会向范围外的主机发起请求</h1>
+<p>用于验证执行岛是**逐请求**做范围检查，而不是只检查导航。</p>
+<img id="pixel" src="http://example.invalid/pixel.png" alt="越界图片" />
+<script>
+  fetch('http://example.invalid/api/beacon').catch(function () {});
+</script>
+</body></html>"""
+
+
+def _login(handler: FixtureHandler, query: dict[str, list[str]]) -> None:
+    """建立会话：把 fixture_session 写进 Cookie。
+
+    用于验证浏览器身份的隔离 —— 一个身份登录后，另一个身份不应带上这个 Cookie。
+    """
+    user = (query.get("user") or ["alice"])[0]
+    handler._send(
+        200,
+        LOGIN_HTML.format(user=user).encode("utf-8"),
+        "text/html; charset=utf-8",
+        extra_headers={"Set-Cookie": f"fixture_session={user}; Path=/; HttpOnly"},
+    )
+
+
+def _login_form(handler: FixtureHandler, _query: dict[str, list[str]]) -> None:
+    handler._html(200, LOGIN_FORM_HTML)
+
+
+def _login_status(handler: FixtureHandler, _query: dict[str, list[str]]) -> None:
+    if "fixture_session=alice" in (handler.headers.get("Cookie") or ""):
+        handler._html(200, '<html><body><div id="logged-in">已登录</div></body></html>')
+    else:
+        handler._json(401, {"error": "authentication_required"})
+
+
+def _csrf_form(handler: FixtureHandler, _query: dict[str, list[str]]) -> None:
+    token = secrets.token_hex(12)
+    html = (
+        '<html><body><form method="post" action="/csrf-submit">'
+        f'<input type="hidden" name="csrf_token" value="{token}" />'
+        '<input name="message" /></form></body></html>'
+    )
+    handler._send(
+        200,
+        html.encode(),
+        "text/html; charset=utf-8",
+        extra_headers={"Set-Cookie": f"fixture_csrf={token}; Path=/; HttpOnly"},
+    )
+
+
+def _form(handler: FixtureHandler, query: dict[str, list[str]]) -> None:
+    """带表单的页面；提交后把值回显，用于验证 fill / click。"""
+    submitted = (query.get("q") or [""])[0]
+    html = FORM_HTML.replace("尚未提交", f"已提交：{submitted}" if submitted else "尚未提交")
+    if submitted:
+        html = html.replace('value=""', f'value="{submitted}"')
+    handler._html(200, html)
+
+
+def _outbound(handler: FixtureHandler, _query: dict[str, list[str]]) -> None:
+    handler._html(200, OUTBOUND_HTML)
 
 
 def _home(handler: FixtureHandler, _query: dict[str, list[str]]) -> None:
@@ -294,6 +445,10 @@ def _slow(handler: FixtureHandler, query: dict[str, list[str]]) -> None:
     handler.wfile.flush()
 
 
+def _large(handler: FixtureHandler, _query: dict[str, list[str]]) -> None:
+    handler._send(200, b"x" * (2 * 1024 * 1024), "application/octet-stream")
+
+
 def _counters(handler: FixtureHandler, _query: dict[str, list[str]]) -> None:
     """服务端独立计数器：用于证明某操作是否**真的**重复发生过。"""
     handler._json(
@@ -307,6 +462,13 @@ def _counters(handler: FixtureHandler, _query: dict[str, list[str]]) -> None:
 
 ROUTES: dict[str, Callable[[FixtureHandler, dict[str, list[str]]], None]] = {
     "/": _home,
+    "/login": _login,
+    "/login-form": _login_form,
+    "/login-status": _login_status,
+    "/csrf-form": _csrf_form,
+    "/large": _large,
+    "/form": _form,
+    "/outbound": _outbound,
     "/robots.txt": _robots,
     "/sitemap.xml": _sitemap,
     "/index.html": _home,

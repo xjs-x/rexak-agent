@@ -22,10 +22,12 @@ from agent_workbench.agent.signals import GraphRunAborted, LeaseLostError
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.contracts.enums import CommandKind, CommandStatus, RunStatus
 from agent_workbench.contracts.events import EventType
+from agent_workbench.contracts.identity import ScopeSnapshot
 from agent_workbench.domain.run_state import is_current_owner
+from agent_workbench.domain.scope import ScopePolicy
 from agent_workbench.observability.events import append_event
 from agent_workbench.persistence.repositories import CommandRepository
-from agent_workbench.persistence.tables import RunRow
+from agent_workbench.persistence.tables import RunRow, SessionRow
 
 
 class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
@@ -51,6 +53,15 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             run = (
                 await db.execute(select(RunRow).where(RunRow.id == toolbox.run_id))
             ).scalar_one_or_none()
+            task = (
+                await db.execute(select(SessionRow).where(SessionRow.id == toolbox.session_id))
+            ).scalar_one_or_none()
+        if task is None:
+            raise RuntimeError("任务不存在，无法核对当前测试范围")
+        current_scope = ScopeSnapshot.model_validate(task.scope_snapshot or {})
+        if current_scope.revision != toolbox.scope_revision:
+            toolbox.scope = ScopePolicy(current_scope)
+            toolbox.scope_revision = current_scope.revision
         if run is not None:
             status = RunStatus(run.status)
             if status in {RunStatus.CANCELLING, RunStatus.CANCELLED}:
@@ -69,12 +80,15 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
 
         # 4) 消费一条待处理指令（高优先级优先）
         update = await self._consume_one(toolbox)
+        if isinstance(update, GraphRunAborted):
+            # 消费记录已经提交后才打断图；在事务内抛异常会把 consumed 回滚。
+            raise update
         merged: dict[str, Any] = {"dispatch_control_version": pinned}
         if update:
             merged.update(update)
         return merged
 
-    async def _consume_one(self, toolbox: Any) -> dict[str, Any] | None:
+    async def _consume_one(self, toolbox: Any) -> dict[str, Any] | GraphRunAborted | None:
         async with toolbox.db.transaction() as db:
             repo = CommandRepository(db)
             pending = await repo.next_pending(toolbox.session_id)
@@ -84,15 +98,29 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             kind = CommandKind(pending.kind)
             if kind in {CommandKind.PAUSE, CommandKind.CANCEL}:
                 await repo.mark_status(pending.id, CommandStatus.CONSUMED)
-                raise GraphRunAborted(
+                return GraphRunAborted(
                     "paused" if kind is CommandKind.PAUSE else "cancelled",
                     detail="用户在一致边界请求暂停/取消",
                 )
 
             if kind is CommandKind.SCOPE_CHANGE:
-                # 范围变化必须走单独的显式变更入口（含 validate_scope 与 revision 递增），
-                # 这里只把提示交给模型，避免在图里悄悄改范围。
                 await repo.mark_status(pending.id, CommandStatus.CONSUMED)
+                if pending.payload.get("applied") is True:
+                    revision = pending.payload.get("scope_revision")
+                    return {
+                        "messages": [
+                            HumanMessage(
+                                content=(
+                                    f"【系统提示】用户已显式应用测试范围修订 {revision}。"
+                                    f"变更理由：{pending.content}。"
+                                    "请只按当前范围继续；旧方向任务结果需要重新核对。"
+                                )
+                            )
+                        ],
+                        "no_progress_streak": 0,
+                        "last_progress_signature": "",
+                    }
+                # 兼容旧的未应用指令：绝不在图里悄悄改范围。
                 await append_event(
                     db,
                     session_id=toolbox.session_id,
@@ -133,10 +161,16 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     "consumed_at_boundary": "before_model",
                 },
             )
-            text = pending.content or ""
+            text = pending.content
+            if kind is CommandKind.RESUME:
+                text = str(pending.payload.get("content") or text or "继续当前任务。")
             if pending.payload.get("constraints"):
                 text = f"{text}\n\n【本次补充的约束】{pending.payload['constraints']}"
-            return {"messages": [HumanMessage(content=text)]}
+            return {
+                "messages": [HumanMessage(content=text, id=f"command-{pending.id}")],
+                "no_progress_streak": 0,
+                "last_progress_signature": "",
+            }
 
 
 async def consume_all_pending(toolbox: Any) -> list[str]:

@@ -146,6 +146,29 @@ async def test_unknown_job_blocks_requeue_and_requires_user(database, unique_nam
     assert str(job_id) in str(payload["unresolved_jobs"])
 
 
+async def test_targeted_recovery_leaves_other_runs_untouched(database, unique_name) -> None:
+    """单次真实评测的恢复不应重排工作库里的其他任务。"""
+    _first_session, first, _first_job = await _recovering_run_with_job(
+        database, unique_name + "-first", job_state="succeeded"
+    )
+    _other_session, other, _other_job = await _recovering_run_with_job(
+        database, unique_name + "-other", job_state="succeeded"
+    )
+    assert await recover_stale_runs(database, only_run_id=first.id) == [first.id]
+    decision = await decide_recovering_runs(database, executor_reachable=True, only_run_id=first.id)
+    assert decision["requeued"] == [str(first.id)]
+    async with database.session() as session:
+        statuses = dict(
+            (
+                await session.execute(
+                    select(RunRow.id, RunRow.status).where(RunRow.id.in_([first.id, other.id]))
+                )
+            ).all()
+        )
+    assert statuses[first.id] == str(RunStatus.QUEUED)
+    assert statuses[other.id] == str(RunStatus.RUNNING)
+
+
 async def test_uncertain_sync_status_blocks_requeue(database, unique_name) -> None:
     """`sync_status=uncertain` 与 unknown 同义：都表示无法确认终态。"""
     _session_row, run, _job_id = await _recovering_run_with_job(

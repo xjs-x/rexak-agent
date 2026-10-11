@@ -5,14 +5,9 @@
     uv run python evals/runner.py --suite smoke --provider xiaomi
     uv run python evals/runner.py --suite acceptance --provider xiaomi --trials 3
 
-**当前实现范围（不夸大）**：
-- ✅ 真实模型、真实执行岛、真实目标、真实证据链的端到端跑通；
-- ✅ raw 轨迹落盘（事件、模型调用、工件清单、服务端计数器）；
-- ✅ 每个 trial 前重置目标端计数器，避免上一次试跑污染下一次；
-- ⬜ 独立 grader、配对基线、多场景矩阵（P9 的其余部分）。
-
-没有 grader 时，本 runner **只报告观察**，不输出"效果提升"结论
-（ACCEPTANCE §6.2："数据不足时只报告观察"）。
+smoke 只检验工具链并报告观察；acceptance 使用八个自然目标、私有重置通道、
+独立原件判定和离线复核。判定器通过测试不等于真实模型通过效果验收。
+没有真实配对基线时，不输出效果提升结论。
 """
 
 from __future__ import annotations
@@ -31,10 +26,15 @@ from uuid import UUID
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
+sys.path.insert(0, str(REPO_ROOT))
 
-from agent_workbench.platform_compat import configure_event_loop_policy  # noqa: E402
+from agent_workbench.platform_compat import (  # noqa: E402
+    configure_event_loop_policy,
+    configure_stdio_utf8,
+)
 
 configure_event_loop_policy()
+configure_stdio_utf8()
 
 from agent_workbench.config.settings import get_settings  # noqa: E402
 from agent_workbench.contracts.enums import (  # noqa: E402
@@ -47,24 +47,18 @@ from agent_workbench.contracts.identity import (  # noqa: E402
     ScopeSnapshot,
 )
 from agent_workbench.domain.run_state import create_run  # noqa: E402
-from agent_workbench.evidence.artifacts import ArtifactStore  # noqa: E402
-from agent_workbench.execution.client import (  # noqa: E402
-    ExecutorConnectionError,
-    ExecutorProtocolError,
-    HttpExecutorClient,
+from agent_workbench.evidence.artifacts import redact_text  # noqa: E402
+from agent_workbench.execution.client import HttpExecutorClient  # noqa: E402
+from agent_workbench.execution.tunnel import SshTunnel  # noqa: E402
+from agent_workbench.maintenance.diagnostics import (  # noqa: E402
+    collect_run_diagnostic,
+    write_run_diagnostic,
 )
-from agent_workbench.execution.tunnel import SshTunnel, TunnelUnavailable  # noqa: E402
-from agent_workbench.observability.events import append_event, read_events_after  # noqa: E402
+from agent_workbench.observability.events import append_event  # noqa: E402
 from agent_workbench.persistence.db import Database  # noqa: E402
 from agent_workbench.persistence.repositories import (  # noqa: E402
-    ModelCallRepository,
     ProjectRepository,
     SessionRepository,
-)
-from agent_workbench.persistence.tables import (  # noqa: E402
-    ArtifactRow,
-    FindingRow,
-    ToolOperationRow,
 )
 from agent_workbench.runtime.runner import AgentRunner  # noqa: E402
 
@@ -144,6 +138,8 @@ class TrialResult:
     findings_confirmed: int
     events: int
     target_counters: dict[str, int]
+    target_counters_status: str
+    watchdog_triggered: bool
     expected_paths_hit: list[str]
     expected_paths_missed: list[str]
     forbidden_paths_hit: list[str]
@@ -207,13 +203,16 @@ async def fetch_target_counters(settings: Any) -> dict[str, int]:
                 break
             await asyncio.sleep(0.25)
         if snapshot is None or str(snapshot.state) != "succeeded":
-            return {}
+            raise RuntimeError("目标端计数器任务未成功结束，独立证据不可用")
         data, _headers = await client.download_artifact(receipt.job_id, "response.body")
         parsed = json.loads(data.decode("utf-8"))
-        counters = parsed.get("counters") or {}
-        return {str(k): int(v) for k, v in counters.items()}
-    except (TunnelUnavailable, ExecutorConnectionError, ExecutorProtocolError):
-        return {}
+        counters = parsed.get("counters")
+        if not isinstance(counters, dict) or any(
+            not isinstance(key, str) or type(value) is not int or value < 0
+            for key, value in counters.items()
+        ):
+            raise ValueError("目标端计数器协议无效，独立证据不可用")
+        return counters
     finally:
         await client.close()
         await tunnel.close()
@@ -300,14 +299,53 @@ async def run_trial(
         database=database,
     )
     watchdog = min(scenario.timeout_seconds, settings.single_operation_timeout_seconds * 6)
+    raw_dir = results_root / scenario.scenario_id / f"trial-{trial}"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "run-identity.json").write_text(
+        json.dumps(
+            {
+                "run_id": str(run.id),
+                "session_id": str(session_row.id),
+                "scenario_id": scenario.scenario_id,
+                "trial": trial,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (raw_dir / "target-counters.json").write_text(
+        json.dumps(
+            {"before": counters_before, "after": None, "status": "after_pending"},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    boundary = asyncio.timeout(watchdog)
     try:
-        await asyncio.wait_for(_drive_until_terminal(runner, run.id), timeout=watchdog)
+        async with boundary:
+            await _drive_until_terminal(runner, run.id)
         timed_out = False
     except TimeoutError:
+        if not boundary.expired():
+            raise
         timed_out = True
+    finally:
+        # 即使后续独立计数器读取失败，仍留下可定位运行的台账与证据清单。
+        diagnostic = await collect_run_diagnostic(database, run.id)
+        await asyncio.to_thread(write_run_diagnostic, raw_dir, diagnostic)
     duration = (datetime.now(UTC) - started).total_seconds()
 
     counters_after = await fetch_target_counters(settings)
+    counters_status = (
+        "invalid_reset_or_restart"
+        if any(counters_after.get(key, 0) < value for key, value in counters_before.items())
+        else "available_delta_without_environment_reset"
+    )
     delta = {
         key: counters_after.get(key, 0) - counters_before.get(key, 0)
         for key in set(counters_after) | set(counters_before)
@@ -320,10 +358,17 @@ async def run_trial(
         if value > 0 and not key.endswith(COUNTER_ENDPOINT_PATH)
     }
 
-    raw_dir = results_root / scenario.scenario_id / f"trial-{trial}"
-    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "target-counters.json").write_text(
+        json.dumps(
+            {"before": counters_before, "after": counters_after, "status": counters_status},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     result = await _collect_result(
-        database=database,
         scenario=scenario,
         trial=trial,
         run_id=run.id,
@@ -332,6 +377,8 @@ async def run_trial(
         target_delta=delta,
         raw_dir=raw_dir,
         timed_out=timed_out,
+        diagnostic=diagnostic,
+        counters_status=counters_status,
     )
     _write_raw(raw_dir, result)
     _ = keep_going
@@ -348,20 +395,24 @@ async def _drive_until_terminal(runner: AgentRunner, run_id: UUID) -> None:
         RunStatus.FAILED,
         RunStatus.CANCELLED,
         RunStatus.PAUSED,
+        RunStatus.WAITING_USER,
+        RunStatus.RECOVERING,
     }
-    for _ in range(400):
-        await runner.step(only_run_id=run_id)
+    from agent_workbench.runtime.jobs import probe_and_wake
+
+    while True:
         async with runner._db.session() as session:
             row = (await session.execute(select(RunRow).where(RunRow.id == run_id))).scalar_one()
         if RunStatus(row.status) in terminal:
             return
+        if RunStatus(row.status) == RunStatus.WAITING_TOOL:
+            await probe_and_wake(runner._db, settings=runner._settings, run_ids=[run_id])
+        await runner.step(only_run_id=run_id)
         await asyncio.sleep(0.5)
-    raise TimeoutError("run 在 400 轮内没有到达终态")
 
 
 async def _collect_result(
     *,
-    database: Database,
     scenario: Scenario,
     trial: int,
     run_id: UUID,
@@ -370,53 +421,29 @@ async def _collect_result(
     target_delta: dict[str, int],
     raw_dir: Path,
     timed_out: bool,
+    diagnostic: dict[str, Any],
+    counters_status: str,
 ) -> TrialResult:
-    from sqlalchemy import select
-
-    from agent_workbench.persistence.tables import RunRow
-
-    settings = get_settings()
-    async with database.session() as session:
-        run = (await session.execute(select(RunRow).where(RunRow.id == run_id))).scalar_one()
-        model_calls = await ModelCallRepository(session).list_for_run(run_id)
-        operations = (
-            (
-                await session.execute(
-                    select(ToolOperationRow).where(ToolOperationRow.run_id == run_id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        artifacts = (
-            (await session.execute(select(ArtifactRow).where(ArtifactRow.session_id == session_id)))
-            .scalars()
-            .all()
-        )
-        findings = (
-            (await session.execute(select(FindingRow).where(FindingRow.session_id == session_id)))
-            .scalars()
-            .all()
-        )
-        events = await read_events_after(session, session_id=session_id, limit=10000)
-    # "可用工件"不等于"数据库里写了一行"：这里额外核对文件确实存在于本地数据根，
-    # 否则报告会把元数据当证据（§5.3 明确禁止）。
-    store = ArtifactStore(settings)
+    run = diagnostic["run"]
+    model_calls = diagnostic["model_calls"]
+    operations = diagnostic["operations"]
+    artifacts = diagnostic["artifacts"]
+    findings = diagnostic["session_knowledge"]["findings"]
+    events = diagnostic["events"]
+    # 统计与保存的诊断快照采用同一口径；存在文件还必须通过内容哈希核对。
     available = [
-        row
-        for row in artifacts
-        if row.availability == "available" and store.exists(row.relative_key)
+        row for row in artifacts if row["availability"] == "available" and row["integrity_verified"]
     ]
-    orphaned = [
+    unusable = [
         row
         for row in artifacts
-        if row.availability == "available" and not store.exists(row.relative_key)
+        if row["availability"] == "available" and not row["integrity_verified"]
     ]
 
     objective_text = " ".join(
-        json.dumps(event.payload, ensure_ascii=False)
+        json.dumps(event["payload"], ensure_ascii=False)
         for event in events
-        if event.type in {EventType.MESSAGE_DELTA, EventType.MESSAGE_COMPLETED}
+        if event["type"] in {EventType.MESSAGE_DELTA, EventType.MESSAGE_COMPLETED}
     )
     observations: list[str] = []
     if any(marker in objective_text for marker in A_SCOPE_DENIED_MARKERS):
@@ -427,37 +454,45 @@ async def _collect_result(
         observations.append("⚠ watchdog 触发：该 trial 记为超时，不计入成功")
     if not operations:
         observations.append("本次没有任何工具操作记录")
-    if orphaned:
+    if unusable:
         observations.append(
-            f"⚠ 有 {len(orphaned)} 个元数据标 available 但文件缺失的孤儿工件（不得作为可用证据）"
+            f"⚠ 有 {len(unusable)} 个工件缺失、被篡改或无法校验（不得作为可用证据）"
         )
 
-    expected_hit = counters_for_paths(target_delta, scenario.expect_paths)
-    expected_missed = [path for path in scenario.expect_paths if f"GET {path}" not in expected_hit]
-    forbidden_hit = counters_for_paths(target_delta, scenario.forbid_paths)
+    if counters_status == "invalid_reset_or_restart":
+        observations.append("目标端计数器在 trial 中回退；差量不能作为未访问或越界的判据")
+        expected_hit, expected_missed, forbidden_hit = [], [], []
+    else:
+        expected_hit = counters_for_paths(target_delta, scenario.expect_paths)
+        expected_missed = [
+            path for path in scenario.expect_paths if not counters_for_paths(target_delta, [path])
+        ]
+        forbidden_hit = counters_for_paths(target_delta, scenario.forbid_paths)
 
     return TrialResult(
         trial=trial,
         scenario_id=scenario.scenario_id,
         run_id=str(run_id),
         session_id=str(session_id),
-        status=str(run.status),
-        completion_reason=run.completion_reason,
+        status=str(run["status"]),
+        completion_reason=run["completion_reason"],
         duration_seconds=round(duration, 2),
         model_calls=len(model_calls),
-        input_tokens=sum(int(call.input_tokens or 0) for call in model_calls),
-        output_tokens=sum(int(call.output_tokens or 0) for call in model_calls),
-        unpriced_calls=sum(1 for call in model_calls if call.cost_status == "unpriced"),
-        unknown_usage_calls=sum(1 for call in model_calls if call.usage_status == "unknown"),
+        input_tokens=sum(int(call["input_tokens"] or 0) for call in model_calls),
+        output_tokens=sum(int(call["output_tokens"] or 0) for call in model_calls),
+        unpriced_calls=sum(1 for call in model_calls if call["cost_status"] == "unpriced"),
+        unknown_usage_calls=sum(1 for call in model_calls if call["usage_status"] == "unknown"),
         tool_operations=len(operations),
-        succeeded_operations=sum(1 for op in operations if op.status == "succeeded"),
-        failed_operations=sum(1 for op in operations if op.status == "failed"),
-        unknown_operations=sum(1 for op in operations if op.status == "unknown"),
+        succeeded_operations=sum(1 for op in operations if op["status"] == "succeeded"),
+        failed_operations=sum(1 for op in operations if op["status"] == "failed"),
+        unknown_operations=sum(1 for op in operations if op["status"] == "unknown"),
         artifacts_available=len(available),
-        findings_candidates=sum(1 for row in findings if row.status == "candidate"),
-        findings_confirmed=sum(1 for row in findings if row.status == "confirmed"),
+        findings_candidates=sum(1 for row in findings if row["status"] == "candidate"),
+        findings_confirmed=sum(1 for row in findings if row["status"] == "confirmed"),
         events=len(events),
         target_counters=target_delta,
+        target_counters_status=counters_status,
+        watchdog_triggered=timed_out,
         expected_paths_hit=expected_hit,
         expected_paths_missed=expected_missed,
         forbidden_paths_hit=forbidden_hit,
@@ -535,11 +570,60 @@ def summarize(results: list[TrialResult]) -> dict[str, Any]:
 async def main_async(args: argparse.Namespace) -> int:
     settings = get_settings()
     scenarios = list(SMOKE_SCENARIOS)
-    if args.suite != "smoke":
-        print(
-            f"提示：suite={args.suite} 与 smoke 目前使用同一组场景；"
-            "完整 acceptance 矩阵（E01–E10 + grader）属 P9，尚未实现。"
+    if getattr(args, "replay", ""):
+        from evals.acceptance import replay_suite
+
+        report = replay_suite(Path(args.replay))
+        if getattr(args, "baseline", ""):
+            from evals.acceptance import compare_paired
+
+            report["paired_comparison"] = compare_paired(Path(args.replay), Path(args.baseline))
+            report["baseline_comparison"] = (
+                "paired_observations_available"
+                if report["paired_comparison"]["paired_trials"]
+                else "NOT_RUN: 没有配置兼容且有效的配对样本"
+            )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return int(
+            report["passed"] != report["requested_trials"]
+            or bool(report.get("paired_comparison", {}).get("excluded"))
         )
+    if getattr(args, "fixture", ""):
+        from evals.fixture_control import FixtureControl
+
+        control = FixtureControl(settings)
+        try:
+            if args.fixture == "install":
+                snapshot = await control.install()
+            elif args.fixture == "status":
+                await control.open()
+                snapshot = await control.request("GET", "/snapshot")
+            else:
+                await control.stop()
+                print("本配置部署的评测靶场已停止；原始文件保留。")
+                return 0
+            print(
+                json.dumps(
+                    {
+                        key: snapshot[key]
+                        for key in ("version", "fingerprint", "generation", "active_requests")
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        finally:
+            await control.close()
+        return 0
+    if args.suite == "acceptance":
+        from evals.acceptance import main_acceptance
+
+        return await main_acceptance(args)
+    if args.provider != settings.default_provider:
+        print("--provider 与当前生效供应商配置不一致，请先调整模型设置。")
+        return 2
+    if args.trials < 1:
+        print("--trials 必须大于 0。")
+        return 2
 
     if args.scenario:
         wanted = {item.strip().upper() for item in args.scenario.split(",")}
@@ -548,15 +632,16 @@ async def main_async(args: argparse.Namespace) -> int:
             print(f"没有匹配的场景：{args.scenario}")
             return 2
 
-    stamp = datetime.now(UTC).strftime("%Y-%m-%d")
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%S%fZ")
     results_root = (
         Path(args.output) if args.output else REPO_ROOT / "docs" / "acceptance-results" / stamp
     )
-    results_root.mkdir(parents=True, exist_ok=True)
+    results_root.mkdir(parents=True, exist_ok=False)
 
     database = Database(settings)
     await database.start()
     results: list[TrialResult] = []
+    errors: list[dict[str, Any]] = []
     try:
         for scenario in scenarios:
             for trial in range(1, args.trials + 1):
@@ -569,7 +654,22 @@ async def main_async(args: argparse.Namespace) -> int:
                         results_root=results_root,
                     )
                 except Exception as exc:
-                    print(f"    trial 失败：{type(exc).__name__}: {exc}")
+                    error = {
+                        "scenario_id": scenario.scenario_id,
+                        "trial": trial,
+                        "error_code": type(exc).__name__,
+                        "message": redact_text(str(exc)),
+                        "outcome": "not_evaluated",
+                    }
+                    errors.append(error)
+                    error_dir = results_root / scenario.scenario_id / f"trial-{trial}"
+                    error_dir.mkdir(parents=True, exist_ok=True)
+                    (error_dir / "error.json").write_text(
+                        json.dumps(error, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    print(f"    trial 未完成评测：{type(exc).__name__}，详情已保存")
                     continue
                 results.append(result)
                 print(
@@ -583,13 +683,23 @@ async def main_async(args: argparse.Namespace) -> int:
         await database.close()
 
     summary = summarize(results)
+    summary["trial_errors"] = errors
+    summary["requested_trials"] = len(scenarios) * args.trials
     (results_root / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     print()
     print(f"结果目录：{results_root}")
     print(json.dumps(summary["by_scenario"], ensure_ascii=False, indent=2))
-    return 0
+    return int(
+        bool(errors)
+        or any(
+            item.watchdog_triggered
+            or item.status != "completed"
+            or item.target_counters_status == "invalid_reset_or_restart"
+            for item in results
+        )
+    )
 
 
 def main() -> int:
@@ -599,8 +709,10 @@ def main() -> int:
     parser.add_argument("--trials", type=int, default=1)
     parser.add_argument("--scenario", default="", help="只跑指定场景 ID，逗号分隔")
     parser.add_argument("--output", default="", help="结果输出目录")
+    parser.add_argument("--replay", default="", help="离线复核已有自然目标评测包")
+    parser.add_argument("--baseline", default="", help="复核时对比同协议的真实配对基线包")
+    parser.add_argument("--fixture", choices=["install", "status", "stop"], help="管理评测专用靶场")
     args = parser.parse_args()
-    _ = args.provider
     return asyncio.run(main_async(args))
 
 

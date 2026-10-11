@@ -229,13 +229,14 @@ async def run_probe(
     assembled: dict[str, Any] = {}
     stream_error: str | None = None
     try:
-        async for chunk in stream_model.astream(
-            [HumanMessage(content="请分点用三句话介绍 HTTP 状态码的含义。")]
-        ):
-            chunk_count += 1
-            if first_token_ms is None:
-                first_token_ms = (time.perf_counter() - started) * 1000
-            assembled.update(chunk.usage_metadata or {})
+        async with asyncio.timeout(timeout_seconds):
+            async for chunk in stream_model.astream(
+                [HumanMessage(content="请分点用三句话介绍 HTTP 状态码的含义。")]
+            ):
+                chunk_count += 1
+                if first_token_ms is None:
+                    first_token_ms = (time.perf_counter() - started) * 1000
+                assembled.update(chunk.usage_metadata or {})
         probes.append(
             ProbeObservation(
                 name="streaming",
@@ -264,10 +265,15 @@ async def run_probe(
     started = time.perf_counter()
     streamed_calls: list[Any] = []
     try:
-        async for chunk in stream_tool_model.astream(
-            [HumanMessage(content="调用 probe_echo，label=stream-check，count=1，tags=[gamma]。")]
-        ):
-            streamed_calls.extend(getattr(chunk, "tool_call_chunks", None) or [])
+        async with asyncio.timeout(timeout_seconds):
+            async for chunk in stream_tool_model.astream(
+                [
+                    HumanMessage(
+                        content="调用 probe_echo，label=stream-check，count=1，tags=[gamma]。"
+                    )
+                ]
+            ):
+                streamed_calls.extend(getattr(chunk, "tool_call_chunks", None) or [])
         valid = _assemble_tool_call_chunks(streamed_calls)
         probes.append(
             ProbeObservation(

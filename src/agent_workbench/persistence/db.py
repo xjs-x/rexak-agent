@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from agent_workbench.config.settings import Settings, get_settings
+from agent_workbench.persistence.connection import connect_postgres
 
 
 class Database:
@@ -53,6 +54,10 @@ class Database:
             max_overflow=max(0, self._settings.db_pool_max - self._settings.db_pool_min),
             pool_pre_ping=True,
             pool_recycle=1800,
+            connect_args={
+                "connect_timeout": self._settings.db_connect_timeout_seconds,
+                "async_creator_fn": connect_postgres,
+            },
             future=True,
         )
         self._sessionmaker = async_sessionmaker(

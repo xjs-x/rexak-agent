@@ -1,0 +1,14 @@
+{
+  "revision": 1,
+  "rules": [
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 8899,
+      "include_subdomains": false,
+      "allow_private": true
+    }
+  ],
+  "mappings": [],
+  "denied_metadata_hosts": []
+}

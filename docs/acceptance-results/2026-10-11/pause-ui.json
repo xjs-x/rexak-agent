@@ -1,0 +1,9 @@
+{
+  "pause": "passed",
+  "new_chat_while_paused": "passed",
+  "message_resumes_paused_run": "passed",
+  "normal_url_applied": "passed",
+  "model_test": "not_run",
+  "session_id": "8ba1daae-85fc-4d25-84ed-853d1fd876ef",
+  "run_id": "a787f69b-dccb-4348-a927-da26fb75ea34"
+}

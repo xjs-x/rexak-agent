@@ -138,7 +138,11 @@ class SessionRepository:
 
     async def get(self, session_id: UUID) -> SessionRow | None:
         return (
-            await self._s.execute(select(SessionRow).where(SessionRow.id == session_id))
+            await self._s.execute(
+                select(SessionRow).where(
+                    SessionRow.id == session_id, SessionRow.status != "deleted"
+                )
+            )
         ).scalar_one_or_none()
 
     async def get_by_thread(self, thread_id: str) -> SessionRow | None:
@@ -151,7 +155,7 @@ class SessionRepository:
             (
                 await self._s.execute(
                     select(SessionRow)
-                    .where(SessionRow.project_id == project_id)
+                    .where(SessionRow.project_id == project_id, SessionRow.status != "deleted")
                     .order_by(SessionRow.created_at.desc())
                 )
             )
@@ -356,6 +360,7 @@ class ToolOperationRepository:
         effect_class: str,
         policy_revision: int,
         scope_revision: int,
+        dispatch_control_version: int | None = None,
         identity_id: UUID | None = None,
     ) -> tuple[ToolOperationRow, bool]:
         """准备一条逻辑操作。
@@ -383,6 +388,7 @@ class ToolOperationRepository:
             effect_class=effect_class,
             policy_revision=policy_revision,
             scope_revision=scope_revision,
+            dispatch_control_version=dispatch_control_version,
             identity_id=identity_id,
             status="accepted",
         )
@@ -441,6 +447,9 @@ class ToolJobRepository:
         sync_status: str = "in_sync",
         cancel_requested: bool = False,
         cancel_confirmed: bool = False,
+        executor_accepted_at: datetime | None = None,
+        executor_started_at: datetime | None = None,
+        executor_finished_at: datetime | None = None,
     ) -> ToolJobRow:
         row = (
             await self._s.execute(select(ToolJobRow).where(ToolJobRow.job_id == job_id))
@@ -458,6 +467,12 @@ class ToolJobRepository:
         row.output_cursor = output_cursor
         row.sync_status = sync_status
         row.last_synced_at = _utcnow()
+        if row.executor_accepted_at is None and executor_accepted_at is not None:
+            row.executor_accepted_at = executor_accepted_at
+        if row.executor_started_at is None and executor_started_at is not None:
+            row.executor_started_at = executor_started_at
+        if row.executor_finished_at is None and executor_finished_at is not None:
+            row.executor_finished_at = executor_finished_at
         if cancel_requested:
             row.cancel_requested_at = row.cancel_requested_at or _utcnow()
         row.cancel_confirmed = cancel_confirmed
@@ -471,6 +486,27 @@ class ToolJobRepository:
         if executor_id:
             stmt = stmt.where(ToolJobRow.executor_id == executor_id)
         return (await self._s.execute(stmt)).scalars().all()
+
+    async def list_for_run(
+        self, run_id: UUID, *, active_only: bool = False
+    ) -> Sequence[ToolJobRow]:
+        """只返回归属指定 run 的任务，供取消和模型工具做边界检查。"""
+        stmt = (
+            select(ToolJobRow)
+            .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+            .where(ToolOperationRow.run_id == run_id)
+        )
+        if active_only:
+            stmt = stmt.where(ToolJobRow.state.in_(["received", "starting", "running", "unknown"]))
+        return (await self._s.execute(stmt)).scalars().all()
+
+    async def get_for_run(self, run_id: UUID, job_id: UUID) -> ToolJobRow | None:
+        stmt = (
+            select(ToolJobRow)
+            .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+            .where(ToolOperationRow.run_id == run_id, ToolJobRow.job_id == job_id)
+        )
+        return (await self._s.execute(stmt)).scalar_one_or_none()
 
     async def list_for_session(self, session_id: UUID) -> Sequence[ToolJobRow]:
         stmt = (

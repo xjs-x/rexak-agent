@@ -73,6 +73,13 @@ class EventEnvelope(BaseModel):
         return f"id: {self.sse_id}\nevent: {self.sse_event}\ndata: {body}\n\n"
 
 
+class EventPage(BaseModel):
+    """有限历史事件页；与 SSE 共用 EventEnvelope 契约。"""
+
+    events: list[EventEnvelope]
+    next_before: int | None = None
+
+
 def heartbeat_frame() -> str:
     """心跳：防代理缓冲 + 让客户端知道连接仍然活着。"""
     return ": keep-alive\n\n"

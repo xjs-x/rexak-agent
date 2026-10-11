@@ -34,7 +34,13 @@ from agent_workbench.persistence.tables import RunRow, SessionRow
 ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     # queued 的 run 还没有任何运行中的工作，取消可以直接落到终态
     RunStatus.QUEUED: frozenset(
-        {RunStatus.RUNNING, RunStatus.CANCELLING, RunStatus.CANCELLED, RunStatus.FAILED}
+        {
+            RunStatus.RUNNING,
+            RunStatus.PAUSING,
+            RunStatus.CANCELLING,
+            RunStatus.CANCELLED,
+            RunStatus.FAILED,
+        }
     ),
     RunStatus.RUNNING: frozenset(
         {
@@ -58,7 +64,13 @@ ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
         }
     ),
     RunStatus.WAITING_USER: frozenset(
-        {RunStatus.RUNNING, RunStatus.PAUSING, RunStatus.CANCELLING, RunStatus.FAILED}
+        {
+            RunStatus.RUNNING,
+            RunStatus.QUEUED,
+            RunStatus.PAUSING,
+            RunStatus.CANCELLING,
+            RunStatus.FAILED,
+        }
     ),
     RunStatus.PAUSING: frozenset({RunStatus.PAUSED, RunStatus.FAILED}),
     RunStatus.PAUSED: frozenset(
@@ -183,6 +195,27 @@ async def is_current_owner(
 # --------------------------------------------------------------------------- #
 
 
+async def _lock_run(session: AsyncSession, run_id: UUID) -> RunRow:
+    task_id = (
+        await session.execute(select(RunRow.session_id).where(RunRow.id == run_id))
+    ).scalar_one_or_none()
+    if task_id is None:
+        raise ApiError(ErrorCode.NOT_FOUND, f"run 不存在：{run_id}")
+    # 事件序号与用户输入也会锁 Session；所有同时写 Run/事件的事务遵守相同顺序。
+    await session.execute(select(SessionRow.id).where(SessionRow.id == task_id).with_for_update())
+    # 数据库连接关闭自动 flush；刷新行前先保存同一事务中的续聊标记等修改。
+    # 否则 populate_existing 会用旧数据库值覆盖尚未落库的配置。
+    await session.flush()
+    return (
+        await session.execute(
+            select(RunRow)
+            .where(RunRow.id == run_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+
+
 async def set_run_status(
     session: AsyncSession,
     *,
@@ -195,12 +228,7 @@ async def set_run_status(
 
     调用方负责在同一事务内追加对应事件并在提交后广播。
     """
-    row = (
-        await session.execute(select(RunRow).where(RunRow.id == run_id).with_for_update())
-    ).scalar_one_or_none()
-    if row is None:
-        raise ApiError(ErrorCode.NOT_FOUND, f"run 不存在：{run_id}")
-
+    row = await _lock_run(session, run_id)
     current = RunStatus(row.status)
     if current != target:
         assert_transition(current, target)
@@ -228,11 +256,7 @@ async def bump_control_version(session: AsyncSession, *, run_id: UUID) -> int:
 
     旧模型响应可以记录用量，但**派发前必须重新检查版本**（§4.3）。
     """
-    row = (
-        await session.execute(select(RunRow).where(RunRow.id == run_id).with_for_update())
-    ).scalar_one_or_none()
-    if row is None:
-        raise ApiError(ErrorCode.NOT_FOUND, f"run 不存在：{run_id}")
+    row = await _lock_run(session, run_id)
     row.control_version = int(row.control_version) + 1
     await session.flush()
     return int(row.control_version)
@@ -319,6 +343,6 @@ async def get_session(session: AsyncSession, session_id: UUID) -> SessionRow:
     row = (
         await session.execute(select(SessionRow).where(SessionRow.id == session_id))
     ).scalar_one_or_none()
-    if row is None:
-        raise ApiError(ErrorCode.NOT_FOUND, f"session 不存在：{session_id}")
+    if row is None or row.status == "deleted":
+        raise ApiError(ErrorCode.NOT_FOUND, f"session 不存在或已删除：{session_id}")
     return row

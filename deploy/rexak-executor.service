@@ -1,0 +1,19 @@
+[Unit]
+Description=Rexak Agent Executor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=kali
+Group=kali
+WorkingDirectory=/home/kali/rexak-agent-executor
+EnvironmentFile=/home/kali/rexak-agent-executor/.env
+ExecStart=/home/kali/rexak-agent-executor/.venv/bin/workbench-executor
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

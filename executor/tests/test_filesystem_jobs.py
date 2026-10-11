@@ -12,35 +12,28 @@
 
 from __future__ import annotations
 
-import importlib
-import os
+import json
 import sys
-import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-# 必须在导入应用之前设置：pydantic-settings 的环境变量优先于 .env
-_TMP_DATA = tempfile.mkdtemp(prefix="executor-fs-test-")
-os.environ["EXECUTOR_TOKEN"] = "fs-test-token"
-os.environ["EXECUTOR_DATA_ROOT"] = _TMP_DATA
-os.environ["EXECUTOR_WORKSPACE_ROOT"] = str(Path(_TMP_DATA) / "workspaces")
-os.environ["EXECUTOR_NETWORK_ISOLATION"] = "unavailable"
-
-from workbench_executor.filesystem import (  # noqa: E402
+from workbench_executor.filesystem import (
     WorkspaceError,
     WorkspaceFileSystem,
     workspace_for,
 )
+
+from conftest import AUTH_HEADERS
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
     reason="符号链接语义与目标平台不同；Windows 上跑等于没验证（用控制端的单测覆盖路径逻辑）",
 )
 
-TOKEN_HEADERS = {"Authorization": "Bearer fs-test-token"}
+TOKEN_HEADERS = AUTH_HEADERS
 
 
 # --------------------------------------------------------------------------- #
@@ -96,15 +89,6 @@ def test_symlink_inside_workspace_is_allowed(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.fixture
-def client():
-    from fastapi.testclient import TestClient
-
-    app_module = importlib.import_module("workbench_executor.api")
-    with TestClient(app_module.app) as test_client:
-        yield test_client
-
-
 def _submit(client: Any, payload: dict[str, Any], *, digest: str, **extra: Any) -> dict[str, Any]:
     body = {
         "operation_id": str(uuid.uuid4()),
@@ -121,8 +105,6 @@ def _submit(client: Any, payload: dict[str, Any], *, digest: str, **extra: Any) 
 
 
 def _wait(client: Any, job_id: str, *, attempts: int = 60) -> dict[str, Any]:
-    import time
-
     for _ in range(attempts):
         snapshot = client.get(f"/jobs/{job_id}", headers=TOKEN_HEADERS).json()
         if snapshot["state"] in {"succeeded", "failed", "cancelled", "unknown"}:
@@ -132,8 +114,6 @@ def _wait(client: Any, job_id: str, *, attempts: int = 60) -> dict[str, Any]:
 
 
 def _result(client: Any, job_id: str) -> dict[str, Any]:
-    import json
-
     response = client.get(f"/artifacts/{job_id}/result.json", headers=TOKEN_HEADERS)
     assert response.status_code == 200, response.text
     return json.loads(response.content.decode("utf-8"))

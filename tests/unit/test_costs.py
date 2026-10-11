@@ -151,4 +151,6 @@ def test_summary_separates_unknown_and_unpriced() -> None:
     )
     assert summary["unpriced_calls"] == 1
     assert summary["unknown_usage_calls"] == 1
+    assert summary["token_totals"]["input_tokens"] == 5
+    assert summary["token_totals"]["output_tokens"] is None
     assert "不能当作 0 成本" in summary["note"]

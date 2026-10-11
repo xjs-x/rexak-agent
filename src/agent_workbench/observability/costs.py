@@ -258,8 +258,20 @@ def summarize_costs(
     by_currency: dict[str, dict[str, Any]] = {}
     unpriced_calls = 0
     unknown_usage_calls = 0
+    token_fields = (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+    )
+    token_totals: dict[str, int | None] = dict.fromkeys(token_fields)
 
     for row in rows:
+        for field in token_fields:
+            value = row.get(field)
+            if value is not None:
+                token_totals[field] = (token_totals[field] or 0) + int(value)
         status = row.get("cost_status")
         usage_status = row.get("usage_status")
         if usage_status in {str(UsageStatus.UNKNOWN), None}:
@@ -300,6 +312,7 @@ def summarize_costs(
         },
         "unpriced_calls": unpriced_calls,
         "unknown_usage_calls": unknown_usage_calls,
+        "token_totals": token_totals,
         "note": (
             "这是应用侧按价格目录计算的结果，不等于供应商结算账单；"
             "未知用量请求单列，不能当作 0 成本参与平均值。"

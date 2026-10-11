@@ -53,6 +53,7 @@ class OperationRegistry:
         effect_class: ToolEffectClass,
         policy_revision: int,
         scope_revision: int,
+        dispatch_control_version: int | None = None,
         identity_id: UUID | None = None,
     ) -> PreparedOperation:
         digest = compute_request_digest({"tool": tool_name, "arguments": _canonical(arguments)})
@@ -86,6 +87,7 @@ class OperationRegistry:
             effect_class=str(effect_class),
             policy_revision=policy_revision,
             scope_revision=scope_revision,
+            dispatch_control_version=dispatch_control_version,
             identity_id=identity_id,
         )
         return PreparedOperation(operation_id=row.operation_id, replayed=False, row=row)

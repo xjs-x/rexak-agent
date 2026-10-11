@@ -282,6 +282,7 @@ async def record_observation(
         ref = await record_observation_ref(
             db,
             session_id=toolbox.session_id,
+            source_run_id=toolbox.run_id,
             summary=summary,
             artifact_ids=resolved,
             identity=identity,

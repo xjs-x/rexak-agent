@@ -152,8 +152,27 @@ async def probe_and_wake(
     if not tracked:
         # 没有待核对任务：台账里已经没有未决记录（例如任务按 accepted 闭合后
         # 从没被真正接收，或上一次巡检已经同步过终态）。此时才可以直接唤醒。
+        async with db.session() as session:
+            terminal_rows = (
+                await session.execute(
+                    select(ToolOperationRow.run_id, ToolJobRow.job_id)
+                    .join(ToolJobRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+                    .where(
+                        ToolOperationRow.run_id.in_(waiting),
+                        ToolJobRow.state.in_(list(DEFINITE_TERMINAL_STATES)),
+                    )
+                )
+            ).all()
+        terminal_ids: dict[UUID, list[UUID]] = {}
+        for run_id, job_id in terminal_rows:
+            terminal_ids.setdefault(run_id, []).append(job_id)
         for run_id in waiting:
-            if await _wake_run(db, run_id, summary=_no_pending_summary()):
+            if await _wake_run(
+                db,
+                run_id,
+                summary=_no_pending_summary(),
+                terminal_job_ids=terminal_ids.get(run_id, []),
+            ):
                 result["woken"].append(str(run_id))
         return result
 
@@ -190,7 +209,7 @@ async def probe_and_wake(
 
     result["probed"] = len(probed)
     still_pending_by_run: dict[UUID, int] = {}
-    terminal_by_run: dict[UUID, list[str]] = {}
+    terminal_by_run: dict[UUID, list[tuple[UUID, str]]] = {}
     unresolved_by_run: dict[UUID, list[str]] = {}
 
     async with db.session() as session:
@@ -231,9 +250,7 @@ async def probe_and_wake(
                 result.setdefault("unresolved", []).append(str(row.job_id))
             continue
 
-        terminal_by_run.setdefault(run_id, []).append(
-            f"{row.job_id}:{state}" + (f"（{problem}）" if problem else "")
-        )
+        terminal_by_run.setdefault(run_id, []).append((row.job_id, state))
         result["terminal"].append(str(row.job_id))
 
     for run_id in waiting:
@@ -247,10 +264,12 @@ async def probe_and_wake(
                     f"需要用户确认后才能继续：{unresolved[:5]}"
                 )
             continue
-        summary = _terminal_summary(terminal_by_run.get(run_id, []))
-        if await _wake_run(db, run_id, summary=summary):
+        terminal_entries = terminal_by_run.get(run_id, [])
+        summary = _terminal_summary([f"{job_id}:{state}" for job_id, state in terminal_entries])
+        if await _wake_run(
+            db, run_id, summary=summary, terminal_job_ids=[job_id for job_id, _ in terminal_entries]
+        ):
             result["woken"].append(str(run_id))
-        result["woken"].append(str(run_id))
 
     return result
 
@@ -268,7 +287,9 @@ def _terminal_summary(entries: list[str]) -> str:
     return "后台任务已结束：" + "；".join(entries)
 
 
-async def _wake_run(db: Database, run_id: UUID, *, summary: str) -> bool:
+async def _wake_run(
+    db: Database, run_id: UUID, *, summary: str, terminal_job_ids: list[UUID] | None = None
+) -> bool:
     """把等待中的 run 重新排队，并注入一条系统通知。
 
     - 走 `set_run_status`，让状态机成为唯一真源；
@@ -286,13 +307,58 @@ async def _wake_run(db: Database, run_id: UUID, *, summary: str) -> bool:
             # 已经被别处唤醒或推进过：不做第二次，也不报告"唤醒成功"
             return False
 
+        # 与投影同步的事务之间可能又有新 job 被登记。唤醒前必须再查一次，
+        # 避免在未知副作用仍在运行时把 run 交回模型。
+        pending = (
+            await session.execute(
+                select(ToolJobRow.job_id)
+                .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+                .where(
+                    ToolOperationRow.run_id == run_id,
+                    ToolJobRow.state.in_(list(UNRESOLVED_JOB_STATES)),
+                )
+                .limit(1)
+            )
+        ).first()
+        if pending is not None:
+            return False
+
+        stale_job_ids: list[str] = []
+        version_unknown_job_ids: list[str] = []
+        if terminal_job_ids:
+            rows = (
+                await session.execute(
+                    select(ToolOperationRow.job_id, ToolOperationRow.dispatch_control_version)
+                    .where(
+                        ToolOperationRow.run_id == run_id,
+                        ToolOperationRow.job_id.in_(terminal_job_ids),
+                    )
+                )
+            ).all()
+            for job_id, dispatched_version in rows:
+                if dispatched_version is None:
+                    version_unknown_job_ids.append(str(job_id))
+                elif int(dispatched_version) != int(run.control_version):
+                    stale_job_ids.append(str(job_id))
+        requires_revalidation = bool(stale_job_ids or version_unknown_job_ids)
+        if stale_job_ids:
+            summary += (
+                f"；其中 {len(stale_job_ids)} 个任务属于旧方向"
+                f"（当前版本 {run.control_version}）：{stale_job_ids[:5]}"
+            )
+        if version_unknown_job_ids:
+            summary += (
+                f"；其中 {len(version_unknown_job_ids)} 个历史任务缺少派发版本："
+                f"{version_unknown_job_ids[:5]}"
+            )
+
         # 幂等键按 (run, 摘要) 生成：重复巡检不会给模型塞第二份同样的通知
         digest = hashlib.sha256(f"{run_id}|{summary}".encode()).hexdigest()[:32]
         await CommandRepository(session).submit(
             session_id=run.session_id,
             run_id=run_id,
             kind=CommandKind.MESSAGE,
-            content=wakeup_message(summary),
+            content=wakeup_message(summary, requires_revalidation=requires_revalidation),
             idempotency_key=f"job-wakeup-{digest}",
             payload={"source": "job_wakeup", "reason": "jobs_reached_terminal"},
         )
@@ -306,6 +372,8 @@ async def _wake_run(db: Database, run_id: UUID, *, summary: str) -> bool:
                 "status": str(RunStatus.QUEUED),
                 "reason": "jobs_reached_terminal",
                 "summary": summary,
+                "stale_job_ids": stale_job_ids,
+                "version_unknown_job_ids": version_unknown_job_ids,
                 "note": "由后台任务唤醒器触发；等待期间没有调用模型。",
             },
         )
@@ -317,20 +385,29 @@ async def _wake_run(db: Database, run_id: UUID, *, summary: str) -> bool:
             payload={
                 "scope": "job_wakeup",
                 "summary": summary,
+                "stale_job_ids": stale_job_ids,
+                "version_unknown_job_ids": version_unknown_job_ids,
                 "injected_message": True,
             },
         )
     return True
 
 
-def wakeup_message(summary: str) -> str:
+def wakeup_message(summary: str, *, requires_revalidation: bool = False) -> str:
     """注入给模型的通知文本。
 
     刻意与用户消息区分开：它来自系统，用于告知"后台任务结果已就绪"。
     """
+    caution = (
+        "旧方向或版本未知的任务结果仅是历史执行记录，不能直接支撑当前结论。"
+        "如需采用，请先按当前目标与范围重新核对，必要时显式发起新操作。\n"
+        if requires_revalidation
+        else ""
+    )
     return (
         f"{WAKEUP_MARKER}\n"
         f"{summary}\n"
+        f"{caution}"
         "请用 read_job_output 读取你需要的输出，并基于实际结果继续推进；"
         "不要重新提交同一个请求。"
     )

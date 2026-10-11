@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from agent_workbench.observability.model_stream import ModelStreamTracker
 from agent_workbench.tools.runtime import Toolbox
 
 
@@ -24,6 +25,8 @@ class RunContext:
     disabled_tools: dict[str, str] = field(default_factory=dict)
     #: 记录本次 run 中由工具触发的进度事件，供无进展判断使用
     progress_events: list[str] = field(default_factory=list)
+    #: 仅用于把图流分片的时间关联到同一物理模型调用，片段结束后不持久化。
+    model_stream: ModelStreamTracker = field(default_factory=ModelStreamTracker)
 
     def note_progress(self, signature: str) -> bool:
         """记录一个"可能算进展"的签名。

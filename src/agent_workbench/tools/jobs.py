@@ -14,12 +14,14 @@ from uuid import UUID
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
+from sqlalchemy import select
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.contracts.enums import ErrorCode, OperationStatus
 from agent_workbench.contracts.tool import ToolError, ToolResult
 from agent_workbench.execution.client import ExecutorConnectionError, ExecutorProtocolError
 from agent_workbench.persistence.repositories import ToolJobRepository
+from agent_workbench.persistence.tables import RunRow, ToolOperationRow
 from agent_workbench.tools.runtime import Toolbox
 
 DEFAULT_OUTPUT_LIMIT = 16384
@@ -53,11 +55,16 @@ async def _resolve_job_id(toolbox: Toolbox, job_id: str) -> UUID:
     """解析 job id；支持简写（例如只给前 8 位）以减少模型输出错误。"""
     candidate = job_id.strip()
     try:
-        return UUID(candidate)
+        parsed = UUID(candidate)
     except ValueError:
-        pass
+        parsed = None
     async with toolbox.db.session() as db:
-        jobs = await ToolJobRepository(db).list_active(toolbox.settings.executor_id)
+        repository = ToolJobRepository(db)
+        if parsed is not None:
+            if await repository.get_for_run(toolbox.run_id, parsed) is None:
+                raise ValueError(f"当前 run 中找不到 job：{job_id}")
+            return parsed
+        jobs = await repository.list_for_run(toolbox.run_id, active_only=True)
     matches = [row for row in jobs if str(row.job_id).startswith(candidate)]
     if len(matches) == 1:
         return matches[0].job_id
@@ -66,6 +73,37 @@ async def _resolve_job_id(toolbox: Toolbox, job_id: str) -> UUID:
             f"找不到 job：{job_id}。可从 http_request 的返回或活动任务列表获取完整 job_id。"
         )
     raise ValueError(f"job 前缀匹配到 {len(matches)} 条，请给出更完整的 job_id")
+
+
+async def _job_direction(toolbox: Toolbox, job_id: UUID) -> dict[str, object]:
+    """读取 job 的派发版本；旧数据保留未知状态，不猜测为当前方向。"""
+    async with toolbox.db.session() as db:
+        row = (
+            await db.execute(
+                select(ToolOperationRow.dispatch_control_version, RunRow.control_version)
+                .join(RunRow, RunRow.id == ToolOperationRow.run_id)
+                .where(ToolOperationRow.run_id == toolbox.run_id, ToolOperationRow.job_id == job_id)
+            )
+        ).one_or_none()
+    if row is None:
+        raise ValueError(f"当前 run 中找不到 job：{job_id}")
+    dispatched, current = row
+    return {
+        "dispatch_control_version": dispatched,
+        "current_control_version": current,
+        "direction_status": (
+            "unknown" if dispatched is None else "current" if dispatched == current else "historical"
+        ),
+    }
+
+
+def _direction_warning(direction: dict[str, object]) -> str:
+    status = direction["direction_status"]
+    if status == "historical":
+        return "；该 job 属于旧方向，输出只是历史记录，采用前须按当前目标重新核对"
+    if status == "unknown":
+        return "；该历史 job 缺少派发版本，采用输出前须按当前目标重新核对"
+    return ""
 
 
 @tool("get_job")
@@ -99,8 +137,23 @@ async def get_job(runtime: ToolRuntime[RunContext], job_id: str) -> str:
             "执行岛返回了不符合协议的数据", ErrorCode.EXECUTOR_INCOMPATIBLE, str(exc), resolved
         )
 
-    payload = snapshot.model_dump(mode="json")
-    return _result(payload, f"job {resolved} 当前状态：{snapshot.state}", resolved)
+    async with toolbox.db.transaction() as db:
+        await ToolJobRepository(db).upsert(
+            job_id=resolved,
+            operation_id=snapshot.operation_id,
+            executor_id=toolbox.settings.executor_id,
+            state=str(snapshot.state),
+            output_cursor=snapshot.output_cursor,
+            executor_started_at=snapshot.started_at,
+            executor_finished_at=snapshot.finished_at,
+        )
+    direction = await _job_direction(toolbox, resolved)
+    payload = {**snapshot.model_dump(mode="json"), **direction}
+    return _result(
+        payload,
+        f"job {resolved} 当前状态：{snapshot.state}{_direction_warning(direction)}",
+        resolved,
+    )
 
 
 @tool("read_job_output")
@@ -145,7 +198,12 @@ async def read_job_output(
             "执行岛返回了不符合协议的数据", ErrorCode.EXECUTOR_INCOMPATIBLE, str(exc), resolved
         )
 
-    return _result(page.model_dump(mode="json"), f"读取到 {page.byte_count} 字节输出", resolved)
+    direction = await _job_direction(toolbox, resolved)
+    return _result(
+        {**page.model_dump(mode="json"), **direction},
+        f"读取到 {page.byte_count} 字节输出{_direction_warning(direction)}",
+        resolved,
+    )
 
 
 @tool("cancel_job")

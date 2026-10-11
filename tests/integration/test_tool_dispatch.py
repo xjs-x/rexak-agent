@@ -13,14 +13,22 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from langchain_core.messages import ToolMessage
+from sqlalchemy import select
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.middleware.tool_dispatch import ToolDispatchMiddleware
 from agent_workbench.contracts.enums import RunStatus
 from agent_workbench.contracts.identity import PolicySnapshot, ScopeRule, ScopeSnapshot
-from agent_workbench.domain.run_state import claim_run, create_run, set_run_status
+from agent_workbench.domain.run_state import (
+    bump_control_version,
+    claim_run,
+    create_run,
+    set_run_status,
+)
 from agent_workbench.domain.scope import ScopePolicy
 from agent_workbench.persistence.repositories import ProjectRepository, SessionRepository
+from agent_workbench.persistence.tables import EventRow
 
 pytestmark = pytest.mark.integration
 
@@ -154,6 +162,51 @@ async def test_timeout_becomes_retryable_failure(database, unique_name) -> None:
     payload = json.loads((await _run_middleware(context, handler)).content)
     assert payload["error"]["code"] == "timeout"
     assert payload["error"]["retryable"] is True
+
+
+async def test_result_arriving_after_direction_change_is_not_injected(
+    database, unique_name
+) -> None:
+    context = await _build_context(database, unique_name)
+    executed: list[str] = []
+
+    async def handler(_request: Any) -> Any:
+        executed.append("remote-effect-may-have-happened")
+        async with database.transaction() as session:
+            await bump_control_version(session, run_id=context.toolbox.run_id)
+        return ToolMessage(
+            content="旧方向的原始结果",
+            tool_call_id="old-call",
+            name="http_request",
+        )
+
+    result = await _run_middleware(context, handler)
+    assert executed == ["remote-effect-may-have-happened"]
+    assert "旧方向的原始结果" not in result.content
+    assert "远端副作用可能已发生" in result.content
+    assert "未注入当前决策" in result.content
+    async with database.session() as session:
+        events = (
+            await session.execute(select(EventRow).where(EventRow.session_id == context.toolbox.session_id))
+        ).scalars().all()
+    assert any(item.payload.get("scope") == "stale_tool_result" for item in events)
+
+
+async def test_database_loss_after_tool_result_is_uncertain(database, unique_name) -> None:
+    context = await _build_context(database, unique_name)
+
+    class _DisconnectedDatabase:
+        def session(self) -> Any:
+            raise RuntimeError("数据库失联")
+
+    async def handler(_request: Any) -> Any:
+        context.toolbox.db = _DisconnectedDatabase()  # type: ignore[assignment]
+        return ToolMessage(content="不能直接采用的结果", tool_call_id="x", name="http_request")
+
+    result = await _run_middleware(context, handler)
+    assert "不能直接采用的结果" not in result.content
+    assert "可能已经产生远端副作用" in result.content
+    assert "不能直接重试" in result.content
 
 
 async def test_unexpected_error_is_not_reported_as_success(database, unique_name) -> None:

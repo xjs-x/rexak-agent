@@ -30,6 +30,7 @@ async def propose_completion(
     remaining_leads_json: list[Any] | str | None = None,
     evidence_refs_json: list[Any] | str | None = None,
     follow_up_suggestions_json: list[Any] | str | None = None,
+    missing_conditions_json: list[Any] | str | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> Command:
     """提交**阶段结束提议**。系统会做确定性检查后才真正结束本阶段。
@@ -44,6 +45,7 @@ async def propose_completion(
         remaining_leads_json: 剩余线索的 JSON 数组字符串（说明为何可以搁置）。
         evidence_refs_json: 关键证据的工件 ID 的 JSON 数组字符串。
         follow_up_suggestions_json: 后续建议的 JSON 数组字符串。
+        missing_conditions_json: 缺少账号、目标不可达等继续测试所需条件。
         tool_call_id: 由框架注入，不要自己填写。
 
     Returns:
@@ -67,6 +69,9 @@ async def propose_completion(
         "evidence_refs": coerce_str_list(evidence_refs_json, "evidence_refs_json"),
         "follow_up_suggestions": coerce_str_list(
             follow_up_suggestions_json, "follow_up_suggestions_json"
+        ),
+        "missing_conditions": coerce_str_list(
+            missing_conditions_json, "missing_conditions_json"
         ),
         "proposed_at_turn": len(runtime.state.get("messages") or []),
     }

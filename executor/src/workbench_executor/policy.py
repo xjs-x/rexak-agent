@@ -86,7 +86,8 @@ class NetworkPolicy:
 
     @property
     def network_isolation(self) -> str:
-        return self._settings.network_isolation
+        # 配置字符串不是隔离证明。当前版本尚无可验证的内核级出站边界。
+        return "unavailable"
 
     @property
     def generic_command_allowed(self) -> bool:
@@ -95,7 +96,7 @@ class NetworkPolicy:
         首版无该系统级约束，因此默认**关闭**通用命令的无人值守模式，
         并在 `/capabilities` 中如实暴露 `network_isolation=unavailable`。
         """
-        return self._settings.network_isolation == "enforced"
+        return False
 
     def resolve_mapping(self, url: str) -> tuple[str, dict[str, str]]:
         """把控制端 URL 映射为执行岛实际访问地址。
@@ -114,6 +115,11 @@ class NetworkPolicy:
                 continue
             if mapping.scheme and mapping.scheme != scheme:
                 continue
+            if scheme == "https" and mapping.to_host.lower() != host:
+                raise PolicyDenied(
+                    "HTTPS 跨主机映射尚不能保证原始 SNI 与证书主机名，已阻断",
+                    target=url,
+                )
             netloc = f"{mapping.to_host}:{mapping.to_port}"
             rebased = f"{scheme}://{netloc}{parts.path or '/'}"
             if parts.query:

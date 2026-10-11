@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -21,7 +22,12 @@ from sqlalchemy import select
 from agent_workbench.contracts.enums import CommandKind, JobState, RunStatus
 from agent_workbench.contracts.identity import PolicySnapshot, ScopeRule, ScopeSnapshot
 from agent_workbench.contracts.tool import JobSnapshot
-from agent_workbench.domain.run_state import claim_run, create_run, set_run_status
+from agent_workbench.domain.run_state import (
+    bump_control_version,
+    claim_run,
+    create_run,
+    set_run_status,
+)
 from agent_workbench.execution.tunnel import TunnelUnavailable
 from agent_workbench.persistence.repositories import (
     ProjectRepository,
@@ -34,13 +40,16 @@ from agent_workbench.persistence.tables import (
     EventRow,
     RunRow,
     ToolJobRow,
+    ToolOperationRow,
 )
 from agent_workbench.runtime import jobs as jobs_module
+from agent_workbench.runtime import runner as runner_module
 from agent_workbench.runtime.jobs import (
     WAKEUP_MARKER,
     pending_jobs_for_run,
     probe_and_wake,
 )
+from agent_workbench.tools.jobs import _direction_warning, _job_direction, _resolve_job_id
 
 pytestmark = [pytest.mark.integration, pytest.mark.recovery]
 
@@ -152,6 +161,62 @@ async def test_pending_jobs_listed_for_waiting_run(database, unique_name) -> Non
     assert [str(item.job_id) for item in pending] == [str(job_id)]
 
 
+async def test_job_tool_lookup_cannot_cross_run(database, unique_name) -> None:
+    _session_a, run_a, job_a = await _waiting_run_with_job(database, f"{unique_name}-a")
+    _session_b, run_b, job_b = await _waiting_run_with_job(database, f"{unique_name}-b")
+    toolbox: Any = SimpleNamespace(run_id=run_a.id, db=database)
+
+    assert await _resolve_job_id(toolbox, str(job_a)) == job_a
+    assert await _resolve_job_id(toolbox, str(job_a)[:8]) == job_a
+    with pytest.raises(ValueError, match="当前 run 中找不到 job"):
+        await _resolve_job_id(toolbox, str(job_b))
+    with pytest.raises(ValueError, match="找不到 job"):
+        await _resolve_job_id(toolbox, str(job_b)[:8])
+    assert (await _job_direction(toolbox, job_a))["direction_status"] == "unknown"
+
+    async with database.transaction() as session:
+        operation = (
+            await session.execute(select(ToolOperationRow).where(ToolOperationRow.job_id == job_a))
+        ).scalar_one()
+        operation.dispatch_control_version = 0
+        await bump_control_version(session, run_id=run_a.id)
+    direction = await _job_direction(toolbox, job_a)
+    assert direction["direction_status"] == "historical"
+    assert "重新核对" in _direction_warning(direction)
+
+    async with database.session() as session:
+        repository = ToolJobRepository(session)
+        assert [row.job_id for row in await repository.list_for_run(run_a.id, active_only=True)] == [job_a]
+        assert [row.job_id for row in await repository.list_for_run(run_b.id, active_only=True)] == [job_b]
+
+
+async def test_cancel_run_only_touches_its_own_jobs(
+    database, unique_name, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _session_a, run_a, job_a = await _waiting_run_with_job(database, f"{unique_name}-cancel-a")
+    _session_b, _run_b, job_b = await _waiting_run_with_job(database, f"{unique_name}-cancel-b")
+    cancelled: list[UUID] = []
+
+    class _CancelClient:
+        async def start(self) -> None:
+            return None
+
+        async def cancel(self, job_id: UUID, request_id: UUID) -> Any:
+            cancelled.append(job_id)
+            return SimpleNamespace(state=JobState.CANCELLED, process_confirmed_exited=True)
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(runner_module, "SshTunnel", _StubTunnel)
+    monkeypatch.setattr(runner_module, "HttpExecutorClient", lambda *_a, **_k: _CancelClient())
+    runner = runner_module.AgentRunner(database=database)
+    await runner._cancel_active_jobs(run_a)
+
+    assert cancelled == [job_a]
+    assert job_b not in cancelled
+
+
 async def test_still_running_keeps_run_waiting(
     database, unique_name, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -185,7 +250,7 @@ async def test_all_terminal_wakes_run_and_injects_notice(
 
     result = await probe_and_wake(database, run_ids=[run.id])
 
-    assert str(run.id) in result["woken"]
+    assert result["woken"] == [str(run.id)]
     assert str(job_id) in result["terminal"]
 
     async with database.session() as session:
@@ -221,6 +286,35 @@ async def test_all_terminal_wakes_run_and_injects_notice(
 
     reasons = [item.payload.get("reason") for item in events]
     assert "jobs_reached_terminal" in reasons
+
+
+async def test_old_direction_job_is_reconciled_but_marked_historical(
+    database, unique_name, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_row, run, job_id = await _waiting_run_with_job(database, unique_name)
+    async with database.transaction() as session:
+        operation = (
+            await session.execute(select(ToolOperationRow).where(ToolOperationRow.job_id == job_id))
+        ).scalar_one()
+        operation.dispatch_control_version = 0
+        assert await bump_control_version(session, run_id=run.id) == 1
+    _patch(monkeypatch, _StubClient({str(job_id): str(JobState.SUCCEEDED)}))
+
+    result = await probe_and_wake(database, run_ids=[run.id])
+
+    assert result["woken"] == [str(run.id)]
+    async with database.session() as session:
+        command = (
+            await session.execute(
+                select(CommandRow).where(CommandRow.session_id == session_row.id)
+            )
+        ).scalar_one()
+        events = (
+            await session.execute(select(EventRow).where(EventRow.session_id == session_row.id))
+        ).scalars().all()
+    assert "旧方向" in command.content
+    assert "不能直接支撑当前结论" in command.content
+    assert any(str(job_id) in row.payload.get("stale_job_ids", []) for row in events)
 
 
 async def test_wakeup_is_idempotent(database, unique_name, monkeypatch: pytest.MonkeyPatch) -> None:

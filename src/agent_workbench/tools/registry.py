@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_workbench.config.settings import Settings, get_settings
+from agent_workbench.tools.browser import BROWSER_TOOLS
 from agent_workbench.tools.completion import COMPLETION_TOOLS
 from agent_workbench.tools.evidence import EVIDENCE_TOOLS
 from agent_workbench.tools.files import FILE_TOOLS
@@ -20,6 +21,7 @@ from agent_workbench.tools.http import HTTP_TOOLS
 from agent_workbench.tools.jobs import JOB_TOOLS
 from agent_workbench.tools.knowledge import KNOWLEDGE_TOOLS
 from agent_workbench.tools.task import TASK_TOOLS
+from agent_workbench.tools.verification import VERIFICATION_TOOLS
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +29,9 @@ class ToolSelection:
     """一次 run 的工具选择。reason 用于把"为什么关掉某组"写进诊断。"""
 
     http: bool = True
+    #: 浏览器工具。真实可用性由 Executor 的能力预检决定；不可用时执行岛会返回
+    #: `browser_unavailable`，控制端据此给出确定失败，而不是假装成功。
+    browser: bool = True
     #: 任务工作区文件工具。**不受**通用命令无人值守模式关闭的影响：
     #: 它不启动进程、不联网，只在本任务工作区内读写。
     files: bool = True
@@ -35,17 +40,20 @@ class ToolSelection:
     task: bool = True
     knowledge: bool = True
     completion: bool = True
+    verification: bool = True
     disabled_reasons: dict[str, str] = field(default_factory=dict)
 
     def to_manifest(self) -> dict[str, Any]:
         return {
             "http": self.http,
+            "browser": self.browser,
             "files": self.files,
             "evidence": self.evidence,
             "jobs": self.jobs,
             "task": self.task,
             "knowledge": self.knowledge,
             "completion": self.completion,
+            "verification": self.verification,
             "disabled_reasons": dict(self.disabled_reasons),
             "note": "工具数量不是能力指标；被关闭的能力会在诊断中说明原因。",
         }
@@ -62,7 +70,7 @@ def default_selection(settings: Settings | None = None) -> ToolSelection:
     _ = cfg
     return ToolSelection(
         disabled_reasons={
-            "browser": "浏览器工具在 P4 交付；Executor 当前对 /browser-sessions 返回 501。",
+            "browser": "浏览器工具已实现；若执行岛没有可用浏览器，动作会返回 browser_unavailable。",
             "command": (
                 "通用命令的无人值守模式已关闭：执行岛 network_isolation=unavailable，"
                 "缺乏执行环境级出站约束。正则黑名单/工作目录/提示词都不能替代网络隔离。"
@@ -79,6 +87,8 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
         tools.extend(HTTP_TOOLS)
     if chosen.files:
         tools.extend(FILE_TOOLS)
+    if chosen.browser:
+        tools.extend(BROWSER_TOOLS)
     if chosen.evidence:
         tools.extend(EVIDENCE_TOOLS)
     if chosen.jobs:
@@ -89,6 +99,8 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
         tools.extend(KNOWLEDGE_TOOLS)
     if chosen.completion:
         tools.extend(COMPLETION_TOOLS)
+    if chosen.verification:
+        tools.extend(VERIFICATION_TOOLS)
     names = [getattr(item, "name", str(item)) for item in tools]
     if len(set(names)) != len(names):
         raise ValueError(f"工具名重复：{names}")

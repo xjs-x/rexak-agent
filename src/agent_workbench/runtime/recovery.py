@@ -67,7 +67,13 @@ class ReconciliationReport:
         }
 
 
-async def recover_stale_runs(db: Database, settings: Settings | None = None) -> list[UUID]:
+async def recover_stale_runs(
+    db: Database,
+    settings: Settings | None = None,
+    *,
+    only_run_id: UUID | None = None,
+    owner_id: str | None = None,
+) -> list[UUID]:
     """把 lease 已过期的 `running` run 置为 `recovering` 并**重新排队**。
 
     不直接跑：先让核对流程检查远端副作用，再决定继续还是等待用户。
@@ -82,18 +88,17 @@ async def recover_stale_runs(db: Database, settings: Settings | None = None) -> 
     recovered: list[UUID] = []
 
     async with db.transaction() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(RunRow).where(
-                        RunRow.status == str(RunStatus.RUNNING),
-                        (RunRow.lease_until.is_(None)) | (RunRow.lease_until < now),
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        stmt = select(RunRow).where(
+            RunRow.status == str(RunStatus.RUNNING),
+            (RunRow.lease_until.is_(None)) | (RunRow.lease_until < now),
         )
+        if only_run_id is not None:
+            stmt = stmt.where(RunRow.id == only_run_id)
+        if owner_id is not None:
+            from agent_workbench.runtime.selection import owned_run_ids
+
+            stmt = stmt.where(RunRow.id.in_(owned_run_ids(owner_id)))
+        rows = (await session.execute(stmt)).scalars().all()
         for run in rows:
             run.status = str(RunStatus.RECOVERING)
             run.owner = None
@@ -117,7 +122,11 @@ async def recover_stale_runs(db: Database, settings: Settings | None = None) -> 
 
 
 async def reconcile_remote_jobs(
-    db: Database, settings: Settings | None = None
+    db: Database,
+    settings: Settings | None = None,
+    *,
+    only_run_id: UUID | None = None,
+    owner_id: str | None = None,
 ) -> ReconciliationReport:
     """核对控制端 `tool_jobs` 投影与 Executor 台账。
 
@@ -129,7 +138,28 @@ async def reconcile_remote_jobs(
     report = ReconciliationReport()
 
     async with db.session() as session:
-        tracked = list(await ToolJobRepository(session).list_active(cfg.executor_id))
+        jobs = ToolJobRepository(session)
+        tracked = list(
+            await jobs.list_for_run(only_run_id, active_only=True)
+            if only_run_id is not None
+            else await jobs.list_active(cfg.executor_id)
+        )
+        if owner_id is not None:
+            from agent_workbench.persistence.tables import ToolOperationRow
+            from agent_workbench.runtime.selection import owned_run_ids
+
+            allowed_operations = set(
+                (
+                    await session.execute(
+                        select(ToolOperationRow.operation_id).where(
+                            ToolOperationRow.run_id.in_(owned_run_ids(owner_id))
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            tracked = [job for job in tracked if job.operation_id in allowed_operations]
         session_by_operation: dict[UUID, UUID] = {}
         if tracked:
             from agent_workbench.persistence.tables import ToolOperationRow
@@ -144,7 +174,6 @@ async def reconcile_remote_jobs(
             session_by_operation = dict(rows)
     if not tracked:
         report.notes.append("没有需要核对的进行中任务")
-        return report
 
     tunnel = SshTunnel(cfg)
     client = HttpExecutorClient(tunnel, settings=cfg, expected_executor_id=cfg.executor_id)
@@ -224,6 +253,8 @@ async def reconcile_remote_jobs(
                     state=str(snapshot.state),
                     output_cursor=snapshot.output_cursor,
                     sync_status="in_sync",
+                    executor_started_at=snapshot.started_at,
+                    executor_finished_at=snapshot.finished_at,
                 )
             report.jobs_reconciled.append({"job_id": str(row.job_id), "state": str(snapshot.state)})
             if str(snapshot.state) == "unknown":
@@ -231,7 +262,8 @@ async def reconcile_remote_jobs(
     finally:
         await _close(tunnel, client)
 
-    report.orphan_artifacts_flagged = await flag_orphan_artifacts(db)
+    if only_run_id is None:
+        report.orphan_artifacts_flagged = await flag_orphan_artifacts(db)
     return report
 
 
@@ -302,7 +334,11 @@ async def flag_orphan_artifacts(db: Database) -> list[str]:
 
 
 async def run_startup_recovery(
-    db: Database | None = None, settings: Settings | None = None
+    db: Database | None = None,
+    settings: Settings | None = None,
+    *,
+    only_run_id: UUID | None = None,
+    owner_id: str | None = None,
 ) -> dict[str, Any]:
     """Runner 启动时的核对入口。
 
@@ -323,11 +359,18 @@ async def run_startup_recovery(
     report = ReconciliationReport()
 
     # 1) 只标记，不决定归宿
-    report.runs_requeued = [str(item) for item in await recover_stale_runs(database, cfg)]
+    report.runs_requeued = [
+        str(item)
+        for item in await recover_stale_runs(
+            database, cfg, only_run_id=only_run_id, owner_id=owner_id
+        )
+    ]
     report.notes.append("已把 lease 过期的 running run 标为 recovering；归宿在远端核对之后决定。")
 
     # 2) 先核对远端真实状态
-    reconciled = await reconcile_remote_jobs(database, cfg)
+    reconciled = await reconcile_remote_jobs(
+        database, cfg, only_run_id=only_run_id, owner_id=owner_id
+    )
     report.jobs_reconciled = reconciled.jobs_reconciled
     report.jobs_unverifiable = reconciled.jobs_unverifiable
     report.orphan_artifacts_flagged = reconciled.orphan_artifacts_flagged
@@ -336,7 +379,10 @@ async def run_startup_recovery(
 
     # 3) 再决定每个 recovering run 能不能继续
     decision = await decide_recovering_runs(
-        database, executor_reachable=reconciled.executor_reachable
+        database,
+        executor_reachable=reconciled.executor_reachable,
+        only_run_id=only_run_id,
+        owner_id=owner_id,
     )
     report.allowed_to_resume = decision["requeued"]
     report.blocked_pending_user = decision["blocked"]
@@ -352,7 +398,13 @@ UNVERIFIABLE_JOB_STATES = frozenset({"unknown"})
 UNVERIFIABLE_SYNC_STATUSES = frozenset({"uncertain"})
 
 
-async def decide_recovering_runs(db: Database, *, executor_reachable: bool) -> dict[str, list[str]]:
+async def decide_recovering_runs(
+    db: Database,
+    *,
+    executor_reachable: bool,
+    only_run_id: UUID | None = None,
+    owner_id: str | None = None,
+) -> dict[str, list[str]]:
     """按远端核对结果决定每个 `recovering` run 的归宿。
 
     判定规则：
@@ -369,15 +421,14 @@ async def decide_recovering_runs(db: Database, *, executor_reachable: bool) -> d
     notes: list[str] = []
 
     async with db.session() as session:
-        runs = (
-            (
-                await session.execute(
-                    select(RunRow).where(RunRow.status == str(RunStatus.RECOVERING))
-                )
-            )
-            .scalars()
-            .all()
-        )
+        stmt = select(RunRow).where(RunRow.status == str(RunStatus.RECOVERING))
+        if only_run_id is not None:
+            stmt = stmt.where(RunRow.id == only_run_id)
+        if owner_id is not None:
+            from agent_workbench.runtime.selection import owned_run_ids
+
+            stmt = stmt.where(RunRow.id.in_(owned_run_ids(owner_id)))
+        runs = (await session.execute(stmt)).scalars().all()
         if not runs:
             return {
                 "requeued": [],

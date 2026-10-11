@@ -31,8 +31,9 @@ class Settings(BaseSettings):
     checkpoint_schema: str = "agent_checkpoint"
     memory_schema: str = "agent_memory"
     app_schema: str = "app"
-    db_pool_min: int = 1
+    db_pool_min: int = 4
     db_pool_max: int = 8
+    db_connect_timeout_seconds: int = Field(default=10, gt=0)
 
     # ---------- 控制端服务 ----------
     api_host: str = "127.0.0.1"
@@ -72,12 +73,17 @@ class Settings(BaseSettings):
     # ---------- 任务生命周期 ----------
     tool_interactive_threshold_seconds: int = 20
     single_operation_timeout_seconds: int = 120
+    #: 连续无有效流式分片的等待上限；思考分片也算有效活动。
+    model_request_timeout_seconds: int = Field(default=300, gt=0)
+    #: 单次模型调用的墙钟保护，不是任务总时长限制。
+    model_request_max_seconds: int = Field(default=1800, gt=0)
     run_lease_seconds: int = 60
     lease_heartbeat_seconds: int = 15
     segment_step_threshold: int = 40
     #: 后台任务唤醒巡检间隔。等待期间**不调用模型**，只按这个间隔核对远端状态。
     #: 这是资源初值，不是任务总时长限制。
     job_wakeup_interval_seconds: float = 3.0
+    runner_max_concurrent_runs: int = Field(default=2, ge=1, le=16)
 
     # ---------- 保留与上限 ----------
     event_retention_days: int = 30

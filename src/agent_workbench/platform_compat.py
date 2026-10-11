@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 import sys
 
 #: 子进程必须使用的 I/O 编码。控制端的源码、日志、CLI 输出与子进程输出全部是
@@ -27,9 +28,47 @@ CHILD_IO_ENV = {
 _applied = False
 
 
+def _bounded_socketpair(
+    family: int = socket.AF_INET, type: int = socket.SOCK_STREAM, proto: int = 0
+) -> tuple[socket.socket, socket.socket]:
+    """Windows 回环 socketpair：连接或 accept 失败时限时退出，避免启动永久挂住。"""
+    if family not in {socket.AF_INET, socket.AF_INET6} or type != socket.SOCK_STREAM or proto != 0:
+        raise ValueError("仅支持 IPv4/IPv6 TCP socketpair")
+    for attempt in range(3):
+        listener = socket.socket(family, type, proto)
+        client = socket.socket(family, type, proto)
+        try:
+            listener.settimeout(5)
+            client.settimeout(5)
+            listener.bind(("::1" if family == socket.AF_INET6 else "127.0.0.1", 0))
+            listener.listen(1)
+            client.connect(listener.getsockname())
+            peer, _ = listener.accept()
+            client.settimeout(None)
+            peer.settimeout(None)
+            return peer, client
+        except TimeoutError:
+            client.close()
+            if attempt == 2:
+                raise
+        except BaseException:
+            client.close()
+            raise
+        finally:
+            listener.close()
+    raise RuntimeError("回环 socketpair 重试失败")
+
+
+def configure_local_loopback() -> None:
+    """仅替换 Windows 的 Python 回环 socketpair 兜底实现。"""
+    if sys.platform == "win32":
+        socket.socketpair = _bounded_socketpair
+
+
 def configure_event_loop_policy() -> str:
     """按平台设置事件循环策略。返回实际生效的策略名。"""
     global _applied
+    configure_local_loopback()
     if sys.platform == "win32":
         policy = asyncio.get_event_loop_policy()
         if not isinstance(policy, asyncio.WindowsSelectorEventLoopPolicy):  # type: ignore[attr-defined]

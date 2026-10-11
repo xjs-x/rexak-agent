@@ -18,10 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agent_workbench.contracts.enums import CommandKind, CommandStatus, ErrorCode, RunStatus
 from agent_workbench.contracts.errors import ApiError
 from agent_workbench.contracts.events import EventType
-from agent_workbench.domain.run_state import create_run, find_active_run, get_session
+from agent_workbench.domain.run_state import (
+    bump_control_version,
+    create_run,
+    find_active_run,
+    get_session,
+    set_run_status,
+)
 from agent_workbench.observability.events import append_event
 from agent_workbench.persistence.repositories import CommandRepository
-from agent_workbench.persistence.tables import RunRow
+from agent_workbench.persistence.tables import CommandRow, RunRow, SessionRow
 
 #: 这些指令立即提高优先级，绕过普通消息的排队顺序
 URGENT_KINDS = frozenset({CommandKind.PAUSE, CommandKind.CANCEL})
@@ -54,6 +60,32 @@ async def submit_message(
     - 有活动 run -> 排队为补充消息，在下一个一致边界注入。
     """
     await get_session(session, session_id)
+    await session.execute(select(SessionRow).where(SessionRow.id == session_id).with_for_update())
+    repo = CommandRepository(session)
+    existing = (
+        await session.execute(
+            select(CommandRow).where(
+                CommandRow.session_id == session_id, CommandRow.idempotency_key == idempotency_key
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        result = await repo.submit(
+            session_id=session_id,
+            run_id=existing.run_id,
+            kind=CommandKind.MESSAGE,
+            content=content,
+            idempotency_key=idempotency_key,
+            payload=dict(payload or {}),
+        )
+        return CommandReceipt(
+            command_id=result.row.id,
+            status=CommandStatus(result.row.status),
+            created=False,
+            run_id=existing.run_id,
+            created_run=False,
+            message="已受理过本条输入，返回原指令",
+        )
 
     active = await find_active_run(session, session_id)
     created_run = False
@@ -71,7 +103,14 @@ async def submit_message(
         run_id = run.id
         created_run = True
 
-    repo = CommandRepository(session)
+    assert run_id is not None
+    if active is None:
+        # 已结束阶段的未消费指令不应在新的目标下重新执行；原记录保留可查。
+        for command in await repo.list_pending(session_id):
+            if command.run_id != run_id:
+                await repo.mark_status(
+                    command.id, CommandStatus.SUPERSEDED, reason="用户已开始新的运行阶段"
+                )
     result = await repo.submit(
         session_id=session_id,
         run_id=run_id,
@@ -84,6 +123,29 @@ async def submit_message(
     )
 
     if result.created:
+        if active is not None:
+            if not (payload or {}).get("explicit_direction_change"):
+                await bump_control_version(session, run_id=active.id)
+            if RunStatus(active.status) in {
+                RunStatus.PAUSED,
+                RunStatus.PAUSING,
+                RunStatus.WAITING_USER,
+            }:
+                active.config_snapshot = {
+                    **active.config_snapshot,
+                    "restart_checkpoint_on_input": str(result.row.id),
+                }
+                if RunStatus(active.status) is not RunStatus.PAUSING:
+                    await set_run_status(session, run_id=active.id, target=RunStatus.QUEUED)
+        from agent_workbench.domain.instruction_scope import sync_instruction_scope
+
+        await sync_instruction_scope(
+            session,
+            session_id=session_id,
+            run_id=run_id,
+            content=content,
+            control_changed=active is not None,
+        )
         await append_event(
             session,
             session_id=session_id,

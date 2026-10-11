@@ -27,11 +27,9 @@ from pydantic import BaseModel, Field
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.contracts.enums import (
-    ArtifactAvailability,
     ErrorCode,
     ExecutionCertainty,
     OperationStatus,
-    Sensitivity,
     ToolEffectClass,
 )
 from agent_workbench.contracts.tool import ArtifactRef, ToolError, ToolResult
@@ -42,16 +40,14 @@ from agent_workbench.execution.client import (
     ExecutorProtocolError,
     ExecutorRejected,
 )
-from agent_workbench.persistence.repositories import (
-    ArtifactRepository,
-)
 from agent_workbench.tools.remote import (
     json_text,
     prepare_operation,
     record_result,
     record_submitted,
+    store_remote_artifact,
 )
-from agent_workbench.tools.runtime import Toolbox, origin_lock_key
+from agent_workbench.tools.runtime import Toolbox, execution_identity, origin_lock_key
 
 # --------------------------------------------------------------------------- #
 # 内部入参模型（用于参数互斥校验，不直接作为工具 schema）
@@ -68,6 +64,11 @@ class HttpRequestArgs(BaseModel):
     identity: str = "anonymous"
     follow_redirects: bool = True
     save_body_artifact: bool = True
+    verify_tls: bool = True
+    csrf_source_url: str | None = None
+    csrf_input_name: str | None = None
+    csrf_destination: Literal["form", "json", "header"] = "form"
+    csrf_target_name: str | None = None
     note: str | None = None
 
 
@@ -87,11 +88,7 @@ async def _store_response_artifacts(
     payload: dict[str, Any],
     identity: str,
 ) -> list[ArtifactRef]:
-    """把原始响应字节落成不可变工件，并提交元数据。
-
-    顺序：先写文件（原子替换），再提交数据库元数据。
-    文件写成功但元数据失败 -> 标记 `orphaned`，**不返回可用证据**（§5.3）。
-    """
+    """统一走分块、哈希核对与不可变落盘，不把首块当完整响应。"""
     refs: list[ArtifactRef] = []
     for name in ("response.body", "response.meta.json"):
         media_type = (
@@ -99,95 +96,20 @@ async def _store_response_artifacts(
             if name == "response.body"
             else "application/json"
         )
-        try:
-            data, headers = await toolbox.executor.download_artifact(
-                job_id, name, limit=8 * 1024 * 1024
+        refs.append(
+            await store_remote_artifact(
+                toolbox,
+                name=name,
+                job_id=job_id,
+                operation_id=operation_id,
+                media_type=media_type,
+                identity=identity,
+                source_url=str(payload.get("final_url") or ""),
+                expected_sha256=str(payload.get("body_sha256") or "")
+                if name == "response.body"
+                else "",
             )
-        except (ExecutorConnectionError, ExecutorProtocolError) as exc:
-            refs.append(
-                ArtifactRef(
-                    artifact_id=UUID(int=0),
-                    media_type=media_type,
-                    byte_size=0,
-                    sha256="",
-                    availability=ArtifactAvailability.REMOTE_ONLY,
-                    source_operation_id=operation_id,
-                    summary=f"工件仍在远端、未能同步：{type(exc).__name__}",
-                )
-            )
-            continue
-
-        expected = headers.get("sha256") or ""
-        stored = toolbox.artifacts.write_bytes(
-            data,
-            media_type=media_type,
-            sensitivity=Sensitivity.INTERNAL,
-            captured_by=identity,
-            source_url=str(payload.get("final_url") or ""),
-            source_operation=str(operation_id),
-            capture_time=datetime.now(UTC),
         )
-
-        if expected and stored.sha256 != expected:
-            refs.append(
-                ArtifactRef(
-                    artifact_id=UUID(int=0),
-                    media_type=media_type,
-                    byte_size=stored.byte_size,
-                    sha256=stored.sha256,
-                    availability=ArtifactAvailability.ORPHANED,
-                    source_operation_id=operation_id,
-                    summary=(
-                        f"哈希核对失败（期望 {expected[:12]}…，实际 {stored.sha256[:12]}…）；"
-                        "不作为可用证据"
-                    ),
-                )
-            )
-            continue
-
-        try:
-            async with toolbox.db.transaction() as db:
-                row = await ArtifactRepository(db).create(
-                    sha256=stored.sha256,
-                    byte_size=stored.byte_size,
-                    media_type=media_type,
-                    relative_key=stored.relative_key,
-                    session_id=toolbox.session_id,
-                    source_operation_id=operation_id,
-                    sensitivity=str(Sensitivity.INTERNAL),
-                    availability=str(ArtifactAvailability.AVAILABLE),
-                    captured_at=stored.captured_at,
-                    truncated=stored.truncated,
-                    captured_by_identity=identity,
-                    source_url=str(payload.get("final_url") or ""),
-                    summary=f"{name}（{stored.byte_size} 字节）",
-                )
-            refs.append(
-                ArtifactRef(
-                    artifact_id=row.id,
-                    media_type=media_type,
-                    byte_size=stored.byte_size,
-                    sha256=stored.sha256,
-                    availability=ArtifactAvailability.AVAILABLE,
-                    sensitivity=Sensitivity.INTERNAL,
-                    truncated=stored.truncated,
-                    source_operation_id=operation_id,
-                    captured_at=stored.captured_at,
-                    summary=f"原始 {name}",
-                )
-            )
-        except Exception as exc:
-            refs.append(
-                ArtifactRef(
-                    artifact_id=UUID(int=0),
-                    media_type=media_type,
-                    byte_size=stored.byte_size,
-                    sha256=stored.sha256,
-                    availability=ArtifactAvailability.ORPHANED,
-                    source_operation_id=operation_id,
-                    summary=f"元数据提交失败，待修复孤儿：{type(exc).__name__}",
-                )
-            )
     return refs
 
 
@@ -266,7 +188,12 @@ def _summarize_http(state: str, payload: dict[str, Any]) -> str:
         return (
             f"HTTP {payload.get('status_code')}，最终地址 {payload.get('final_url')}，"
             f"响应体 {payload.get('body_bytes')} 字节。"
-            "注意：请求成功本身不代表目标存在缺陷。"
+            + (
+                "本次请求未校验 TLS 证书。"
+                if payload.get("tls_verification_enabled") is False
+                else ""
+            )
+            + "注意：请求成功本身不代表目标存在缺陷。"
         )
     if state == "unknown":
         return (
@@ -350,6 +277,8 @@ async def run_http_request(
     # 1) 范围预检：给出**清楚原因**；最终放行由执行岛 NetworkPolicy 决定
     try:
         toolbox.scope.check_url(args.url)
+        if args.csrf_source_url:
+            toolbox.scope.check_url(args.csrf_source_url)
     except ScopeViolation as exc:
         return _failed(
             UUID(int=0),
@@ -377,6 +306,9 @@ async def run_http_request(
 
     async with toolbox.locks.acquire(keys, timeout=90.0):
         arguments = args.model_dump(exclude={"note"})
+        if args.verify_tls:
+            # 新增默认值不改变历史请求摘要；恢复旧调用仍复用原 operation_id。
+            arguments.pop("verify_tls")
         operation_id, _replayed = await prepare_operation(
             toolbox,
             tool_call_id or f"http_request:{method}:{args.url}",
@@ -399,9 +331,14 @@ async def run_http_request(
                 "params": args.params,
                 "body": args.body,
                 "json_body": args.json_body,
-                "identity_id": args.identity,
+                "identity_id": execution_identity(toolbox, args.identity),
                 "max_redirects": 10 if args.follow_redirects else 0,
                 "save_artifact": args.save_body_artifact,
+                "verify_tls": args.verify_tls,
+                "csrf_source_url": args.csrf_source_url,
+                "csrf_input_name": args.csrf_input_name,
+                "csrf_destination": args.csrf_destination,
+                "csrf_target_name": args.csrf_target_name,
             },
         }
 
@@ -454,7 +391,9 @@ async def run_http_request(
                 finished_at=datetime.now(UTC),
             )
 
-        await record_submitted(toolbox, operation_id, receipt.job_id)
+        await record_submitted(
+            toolbox, operation_id, receipt.job_id, accepted_at=receipt.accepted_at
+        )
 
         # 5) 交互阈值内等待；超时返回 accepted，模型调用链不被占住
         try:
@@ -474,7 +413,12 @@ async def run_http_request(
 
     # 6) 组装统一结果
     status = _job_state_to_status(str(snapshot.state))
-    payload = await _load_job_meta(toolbox, receipt.job_id)
+    # TLS/连接失败通常没有响应文件；先使用远端终态，不能用工件 404 覆盖真实错误。
+    payload = (
+        await _load_job_meta(toolbox, receipt.job_id)
+        if status is OperationStatus.SUCCEEDED
+        else {"error_message": snapshot.error.message if snapshot.error else "执行岛未返回明确原因"}
+    )
     refs: list[ArtifactRef] = []
     if status is OperationStatus.SUCCEEDED and args.save_body_artifact:
         refs = await _store_response_artifacts(
@@ -502,6 +446,8 @@ async def run_http_request(
                 "elapsed_ms": payload.get("elapsed_ms"),
                 "body_bytes": payload.get("body_bytes"),
                 "body_sha256": payload.get("body_sha256"),
+                "tls_verified": payload.get("tls_verified"),
+                "tls_verification_enabled": payload.get("tls_verification_enabled"),
             }
         )
         if status is OperationStatus.SUCCEEDED:
@@ -522,6 +468,12 @@ async def run_http_request(
             code=snapshot.error.code,
             message=snapshot.error.message or "执行岛未返回明确原因",
             retryable=snapshot.error.retryable,
+            recovery_hint=(
+                "证书校验失败。若需要检查使用自签名证书的测试服务，可显式设置 verify_tls=false"
+                "发起新的请求；结果会注明未校验证书，不可当作证书可信的证据。"
+                if snapshot.error.code == "tls_certificate_error"
+                else snapshot.error.recovery_hint
+            ),
         )
     elif status is OperationStatus.UNKNOWN:
         error = ToolError(
@@ -555,6 +507,7 @@ async def run_http_request(
         job_id=receipt.job_id,
         status=str(snapshot.state),
         refs=refs,
+        snapshot=snapshot,
     )
     return result
 
@@ -576,6 +529,11 @@ async def http_request(
     json_body_json: str | None = None,
     follow_redirects: bool = True,
     save_body_artifact: bool = True,
+    verify_tls: bool = True,
+    csrf_source_url: str | None = None,
+    csrf_input_name: str | None = None,
+    csrf_destination: Literal["form", "json", "header"] = "form",
+    csrf_target_name: str | None = None,
 ) -> str:
     """对测试范围内的目标发起一次 HTTP 请求，返回统一 ToolResult。
 
@@ -591,6 +549,12 @@ async def http_request(
         follow_redirects: 是否跟随重定向（每一跳仍会做范围检查）。
         save_body_artifact: 是否把原始响应体保存为不可变工件（建议保持开启，
             否则后续无法引用原始证据）。
+        verify_tls: 默认校验 HTTPS 证书。自签名测试服务可显式设为 false；仅本次请求生效，
+            结果注明证书未验证，范围与重定向检查仍然生效。
+        csrf_source_url: 可选；每次写请求前从此页面获取新的隐藏表单 token。
+        csrf_input_name: token 在来源页面的隐藏 input 名称。
+        csrf_destination: 注入到 form、json 或 header；token 不进入模型上下文。
+        csrf_target_name: 目标字段或请求头名称；留空沿用输入名。
 
     Returns:
         ToolResult 的 JSON 文本：status、summary、data（状态码/最终地址/响应预览）
@@ -612,6 +576,11 @@ async def http_request(
         json_body=_parse_json_value(json_body_json, "json_body_json"),
         follow_redirects=follow_redirects,
         save_body_artifact=save_body_artifact,
+        verify_tls=verify_tls,
+        csrf_source_url=csrf_source_url,
+        csrf_input_name=csrf_input_name,
+        csrf_destination=csrf_destination,
+        csrf_target_name=csrf_target_name,
     )
     result = await run_http_request(args, toolbox, runtime.tool_call_id or "")
     return json_text(result)
@@ -642,8 +611,8 @@ async def session_info(
                 "跨身份不共享 Cookie。"
             ),
             "cookie_note": (
-                "Cookie 只在显式同身份会话转换时同步，并检查域/路径/Secure 与身份版本；"
-                "浏览器登录不保证 HTTP 客户端自动获得同样的认证语义。"
+                "浏览器动作完成后会将同身份、同目标的 Cookie 受控同步至 HTTP 会话；"
+                "每个新 session 使用独立身份键。登录有效性仍需探针确认。"
             ),
         },
         started_at=datetime.now(UTC),

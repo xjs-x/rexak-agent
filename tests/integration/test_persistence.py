@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import AsyncGenerator
+from typing import cast
 
 import pytest
 from sqlalchemy import select
 
+from agent_workbench.api.sse import event_stream
 from agent_workbench.contracts.enums import (
     CommandKind,
     ErrorCode,
@@ -331,6 +334,35 @@ async def test_event_envelope_roundtrip_and_sse_frame(database, unique_name) -> 
     assert frame.endswith("\n\n")
 
 
+async def test_sse_redacts_browser_payload_without_changing_stored_event(database, unique_name) -> None:
+    session_row = await _make_session(database, unique_name)
+    async with database.transaction() as session:
+        await append_event(
+            session,
+            session_id=session_row.id,
+            event_type=EventType.TOOL_OUTPUT,
+            payload={
+                "preview": "Authorization: Bearer supersecretvalue",
+                "nested": {"api_key": "supersecretvalue"},
+            },
+        )
+
+    stream = cast(
+        AsyncGenerator[str, None],
+        event_stream(database.session_factory(), session_id=session_row.id, after_seq=0),
+    )
+    try:
+        frame = await anext(stream)
+    finally:
+        await stream.aclose()
+    assert "supersecretvalue" not in frame
+    assert "<redacted>" in frame
+
+    async with database.session() as session:
+        stored = await read_events_after(session, session_id=session_row.id)
+    assert stored[0].payload["nested"]["api_key"] == "supersecretvalue"
+
+
 async def test_events_are_isolated_per_session(database, unique_name) -> None:
     session_a = await _make_session(database, f"{unique_name}-a")
     session_b = await _make_session(database, f"{unique_name}-b")
@@ -367,6 +399,37 @@ def test_artifact_write_is_content_addressed_and_atomic(settings) -> None:
     assert first.relative_key == second.relative_key, "相同内容应内容寻址到同一键"
     assert store.verify(first.relative_key, first.sha256)
     assert store.read_bytes(first.relative_key) == payload
+
+
+def test_concurrent_identical_artifact_writes_keep_metadata_atomic(settings) -> None:
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+
+    from agent_workbench.evidence.artifacts import ArtifactStore
+
+    store = ArtifactStore(settings)
+    payload = f"并发归档-{uuid.uuid4()}".encode()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        saved = list(pool.map(
+            lambda _: store.write_bytes(payload, media_type="text/plain"), range(16)
+        ))
+    assert len({row.sha256 for row in saved}) == 1
+    assert store.verify(saved[0].relative_key, saved[0].sha256)
+    meta = store.resolve(saved[0].relative_key).with_suffix(".meta.json")
+    assert json.loads(meta.read_text(encoding="utf-8"))["sha256"] == saved[0].sha256
+
+
+def test_stream_write_keeps_existing_content_addressed_file(settings) -> None:
+    from io import BytesIO
+
+    from agent_workbench.evidence.artifacts import ArtifactStore
+
+    store = ArtifactStore(settings)
+    content = f"流式归档-{uuid.uuid4()}".encode()
+    first = store.write_stream(BytesIO(content), media_type="text/plain")
+    second = store.write_stream(BytesIO(content), media_type="text/plain")
+    assert first.relative_key == second.relative_key
+    assert store.read_bytes(first.relative_key) == content
 
 
 def test_artifact_verifies_hash_and_rejects_tampering(settings) -> None:

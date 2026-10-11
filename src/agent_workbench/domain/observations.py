@@ -20,6 +20,7 @@ async def record_observation_ref(
     session: AsyncSession,
     *,
     session_id: UUID,
+    source_run_id: UUID | None = None,
     summary: str,
     artifact_ids: list[str],
     identity: str = "anonymous",
@@ -29,6 +30,7 @@ async def record_observation_ref(
     row = ObservationRow(
         id=uuid4(),
         session_id=session_id,
+        source_run_id=source_run_id,
         summary=summary,
         identity_label=identity,
         url=url,

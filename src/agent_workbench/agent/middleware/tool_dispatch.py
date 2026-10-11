@@ -14,6 +14,7 @@ import asyncio
 import json
 from typing import Any
 
+import structlog
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 from sqlalchemy import select
@@ -25,7 +26,9 @@ from agent_workbench.contracts.enums import RunStatus
 from agent_workbench.contracts.events import EventType
 from agent_workbench.domain.run_state import is_current_owner
 from agent_workbench.observability.events import append_event
-from agent_workbench.persistence.tables import RunRow
+from agent_workbench.persistence.tables import RunRow, ToolOperationRow
+
+log = structlog.get_logger(__name__)
 
 
 def _tool_message(request: Any, text: str) -> ToolMessage:
@@ -34,11 +37,44 @@ def _tool_message(request: Any, text: str) -> ToolMessage:
         content=text,
         tool_call_id=str(tool_call.get("id") or ""),
         name=str(tool_call.get("name") or "blocked_tool"),
+        status="error",
     )
 
 
 class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
     async def awrap_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
+        from agent_workbench.observability.tool_activity import emit_tool_activity, result_view
+
+        context = getattr(request.runtime, "context", None)
+        if context is None:
+            return await handler(request)
+        call = request.tool_call or {}
+
+        async def emit(phase: str, status: str, output: str = "") -> None:
+            try:
+                await emit_tool_activity(
+                    context.toolbox, call, phase=phase, status=status, output=output
+                )
+            except Exception as exc:
+                # 展示故障不能把已执行的操作变成未执行；记录错误，不覆盖工具结果。
+                log.warning("tool_activity_event_failed", error_type=type(exc).__name__)
+
+        await emit("started", "preparing")
+        try:
+            result = await self._dispatch_tool_call(request, handler)
+        except asyncio.CancelledError:
+            await emit(
+                "interrupted", "interrupted", "Agent 已打断等待；远端任务状态须以执行台账为准。"
+            )
+            raise
+        except Exception as exc:
+            await emit("finished", "failed", f"工具派发检查失败：{type(exc).__name__}")
+            raise
+        state, output = result_view(result)
+        await emit("finished", state, output)
+        return result
+
+    async def _dispatch_tool_call(self, request, handler):  # type: ignore[no-untyped-def]
         context: RunContext | None = getattr(request.runtime, "context", None)
         if context is None:
             return await handler(request)
@@ -138,7 +174,64 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         # "整个 run 失败"，掩盖真实原因。这里按类型区分后写成合法的终结 ToolMessage，
         # 让模型能据此换路线，也让 finish_gate 能据此判断"是否有阻塞"。
         try:
-            return await handler(request)
+            result = await handler(request)
+            try:
+                async with toolbox.db.session() as db:
+                    after = (
+                        await db.execute(
+                            select(RunRow.control_version).where(RunRow.id == toolbox.run_id)
+                        )
+                    ).scalar_one()
+            except Exception as exc:
+                return _tool_message(
+                    request,
+                    "工具调用可能已经产生远端副作用，但结果返回后无法核对控制版本"
+                    f"（{type(exc).__name__}）。结果未注入当前决策；"
+                    "请先按既有 operation_id/job_id 核对，不能直接重试。",
+                )
+            if int(pinned) != int(after):
+                reference_error = False
+                try:
+                    async with toolbox.db.session() as db:
+                        operation = (
+                            await db.execute(
+                                select(ToolOperationRow).where(
+                                    ToolOperationRow.run_id == toolbox.run_id,
+                                    ToolOperationRow.tool_call_id == str(tool_call.get("id") or ""),
+                                )
+                            )
+                        ).scalar_one_or_none()
+                except Exception:
+                    operation = None
+                    reference_error = True
+                event_error = False
+                try:
+                    await self._emit_stale_result(
+                        toolbox,
+                        tool_name,
+                        int(pinned),
+                        int(after),
+                        operation,
+                    )
+                except Exception:
+                    event_error = True
+                reference = (
+                    f"operation_id={operation.operation_id}，job_id={operation.job_id}。"
+                    if operation is not None
+                    else "请核对该工具的执行记录。"
+                )
+                return _tool_message(
+                    request,
+                    "工具调用已开始后用户改变了方向；远端副作用可能已发生，"
+                    "本次结果未注入当前决策。"
+                    f"{reference}请按当前目标重新核对，不能把旧结果直接当成当前结论。"
+                    + (
+                        "执行记录或事件核对失败，请检查数据库连接。"
+                        if event_error or reference_error
+                        else ""
+                    ),
+                )
+            return result
         except asyncio.CancelledError:
             raise
         except StaleResponseError as exc:
@@ -184,6 +277,32 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 )
         except Exception:
             return
+
+    @staticmethod
+    async def _emit_stale_result(
+        toolbox: Any,
+        tool_name: str,
+        pinned: int,
+        current: int,
+        operation: ToolOperationRow | None,
+    ) -> None:
+        """已派发操作的迟到结果：保留执行事实，但不把旧结果送入当前图决策。"""
+        async with toolbox.db.transaction() as db:
+            await append_event(
+                db,
+                session_id=toolbox.session_id,
+                run_id=toolbox.run_id,
+                event_type=EventType.ERROR,
+                payload={
+                    "scope": "stale_tool_result",
+                    "tool": tool_name,
+                    "pinned_control_version": pinned,
+                    "current_control_version": current,
+                    "operation_id": str(operation.operation_id) if operation else None,
+                    "job_id": str(operation.job_id) if operation and operation.job_id else None,
+                    "message": "旧工具结果未注入当前决策；远端副作用需单独核对。",
+                },
+            )
 
 
 def _disabled_reason(context: RunContext, tool_name: str) -> str | None:

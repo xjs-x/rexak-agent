@@ -1,4 +1,4 @@
-"""工件存储：内容寻址 + 原子落盘 + 元数据后置提交。
+"""工件存储：内容寻址 + 原子建档 + 元数据后置提交。
 
 目录布局（相对 `WORKBENCH_DATA_ROOT`）：
 
@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -30,12 +31,13 @@ _CHUNK = 1024 * 1024
 #: 需要在可读视图中打码的字段名（大小写不敏感）
 _SENSITIVE_KEY_PATTERN = re.compile(
     r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|set-cookie|"
-    r"session[_-]?id|csrf|xsrf|bearer|private[_-]?key)\b"
+    r"session[_-]?id|csrf|xsrf|bearer|basic|private[_-]?key)\b"
 )
-_BEARER_PATTERN = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9\-._~+/=]{8,}")
+_BEARER_PATTERN = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9\-._~+/=]+")
 _KV_PATTERN = re.compile(
-    r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|csrf|xsrf)"
-    r"\s*[=:]\s*([^\s;&\"']{1,256})"
+    r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|"
+    r"set-cookie|session[_-]?id|csrf|xsrf|private[_-]?key)"
+    r"\s*[=:]\s*([^\s;&\"']+)"
 )
 
 
@@ -94,7 +96,7 @@ class ArtifactStore:
         truncated: bool = False,
         capture_time: datetime | None = None,
     ) -> StoredArtifact:
-        """写入字节。原子替换 + 内容寻址。"""
+        """写入字节。同哈希内容只建档一次，原件不可变。"""
         content = data
         digest = hashlib.sha256(content).hexdigest()
         relative_key = self._key_for(digest)
@@ -108,7 +110,12 @@ class ArtifactStore:
                     handle.write(content)
                     handle.flush()
                     os.fsync(handle.fileno())
-                tmp.replace(target)
+                try:
+                    # 同目录硬链接是原子 create-if-absent；不替换并发读写中的目标。
+                    os.link(tmp, target)
+                except FileExistsError:
+                    if not self.verify(relative_key, digest):
+                        raise ArtifactError(f"同哈希工件内容不一致：{relative_key}") from None
             finally:
                 if tmp.exists():
                     tmp.unlink(missing_ok=True)
@@ -174,10 +181,11 @@ class ArtifactStore:
             relative_key = self._key_for(digest)
             target = self._root / relative_key
             target.parent.mkdir(parents=True, exist_ok=True)
-            if not target.exists():
-                tmp.replace(target)
-            else:
-                tmp.unlink(missing_ok=True)
+            try:
+                os.link(tmp, target)
+            except FileExistsError:
+                if not self.verify(relative_key, digest):
+                    raise ArtifactError(f"同哈希工件内容不一致：{relative_key}") from None
         finally:
             tmp.unlink(missing_ok=True)
 
@@ -222,9 +230,17 @@ class ArtifactStore:
             "sensitivity": str(sensitivity),
             "truncated": stored.truncated,
         }
-        tmp = meta_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(meta_path)
+        tmp = meta_path.with_name(f".{meta_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            # 同哈希的并发写入共享首份旁证；逐次元数据由数据库行保存。
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, meta_path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     # ---------------- 读取 ----------------
 
@@ -232,7 +248,7 @@ class ArtifactStore:
         """把相对键解析为绝对路径，并拒绝越界。"""
         candidate = (self._root / relative_key).resolve()
         root = self._root.resolve()
-        if not str(candidate).startswith(str(root)):
+        if not candidate.is_relative_to(root):
             raise ArtifactError(f"工件键越界：{relative_key}")
         return candidate
 
@@ -313,6 +329,11 @@ def redact_text(text: str) -> str:
     masked = _BEARER_PATTERN.sub(lambda m: f"{m.group(1)} <redacted>", cleaned)
     # 2) 再按字段名打码值；保留字段名便于理解结构
     return _KV_PATTERN.sub(lambda m: f"{m.group(1)}=<redacted>", masked)
+
+
+def contains_secret_marker(text: str) -> bool:
+    """判断文本中是否已有敏感字段标记，供流式输出在字段完整前暂缓发布。"""
+    return _SENSITIVE_KEY_PATTERN.search(text) is not None
 
 
 def contains_control_chars(value: str) -> bool:

@@ -28,7 +28,7 @@ from agent_workbench.agent.middleware import (
     build_compaction_middleware,
 )
 from agent_workbench.agent.middleware.command_guard import CommandGuardMiddleware
-from agent_workbench.agent.middleware.compaction import CompactionValidatorMiddleware
+from agent_workbench.agent.middleware.progress import ProgressMiddleware
 from agent_workbench.agent.prompts import PROMPT_VERSION, SYSTEM_PROMPT
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.config.catalog import PriceCatalog, default_price_catalog
@@ -67,7 +67,10 @@ class AgentRuntime:
         达到上限时进入恢复流程而不是当成完成（§6.4）。
         """
         return {
-            "configurable": {"thread_id": thread_id, "run_id": run_id},
+            # LangGraph 将 metadata.run_id 相同的输入视为同次调用重连；
+            # configurable 的简单字段会被提升为 metadata，不能在这里复用业务 run_id。
+            "configurable": {"thread_id": thread_id},
+            "metadata": {"workbench_run_id": run_id},
             "recursion_limit": recursion_limit,
         }
 
@@ -103,7 +106,7 @@ async def open_agent_runtime(
             cfg,
         )
         binding = ModelBinding(
-            profile=profile, request_timeout_seconds=cfg.single_operation_timeout_seconds
+            profile=profile, request_timeout_seconds=cfg.model_request_timeout_seconds
         )
 
     model = build_chat_model(binding, secret_store=store_secrets, streaming=True)
@@ -111,22 +114,24 @@ async def open_agent_runtime(
     middleware = [
         CommandGuardMiddleware(),
         ContextBuilderMiddleware(),
-        ModelObserverMiddleware(price_catalog or default_price_catalog()),
+        ModelObserverMiddleware(
+            price_catalog or default_price_catalog(),
+            request_timeout_seconds=cfg.model_request_max_seconds,
+            idle_timeout_seconds=binding.request_timeout_seconds,
+        ),
         ToolDispatchMiddleware(),
+        ProgressMiddleware(),
         build_compaction_middleware(
             model,
             max_input_tokens=binding.profile.input_budget_tokens,
             trigger_fraction=cfg.context_trigger_ratio,
         ),
-        CompactionValidatorMiddleware(),
         FinishGateMiddleware(),
     ]
 
-    checkpointer_ctx = open_checkpointer_connection(cfg)
-    store_ctx = open_store_connection(cfg)
-    checkpointer_conn = await checkpointer_ctx.__aenter__()
-    store_conn = await store_ctx.__aenter__()
-    try:
+    async with contextlib.AsyncExitStack() as stack:
+        checkpointer_conn = await stack.enter_async_context(open_checkpointer_connection(cfg))
+        store_conn = await stack.enter_async_context(open_store_connection(cfg))
         checkpointer = AsyncPostgresSaver(checkpointer_conn)
         store = AsyncPostgresStore(store_conn)
         # 注意：`setup()` 只由 `workbench db-init` 执行；这里不重复建表。
@@ -151,6 +156,3 @@ async def open_agent_runtime(
             code_version=CODE_VERSION,
             tool_manifest=build_tool_manifest(chosen),
         )
-    finally:
-        await store_ctx.__aexit__(None, None, None)
-        await checkpointer_ctx.__aexit__(None, None, None)

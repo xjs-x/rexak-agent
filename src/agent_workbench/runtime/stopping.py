@@ -25,7 +25,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_workbench.contracts.enums import CommandStatus, CoverageStatus, LeadStatus
-from agent_workbench.persistence.tables import CommandRow, CoverageRow, FindingRow, LeadRow
+from agent_workbench.evidence.artifacts import ArtifactError, ArtifactStore, build_artifact_store
+from agent_workbench.persistence.tables import (
+    ArtifactRow,
+    CommandRow,
+    CoverageRow,
+    FindingRow,
+    LeadRow,
+    VerificationRow,
+)
 
 Decision = Literal["complete", "continue", "wait_user", "wait_tool"]
 
@@ -50,8 +58,9 @@ class CompletionDecision:
 class FinishGate:
     """在业务表上做确定性检查。**不调用模型。**"""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, store: ArtifactStore | None = None) -> None:
         self._s = session
+        self._store = store or build_artifact_store()
 
     async def evaluate(
         self,
@@ -61,6 +70,23 @@ class FinishGate:
     ) -> CompletionDecision:
         reasons: list[str] = []
         blocking: dict[str, list[str]] = {}
+
+        if proposal is None or proposal.get("reason") not in {
+            "goal_answered",
+            "exploration_converged",
+        }:
+            return CompletionDecision(
+                decision="continue",
+                reasons=["缺少有效的结构化结束提议"],
+            )
+        if (
+            not str(proposal.get("goal_answer") or "").strip()
+            or not str(proposal.get("stop_rationale") or "").strip()
+        ):
+            return CompletionDecision(
+                decision="continue",
+                reasons=["结束提议必须包含目标回答和停止依据"],
+            )
 
         # 1) 未处理的高优先级用户指令
         pending_command_ids = await self._pending_high_priority_commands(session_id)
@@ -86,6 +112,19 @@ class FinishGate:
             reasons.append("存在缺少验证记录或证据不可用的已确认发现")
             blocking["unverified_findings"] = unverified
 
+        # 缺账号/连通性等外部前置条件时，重点线索可能仍是 open；应明确等待用户，
+        # 但未决任务、待处理指令和不可信的确认发现不能借此被掩盖。
+        missing_conditions = proposal.get("missing_conditions") or []
+        if missing_conditions and not (pending_command_ids or unresolved_jobs or unverified):
+            return CompletionDecision(
+                decision="wait_user",
+                reasons=[*reasons, *(f"缺少必要条件：{item}" for item in missing_conditions)],
+                blocking_objects={
+                    **blocking,
+                    "missing_conditions": [str(item) for item in missing_conditions],
+                },
+            )
+
         if reasons:
             return CompletionDecision(
                 decision="continue", reasons=reasons, blocking_objects=blocking
@@ -94,7 +133,13 @@ class FinishGate:
         # 5) 开放探索：收尾覆盖缺口复查
         if proposal is not None and proposal.get("reason") == "exploration_converged":
             gap = await self._coverage_gap(session_id)
-            if gap and gap.get("not_checked_entries"):
+            if gap["total_entries"] == 0:
+                return CompletionDecision(
+                    decision="continue",
+                    reasons=["尚未登记任何覆盖组合，不能声称开放探索已经收敛"],
+                    coverage_gap=gap,
+                )
+            if gap.get("not_checked_entries"):
                 return CompletionDecision(
                     decision="continue",
                     reasons=[
@@ -104,15 +149,6 @@ class FinishGate:
                     blocking_objects={"coverage_gaps": gap["not_checked_entries"]},
                     coverage_gap=gap,
                 )
-
-        # 6) 缺条件的情况应进入 waiting_user，而不是 complete
-        missing_conditions = (proposal or {}).get("missing_conditions") or []
-        if missing_conditions:
-            return CompletionDecision(
-                decision="wait_user",
-                reasons=[f"缺少必要条件：{item}" for item in missing_conditions],
-                blocking_objects={"missing_conditions": [str(i) for i in missing_conditions]},
-            )
 
         return CompletionDecision(decision="complete", reasons=[])
 
@@ -167,7 +203,6 @@ class FinishGate:
             str(LeadStatus.CONFIRMED),
             str(LeadStatus.DISPROVED),
             str(LeadStatus.BLOCKED),
-            str(LeadStatus.DEFERRED),
         }
         return [
             f"{row.id}:{row.status}:{row.hypothesis[:60]}"
@@ -193,8 +228,47 @@ class FinishGate:
             if row.verification_id is None:
                 problems.append(f"{row.id}:缺少 verification 记录")
                 continue
+            verification = (
+                await self._s.execute(
+                    select(VerificationRow).where(
+                        VerificationRow.id == row.verification_id,
+                        VerificationRow.finding_id == row.id,
+                        VerificationRow.conclusion == "confirmed",
+                        VerificationRow.performed_by == "code",
+                    )
+                )
+            ).scalar_one_or_none()
+            if verification is None:
+                problems.append(f"{row.id}:独立验证记录不匹配")
+                continue
             if not row.evidence_refs:
                 problems.append(f"{row.id}:没有可用证据引用")
+                continue
+            for ref in row.evidence_refs:
+                try:
+                    artifact_id = UUID(ref)
+                except ValueError:
+                    problems.append(f"{row.id}:证据引用不是工件 ID")
+                    continue
+                artifact = (
+                    await self._s.execute(
+                        select(ArtifactRow).where(
+                            ArtifactRow.id == artifact_id,
+                            ArtifactRow.session_id == session_id,
+                            ArtifactRow.availability == "available",
+                            ArtifactRow.truncated.is_(False),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if artifact is None:
+                    problems.append(f"{row.id}:证据 {artifact_id} 不可用")
+                    continue
+                try:
+                    valid = self._store.verify(artifact.relative_key, artifact.sha256)
+                except ArtifactError:
+                    valid = False
+                if not valid:
+                    problems.append(f"{row.id}:证据 {artifact_id} 文件缺失或哈希不符")
         return problems
 
     async def _coverage_gap(self, session_id: UUID) -> dict[str, Any]:

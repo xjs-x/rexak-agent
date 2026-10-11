@@ -1,6 +1,6 @@
 """`workbench` 命令行入口（§16.2）。
 
-目标入口：`api`、`runner`、`db-init`、`doctor`、`export-run`、`backup`。
+目标入口：`api`、`runner`、`db-init`、`doctor`、`export-run`、`backup`、`prune-events`。
 Executor 有独立启动与 doctor 命令（`workbench-executor` / `python -m workbench_executor`）。
 
 一键开发启动应能明确启动/停止三个本地服务与数据库。
@@ -10,6 +10,7 @@ Executor 有独立启动与 doctor 命令（`workbench-executor` / `python -m wo
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 import sys
@@ -112,6 +113,7 @@ async def _run_runner(
     *, once: bool, owner: str | None, recover: bool, only_run_id: str | None = None
 ) -> None:
     from agent_workbench.observability.logging import configure_logging, get_logger
+    from agent_workbench.persistence.bootstrap import assert_business_schema_current
     from agent_workbench.persistence.db import get_database
     from agent_workbench.runtime.recovery import run_startup_recovery
     from agent_workbench.runtime.runner import AgentRunner
@@ -133,12 +135,21 @@ async def _run_runner(
             raise typer.Exit(code=2) from None
 
     try:
+        async with db.session() as session:
+            await assert_business_schema_current(session, settings)
         if recover:
-            report = await run_startup_recovery(db, settings)
+            report = await run_startup_recovery(
+                db,
+                settings,
+                only_run_id=target,
+                owner_id=settings.owner_id if target is None else None,
+            )
             log.info("startup_recovery", **report)
             _echo(f"启动核对：{json.dumps(report, ensure_ascii=False)}")
 
-        runner = AgentRunner(settings=settings, owner=owner, database=db)
+        runner = AgentRunner(
+            settings=settings, owner=owner, database=db, production_scan=target is None
+        )
         if once:
             outcome = await runner.step(only_run_id=target)
             if outcome is None:
@@ -150,7 +161,7 @@ async def _run_runner(
                 )
             return
         _echo(f"Runner 已启动（owner={runner.owner}）。关闭网页不影响任务。")
-        await runner.serve()
+        await runner.serve(only_run_id=target)
     finally:
         await db.close()
 
@@ -228,18 +239,39 @@ def doctor(
     model: Annotated[str | None, typer.Option(help="要探测的模型")] = None,
     skip_model: Annotated[bool, typer.Option(help="跳过真实模型探针")] = False,
     skip_executor: Annotated[bool, typer.Option(help="跳过执行岛检查")] = False,
+    target_url: Annotated[str | None, typer.Option(help="从执行岛探测的目标 URL")] = None,
+    scope_file: Annotated[
+        Path | None, typer.Option(help="目标范围 JSON 文件；与 --target-url 同用")
+    ] = None,
 ) -> None:
     """自检：数据库、编码、模型能力、执行岛能力。
 
     **无凭据时相关项标 NOT_RUN，不能算通过。**
     """
+    if (target_url is None) != (scope_file is None):
+        raise typer.BadParameter("--target-url 与 --scope-file 必须同时提供")
+    if target_url and skip_executor:
+        raise typer.BadParameter("指定 --target-url 时不能跳过执行岛检查")
     asyncio.run(
-        _doctor(provider=provider, model=model, skip_model=skip_model, skip_executor=skip_executor)
+        _doctor(
+            provider=provider,
+            model=model,
+            skip_model=skip_model,
+            skip_executor=skip_executor,
+            target_url=target_url,
+            scope_file=scope_file,
+        )
     )
 
 
 async def _doctor(
-    *, provider: str | None, model: str | None, skip_model: bool, skip_executor: bool
+    *,
+    provider: str | None,
+    model: str | None,
+    skip_model: bool,
+    skip_executor: bool,
+    target_url: str | None = None,
+    scope_file: Path | None = None,
 ) -> None:
     from agent_workbench.persistence.db import get_database
 
@@ -258,13 +290,24 @@ async def _doctor(
 
         # 2) 业务表
         try:
-            from agent_workbench.persistence.bootstrap import business_schema_status
+            from agent_workbench.persistence.bootstrap import (
+                assert_business_schema_current,
+                business_schema_status,
+                expected_business_revisions,
+            )
 
             async with db.session() as session:
                 status = await business_schema_status(session, settings)
+                installed = (
+                    await assert_business_schema_current(session, settings)
+                    if status["table_count"]
+                    else set()
+                )
             results["business_schema"] = {
                 "status": "PASS" if status["table_count"] else "NOT_RUN",
                 "table_count": status["table_count"],
+                "installed_revisions": sorted(installed),
+                "expected_revisions": sorted(expected_business_revisions()),
                 "hint": "如果没有表，请先运行 `uv run workbench db-init`",
             }
         except Exception as exc:
@@ -285,7 +328,7 @@ async def _doctor(
     if skip_executor:
         results["executor"] = {"status": "NOT_RUN", "reason": "显式跳过"}
     else:
-        results["executor"] = await _probe_executor()
+        results["executor"] = await _probe_executor(target_url=target_url, scope_file=scope_file)
 
     _echo(json.dumps(results, ensure_ascii=False, indent=2))
 
@@ -368,7 +411,9 @@ async def _probe_model(provider: str | None, model: str | None) -> dict[str, Any
     }
 
 
-async def _probe_executor() -> dict[str, Any]:
+async def _probe_executor(
+    *, target_url: str | None = None, scope_file: Path | None = None
+) -> dict[str, Any]:
     from agent_workbench.execution.client import (
         ExecutorConnectionError,
         ExecutorProtocolError,
@@ -385,6 +430,12 @@ async def _probe_executor() -> dict[str, Any]:
         await client.start()
         health = await client.health()
         caps = await client.capabilities()
+        target_probe = None
+        if target_url and scope_file:
+            scope = json.loads(scope_file.read_text(encoding="utf-8"))
+            if not isinstance(scope, dict):
+                raise ValueError("范围文件必须是 JSON 对象")
+            target_probe = await client.probe_target(target_url, scope)
     except (TunnelUnavailable, ExecutorConnectionError, ExecutorProtocolError) as exc:
         return {
             "status": "FAIL",
@@ -396,12 +447,15 @@ async def _probe_executor() -> dict[str, Any]:
         await client.close()
         await tunnel.close()
     return {
-        "status": "PASS",
+        "status": "PASS"
+        if target_probe is None or target_probe.get("status") == "reachable"
+        else "FAIL",
         "executor_id": health.executor_id,
         "protocol_version": health.protocol_version,
         "free_bytes": health.free_bytes,
         "browser_available": caps.browser_available,
         "network_isolation": caps.network_isolation,
+        "target_probe": target_probe,
         "note": ("network_isolation=unavailable 时通用命令的无人值守模式必须保持关闭。"),
     }
 
@@ -416,20 +470,16 @@ def export_run(
     run_id: Annotated[str, typer.Argument(help="要导出的 run id")],
     output: Annotated[Path | None, typer.Option(help="输出目录")] = None,
 ) -> None:
-    """导出脱敏诊断包：版本、状态与事件、模型调用元数据、（不含密钥）。"""
+    """导出运行台账、保留事件、用量与工件完整性；按已知规则脱敏。"""
     asyncio.run(_export_run(run_id=run_id, output=output))
 
 
 async def _export_run(*, run_id: str, output: Path | None) -> None:
-    from uuid import UUID
-
-    from sqlalchemy import select
-
-    from agent_workbench.contracts.enums import RunStatus  # noqa: F401
-    from agent_workbench.observability.events import read_events_after
+    from agent_workbench.maintenance.diagnostics import (
+        collect_run_diagnostic,
+        write_run_diagnostic,
+    )
     from agent_workbench.persistence.db import get_database
-    from agent_workbench.persistence.repositories import ModelCallRepository
-    from agent_workbench.persistence.tables import RunRow
 
     try:
         parsed = UUID(run_id)
@@ -441,62 +491,14 @@ async def _export_run(*, run_id: str, output: Path | None) -> None:
     db = get_database()
     await db.start()
     try:
-        async with db.session() as session:
-            run = (
-                await session.execute(select(RunRow).where(RunRow.id == parsed))
-            ).scalar_one_or_none()
-            if run is None:
-                _echo(f"run 不存在：{run_id}")
-                raise typer.Exit(code=1)
-            calls = await ModelCallRepository(session).list_for_run(parsed)
-            events = await read_events_after(session, session_id=run.session_id, limit=10000)
-
+        try:
+            payload = await collect_run_diagnostic(db, parsed)
+        except LookupError:
+            _echo(f"run 不存在：{run_id}")
+            raise typer.Exit(code=1) from None
         target_dir = (output or (settings.data_root / "diagnostics")) / str(parsed)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "schema_version": 1,
-            "exported_at": datetime.now(UTC).isoformat(),
-            "service_version": __version__,
-            "run": {
-                "id": str(run.id),
-                "session_id": str(run.session_id),
-                "status": run.status,
-                "completion_reason": run.completion_reason,
-                "provider_id": run.provider_id,
-                "model_name": run.model_name,
-                "code_version": run.code_version,
-                "prompt_version": run.prompt_version,
-                "config_snapshot": run.config_snapshot,
-                "stop_reason": run.stop_reason,
-            },
-            "model_calls": [
-                {
-                    "model_call_id": str(row.model_call_id),
-                    "logical_call_id": str(row.logical_call_id),
-                    "retry_index": row.retry_index,
-                    "phase": row.phase,
-                    "usage_status": row.usage_status,
-                    "cost_status": row.cost_status,
-                    "cost_amount": str(row.cost_amount) if row.cost_amount is not None else None,
-                    "cost_currency": row.cost_currency,
-                    "input_tokens": row.input_tokens,
-                    "output_tokens": row.output_tokens,
-                    "attempts_observable": row.attempts_observable,
-                    "error_code": row.error_code,
-                }
-                for row in calls
-            ],
-            "events": [envelope.model_dump(mode="json") for envelope in events],
-            "redaction": (
-                "本包默认不含密钥、Cookie、Authorization 与请求体正文；"
-                "工件正文请通过受控接口单独导出。"
-            ),
-        }
-        out_file = target_dir / "diagnostic.json"
-        out_file.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
-        )
-        _echo(f"已导出诊断包：{out_file}")
+        out_file = await asyncio.to_thread(write_run_diagnostic, target_dir, payload)
+        _echo(f"已导出诊断包及 SHA-256 清单：{out_file}")
     finally:
         await db.close()
 
@@ -505,6 +507,10 @@ async def _export_run(*, run_id: str, output: Path | None) -> None:
 def backup(
     output: Annotated[Path | None, typer.Option(help="备份目录")] = None,
     include_artifacts: Annotated[bool, typer.Option(help="同时备份工件目录")] = True,
+    docker_container: Annotated[
+        str | None,
+        typer.Option(help="在指定 PostgreSQL 容器内运行 pg_dump（本机没有客户端时）"),
+    ] = None,
 ) -> None:
     """备份数据库（pg_dump）+ 工件。
 
@@ -513,28 +519,51 @@ def backup(
     import subprocess
 
     settings = get_settings()
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     target = (output or settings.backup_path) / stamp
-    target.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=False)
 
     _echo(f"备份目标：{target}")
-    dsn = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
     dump_file = target / "database.sql"
+    if docker_container:
+        from sqlalchemy.engine import make_url
+
+        url = make_url(settings.database_url)
+        if url.host not in {"localhost", "127.0.0.1", "::1"} or not url.database:
+            _echo("容器备份只支持本机回环 PostgreSQL，且数据库名必须明确。")
+            raise typer.Exit(code=2)
+        command = [
+            "docker",
+            "exec",
+            "-i",
+            docker_container,
+            "pg_dump",
+            "--no-owner",
+            "--no-privileges",
+            "-U",
+            url.username or "workbench",
+            "-d",
+            url.database,
+        ]
+    else:
+        dsn = settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+        command = ["pg_dump", "--no-owner", "--no-privileges", dsn]
     try:
-        proc = subprocess.run(
-            ["pg_dump", "--no-owner", "--no-privileges", "-f", str(dump_file), dsn],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=child_process_env(),
-            check=False,
-        )
+        with dump_file.open("wb") as output_stream:
+            proc = subprocess.run(
+                command,
+                stdout=output_stream,
+                stderr=subprocess.PIPE,
+                env=child_process_env(),
+                check=False,
+            )
     except FileNotFoundError:
-        _echo("找不到 pg_dump：请在 PATH 中提供 PostgreSQL 客户端，或用容器内 pg_dump 执行。")
+        _echo("找不到 pg_dump 或 docker：请安装 PostgreSQL 客户端，或指定 --docker-container。")
         raise typer.Exit(code=1) from None
     if proc.returncode != 0:
-        _echo(f"pg_dump 失败：{(proc.stderr or '').strip()[:500]}")
+        _echo(
+            f"pg_dump 失败：{proc.stderr.decode('utf-8', errors='backslashreplace').strip()[:500]}"
+        )
         raise typer.Exit(code=1)
     _echo(f"数据库已导出：{dump_file}")
 
@@ -557,7 +586,95 @@ def backup(
         encoding="utf-8",
         newline="\n",
     )
+    files = _backup_file_entries(target)
+    (target / "MANIFEST.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "created_at": datetime.now(UTC).isoformat(), "files": files},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     _echo("备份完成")
+
+
+def _backup_file_entries(root: Path) -> list[dict[str, Any]]:
+    """生成或复核备份内每个普通文件的 SHA-256；拒绝符号链接。"""
+    entries: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"备份中不允许符号链接：{path.relative_to(root)}")
+        if not path.is_file() or path == root / "MANIFEST.json":
+            continue
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+                size += len(block)
+        entries.append(
+            {"path": path.relative_to(root).as_posix(), "size": size, "sha256": digest.hexdigest()}
+        )
+    return entries
+
+
+@app.command("verify-backup")
+def verify_backup(path: Annotated[Path, typer.Argument(help="备份目录")]) -> None:
+    """离线核对数据库 dump、工件和清单是否仍与备份时一致。"""
+    manifest_path = path / "MANIFEST.json"
+    if not manifest_path.is_file():
+        _echo("备份缺少 MANIFEST.json，不能验证完整性")
+        raise typer.Exit(code=1)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected = payload["files"]
+        if payload["schema_version"] != 1 or not isinstance(expected, list):
+            raise ValueError("清单版本或文件表不正确")
+        actual = _backup_file_entries(path)
+        if expected != actual or not (path / "database.sql").is_file():
+            raise ValueError("备份文件缺失、内容变化或额外文件出现")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        _echo(f"备份校验失败：{exc}")
+        raise typer.Exit(code=1) from None
+    _echo(f"备份校验通过：{len(actual)} 个文件")
+
+
+@app.command("prune-events")
+def prune_events(
+    apply: Annotated[bool, typer.Option(help="实际删除；缺省只预览")] = False,
+    days: Annotated[int | None, typer.Option(help="保留天数；缺省使用配置值")] = None,
+    limit: Annotated[int, typer.Option(help="单次最多处理的事件数")] = 1000,
+    session_id: Annotated[
+        UUID | None, typer.Option(help="只处理指定任务；缺省处理全部任务")
+    ] = None,
+) -> None:
+    """显式清理旧 SSE 事件；保留每个任务的最新事件及全部业务记录。"""
+    settings = get_settings()
+    retention_days = days if days is not None else settings.event_retention_days
+    if retention_days < 1 or limit < 1:
+        raise typer.BadParameter("保留天数和单次上限都必须大于零")
+    asyncio.run(_prune_events(days=retention_days, limit=limit, apply=apply, session_id=session_id))
+
+
+async def _prune_events(*, days: int, limit: int, apply: bool, session_id: UUID | None) -> None:
+    from agent_workbench.maintenance.retention import prune_old_events
+    from agent_workbench.persistence.db import Database
+
+    db = Database()
+    await db.start()
+    try:
+        async with db.transaction() as session:
+            count = await prune_old_events(
+                session, days=days, limit=limit, apply=apply, session_id=session_id
+            )
+    finally:
+        await db.close()
+    action = "已删除" if apply else "预览可删除"
+    _echo(f"{action} {count} 条旧事件（保留 {days} 天；单次上限 {limit}）。")
+    if count == limit:
+        _echo("本次达到上限；仍可能有更多旧事件，可再次运行。")
 
 
 @app.command("version")
@@ -572,12 +689,12 @@ def main(argv: list[str] | None = None) -> int:
     configure_event_loop_policy()
     configure_stdio_utf8()
     try:
-        app(args=argv, standalone_mode=False)
+        result = app(args=argv, standalone_mode=False)
     except typer.Exit as exc:  # type: ignore[attr-defined]
         return int(exc.exit_code)
     except SystemExit as exc:
         return int(exc.code or 0)
-    return 0
+    return int(result) if isinstance(result, int) else 0
 
 
 if __name__ == "__main__":

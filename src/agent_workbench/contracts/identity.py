@@ -37,8 +37,8 @@ def _utc(value: datetime) -> datetime:
 class ScopeRule(_Base):
     """范围规则。
 
-    **不得**像旧实现那样剥掉端口后放行所有服务（BUILD_PLAN §10）。
-    范围按 协议 + 主机 + 端口 建模，并显式声明子域规则。
+    范围按协议、主机、端口建模。严格模式精确匹配；按指令模式显式允许
+    用户目标主机的协议与端口探索，不自动包含子域。
     """
 
     scheme: Literal["http", "https", "tcp", "any"] = "any"
@@ -59,6 +59,7 @@ class ScopeSnapshot(_Base):
     """任务开始时固化的范围。运行中变更产生新 revision 并记录理由。"""
 
     revision: int = 1
+    mode: Literal["instruction", "scoped"] = "scoped"
     rules: list[ScopeRule] = Field(default_factory=list)
     #: 控制端 localhost 到执行岛实际地址的显式映射（§9.3）
     target_mappings: list[dict[str, str]] = Field(default_factory=list)
@@ -69,6 +70,14 @@ class ScopeSnapshot(_Base):
             "100.100.100.200",
         ]
     )
+
+
+class ScopeUpdate(_Base):
+    """显式更新运行中的测试范围；调用方提供预期旧修订。"""
+
+    expected_revision: int = Field(ge=1)
+    scope: ScopeSnapshot
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 class PolicySnapshot(_Base):
@@ -118,9 +127,10 @@ class SessionCreate(_Base):
     project_id: UUID
     title: str
     initial_objective: str
-    scope: ScopeSnapshot = Field(default_factory=ScopeSnapshot)
+    scope: ScopeSnapshot = Field(default_factory=lambda: ScopeSnapshot(mode="instruction"))
     policy: PolicySnapshot = Field(default_factory=PolicySnapshot)
     identities: list[IdentityRef] = Field(default_factory=list)
+    active_identity_name: str | None = None
     provider_id: str | None = None
     model_name: str | None = None
 
@@ -128,6 +138,7 @@ class SessionCreate(_Base):
 class Session(_Base):
     id: UUID
     project_id: UUID
+    active_identity_id: UUID | None = None
     #: 稳定映射：同一 session always 使用同一 thread_id
     thread_id: str
     title: str

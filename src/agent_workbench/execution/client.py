@@ -104,6 +104,7 @@ class HttpExecutorClient:
         self._control = httpx.AsyncClient(
             base_url=base_url,
             headers=headers,
+            trust_env=False,
             timeout=httpx.Timeout(30.0, connect=10.0),
             limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
         )
@@ -111,6 +112,7 @@ class HttpExecutorClient:
         self._data = httpx.AsyncClient(
             base_url=base_url,
             headers=headers,
+            trust_env=False,
             timeout=httpx.Timeout(300.0, connect=10.0),
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
         )
@@ -177,12 +179,14 @@ class HttpExecutorClient:
         self._control = httpx.AsyncClient(
             base_url=base_url,
             headers=headers,
+            trust_env=False,
             timeout=httpx.Timeout(30.0, connect=10.0),
             limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
         )
         self._data = httpx.AsyncClient(
             base_url=base_url,
             headers=headers,
+            trust_env=False,
             timeout=httpx.Timeout(300.0, connect=10.0),
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
         )
@@ -253,6 +257,17 @@ class HttpExecutorClient:
             )
         self._preflight = caps
         return caps
+
+    async def probe_target(self, url: str, scope: dict[str, Any]) -> dict[str, Any]:
+        """让执行岛报告目标实际解析与连接结果。"""
+        response = await self._request(
+            "POST", "/target-probe", json_body={"url": url, "scope": scope}
+        )
+        self._raise_for_status(response, context="目标连通性检查")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ExecutorProtocolError("目标连通性检查返回了无效响应")
+        return payload
 
     async def submit(self, operation: dict[str, Any]) -> JobReceipt:
         """提交任务。
@@ -368,7 +383,8 @@ def _snapshot_payload(raw: dict[str, Any]) -> dict[str, Any]:
             {
                 "code": raw["error_code"],
                 "message": raw.get("error_message") or "",
-                "retryable": raw.get("error_code") not in {"scope_denied", "operation_conflict"},
+                "retryable": raw.get("error_code")
+                not in {"scope_denied", "operation_conflict", "tls_certificate_error"},
             }
             if raw.get("error_code")
             else None

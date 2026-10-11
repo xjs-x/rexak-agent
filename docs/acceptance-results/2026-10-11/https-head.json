@@ -1,0 +1,37 @@
+{
+  "url": "https://earth.local/",
+  "method": "HEAD",
+  "model": "not_run",
+  "results": [
+    {
+      "verify_tls": true,
+      "status": "failed",
+      "operation_id": "93dd0c7f-07ad-4477-a099-b6871a8b9ab3",
+      "job_id": "698342f5-3695-4329-af7d-76d07ba243a8",
+      "http_status": null,
+      "tls_verified": null,
+      "error_code": "tls_certificate_error",
+      "error_message": "ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate (_ssl.c:1033)"
+    },
+    {
+      "verify_tls": false,
+      "status": "succeeded",
+      "operation_id": "fe202f54-af0f-424e-8f3b-53f4348760bf",
+      "job_id": "d1c5a5a6-ec8f-4c1b-a4f2-b950915b10b6",
+      "http_status": 200,
+      "tls_verified": false,
+      "error_code": null,
+      "error_message": null
+    },
+    {
+      "verify_tls": true,
+      "status": "failed",
+      "operation_id": "079db92a-64e6-401d-8d0f-1140f073d3bc",
+      "job_id": "765d5660-d83c-44d3-803b-9a8a17696264",
+      "http_status": null,
+      "tls_verified": null,
+      "error_code": "tls_certificate_error",
+      "error_message": "ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate (_ssl.c:1033)"
+    }
+  ]
+}

@@ -28,12 +28,13 @@ from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.middleware.command_guard import CommandGuardMiddleware
 from agent_workbench.agent.middleware.tool_dispatch import ToolDispatchMiddleware
 from agent_workbench.agent.state import AgentGraphState
-from agent_workbench.contracts.enums import RunStatus
+from agent_workbench.contracts.enums import RunStatus, ToolEffectClass
 from agent_workbench.contracts.identity import PolicySnapshot, ScopeRule, ScopeSnapshot
 from agent_workbench.domain.run_state import claim_run, create_run, set_run_status
 from agent_workbench.domain.scope import ScopePolicy
 from agent_workbench.persistence.repositories import ProjectRepository, SessionRepository
 from agent_workbench.persistence.tables import EventRow, RunRow, ToolOperationRow
+from agent_workbench.tools.remote import prepare_operation
 from tests.support.scripted_model import ScriptedChatModel, final_text, tool_call
 
 pytestmark = pytest.mark.integration
@@ -170,6 +171,27 @@ async def _run_agent(*, model: ScriptedChatModel, toolbox: Any, thread_id: str):
             {"configurable": {"thread_id": thread_id}},
             context=context,
         )
+
+
+async def test_new_tool_operation_records_dispatch_version(database, unique_name) -> None:
+    session_row, run, generation, scope = await _make_run(database, unique_name)
+    toolbox = await _make_toolbox(database, run, session_row, generation, scope)
+    toolbox.control_version = 0
+    operation_id, replayed = await prepare_operation(
+        toolbox,
+        "call-version-pin",
+        "http_request",
+        {"url": "http://127.0.0.1:8899/"},
+        effect_class=ToolEffectClass.READ_ONLY,
+    )
+    assert not replayed
+    async with database.session() as session:
+        row = (
+            await session.execute(
+                select(ToolOperationRow).where(ToolOperationRow.operation_id == operation_id)
+            )
+        ).scalar_one()
+    assert row.dispatch_control_version == 0
 
 
 async def test_normal_turn_pins_version_and_executes_tool(database, unique_name) -> None:

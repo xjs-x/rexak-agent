@@ -68,3 +68,11 @@ class FinishGateRejected(Exception):
     def __init__(self, feedback: list[str]) -> None:
         super().__init__("完成提议未通过 finish_gate 检查")
         self.feedback = feedback
+
+
+class NoProgressBlocked(Exception):
+    """连续重复观察后在模型调用前暂停，保留同一任务供用户继续。"""
+
+    def __init__(self, streak: int) -> None:
+        super().__init__(f"连续 {streak} 轮没有新增证据、入口、线索状态或独立验证")
+        self.streak = streak

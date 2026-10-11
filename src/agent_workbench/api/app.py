@@ -26,6 +26,7 @@ from agent_workbench.config.settings import REPO_ROOT, get_settings
 from agent_workbench.contracts.enums import ErrorCode
 from agent_workbench.contracts.errors import ApiError, ErrorBody
 from agent_workbench.observability.logging import configure_logging, get_logger
+from agent_workbench.persistence.bootstrap import assert_business_schema_current
 from agent_workbench.persistence.db import get_database
 from agent_workbench.platform_compat import (
     assert_supported_event_loop,
@@ -46,6 +47,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     db = get_database()
     await db.start()
     try:
+        async with db.session() as session:
+            await assert_business_schema_current(session, settings)
         yield
     finally:
         # 生命周期成对：启动与关闭都显式处理
@@ -161,10 +164,9 @@ def create_app() -> FastAPI:
     app.include_router(router)
 
     # ------------------------------------------------------------------ #
-    # 最小观察器（P2）
+    # 最小观察器（P2）与 P7 基础控制台
     #
-    # 只读窗口：显示快照、事件流、助手输出与用量。完整控制台属 P7，尚未实现。
-    # 以静态文件方式提供，不引入前端构建链；发布时同一入口可服务 web/dist。
+    # 只读窗口显示快照、事件流、助手输出与用量；基础控制台由 web/dist 提供。
     # ------------------------------------------------------------------ #
     observer = REPO_ROOT / "web" / "observer.html"
 

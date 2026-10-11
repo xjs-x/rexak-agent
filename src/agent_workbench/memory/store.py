@@ -22,7 +22,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Any, Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from langgraph.store.base import BaseStore
 
@@ -49,6 +49,7 @@ def _entry_payload(
     *,
     memory_type: str,
     content: str,
+    subject_key: str | None,
     verified_status: VerifiedStatus,
     source_run_id: UUID | str | None,
     source_artifact_ids: list[str],
@@ -62,6 +63,7 @@ def _entry_payload(
         "memory_id": memory_id_for(content, memory_type),
         "type": memory_type,
         "content": content,
+        "subject_key": subject_key,
         "verified_status": verified_status,
         "source_run_id": str(source_run_id) if source_run_id else None,
         "source_artifact_ids": list(source_artifact_ids),
@@ -95,6 +97,7 @@ class MemoryStore:
         project_id: UUID | str,
         memory_type: str,
         content: str,
+        subject_key: str | None = None,
         source_run_id: UUID | str | None = None,
         source_artifact_ids: list[str] | None = None,
         applicable_conditions: str | None = None,
@@ -108,33 +111,6 @@ class MemoryStore:
 
         if existing is not None:
             current = dict(existing.value)
-            if current.get("verified_status") == "verified" and current.get("content") != content:
-                # 冲突：保留双方来源，等待复核，不按"最后写入赢"覆盖
-                merged_sources = sorted(
-                    set(current.get("source_artifact_ids") or []) | set(source_artifact_ids or [])
-                )
-                conflict = {
-                    "conflicts_with": current.get("memory_id"),
-                    "existing_content": current.get("content"),
-                    "existing_verified_status": current.get("verified_status"),
-                    "note": "存在已验证条目且内容不同；保留来源等待复核，未覆盖原条目。",
-                }
-                alternate_key = f"{key}-alt-{uuid4().hex[:8]}"
-                payload = _entry_payload(
-                    memory_type=memory_type,
-                    content=content,
-                    verified_status="candidate",
-                    source_run_id=source_run_id,
-                    source_artifact_ids=merged_sources,
-                    applicable_conditions=applicable_conditions,
-                    invalid_conditions=invalid_conditions,
-                    expires_at=expires_at,
-                    version=1,
-                )
-                payload["conflict"] = conflict
-                await self._store.aput(namespace, alternate_key, payload)
-                return payload
-
             current.update(
                 {
                     "source_artifact_ids": sorted(
@@ -151,9 +127,26 @@ class MemoryStore:
             await self._store.aput(namespace, key, current)
             return current
 
+        # memory_id 基于内容寻址；不同内容不可能命中上面的 existing 分支。
+        # 冲突必须按显式的同一主体检索，不能靠哈希碰撞来“检测”。
+        conflicts: list[dict[str, Any]] = []
+        if subject_key:
+            peers = await self._store.asearch(
+                namespace,
+                filter={"type": memory_type, "subject_key": subject_key},
+                limit=50,
+            )
+            conflicts = [
+                dict(item.value)
+                for item in peers
+                if item.value.get("verified_status") == "verified"
+                and item.value.get("content") != content
+            ]
+
         payload = _entry_payload(
             memory_type=memory_type,
             content=content,
+            subject_key=subject_key,
             verified_status="candidate",
             source_run_id=source_run_id,
             source_artifact_ids=list(source_artifact_ids or []),
@@ -162,6 +155,11 @@ class MemoryStore:
             expires_at=expires_at,
             version=1,
         )
+        if conflicts:
+            payload["conflict"] = {
+                "conflicts_with": [item.get("memory_id") for item in conflicts],
+                "note": "同一主体存在内容不同的已验证条目；新观察保持 candidate，等待复核。",
+            }
         await self._store.aput(namespace, key, payload)
         return payload
 
@@ -189,6 +187,7 @@ class MemoryStore:
             else _entry_payload(
                 memory_type=memory_type,
                 content=content,
+                subject_key=None,
                 verified_status="candidate",
                 source_run_id=verified_by_run_id,
                 source_artifact_ids=[],
@@ -251,6 +250,7 @@ def summarize_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "type": entry.get("type"),
         "verified_status": entry.get("verified_status"),
         "content": entry.get("content"),
+        "subject_key": entry.get("subject_key"),
         "applicable_conditions": entry.get("applicable_conditions"),
         "invalid_conditions": entry.get("invalid_conditions"),
         "source_artifact_ids": entry.get("source_artifact_ids"),

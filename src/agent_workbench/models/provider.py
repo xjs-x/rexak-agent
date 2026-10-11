@@ -12,12 +12,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from agent_workbench.config.catalog import ProviderProfile, default_provider_profiles
 from agent_workbench.config.secrets import SecretStore, build_secret_store
 from agent_workbench.config.settings import Settings, get_settings
+from agent_workbench.models.xiaomi import XiaomiChatOpenAI
 
 
 class ProviderConfigurationError(RuntimeError):
@@ -111,14 +113,19 @@ def build_chat_model(
     store = secret_store or build_secret_store()
     api_key = store.resolve(binding.profile.secret_ref)
 
-    return ChatOpenAI(
+    model_class = XiaomiChatOpenAI if binding.profile.provider_id == "xiaomi" else ChatOpenAI
+    extra = dict(binding.extra or {})
+    if binding.profile.provider_id == "xiaomi":
+        extra.setdefault("use_responses_api", False)
+    return model_class(
         model=binding.profile.model_name,
         base_url=binding.profile.base_url,
         api_key=SecretStr(api_key),
         temperature=binding.temperature,
-        timeout=binding.request_timeout_seconds,
+        timeout=httpx.Timeout(binding.request_timeout_seconds, connect=15, write=30, pool=15),
         # 关闭 SDK 隐藏重试：重试由本项目的可观测层执行（§11.2）
         max_retries=binding.max_retries,
         streaming=streaming,
-        **(binding.extra or {}),
+        stream_chunk_timeout=binding.request_timeout_seconds,
+        **extra,
     )

@@ -20,6 +20,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from agent_workbench.api.redaction import redact_event_payload
 from agent_workbench.contracts.events import EVENT_SCHEMA_VERSION, EventType, heartbeat_frame
 from agent_workbench.observability.events import (
     latest_seq,
@@ -93,7 +94,9 @@ async def event_stream(
             )
         for envelope in events:
             cursor = max(cursor, envelope.session_seq)
-            yield envelope.to_sse()
+            yield envelope.model_copy(
+                update={"payload": redact_event_payload(str(envelope.type), envelope.payload)}
+            ).to_sse()
             produced = True
 
         if produced:

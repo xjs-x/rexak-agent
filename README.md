@@ -33,6 +33,8 @@ Runner ──模型──> 小米/后续供应商
 
 ## 2. 环境要求
 
+快速部署步骤见 [简易部署指南](docs/deployment-quickstart.md)；Executor 的配置边界与浏览器登录细节见 [P3–P5 部署说明](docs/p3-p5-deployment.md)。
+
 | 组件 | 版本 | 说明 |
 |---|---|---|
 | Python | **3.12.x** | `.python-version` 锁定 `3.12`；由 uv 管理 |
@@ -63,7 +65,11 @@ uv run workbench db-init
 
 # 5) 自检：进程、数据库、模型、执行岛
 uv run workbench doctor
+uv run workbench doctor --skip-model --target-url http://127.0.0.1:8899/ --scope-file deploy/scope-local-fixture.json
 ```
+
+第二条命令从执行岛探测 DNS 与 HTTP；此处的 `127.0.0.1` 是执行岛本机。
+目标映射、登录状态与已验证能力边界见 [P3–P5 部署说明](docs/p3-p5-deployment.md)。
 
 启动服务（三个终端，或各用 `-d`）：
 
@@ -79,11 +85,33 @@ uv run workbench-executor   # 在**执行岛**上运行，只监听回环地址
 cd web
 pnpm install --frozen-lockfile
 pnpm dev                    # Vite dev server，代理 /api 到 127.0.0.1:8770
+pnpm build                  # 构建后由控制端在 /console/ 提供
 ```
 
-> 前端控制台属 **P7，尚未建立**。当前可用的只读观察窗口由 API 直接提供：
-> 启动 `uv run workbench api` 后访问 <http://127.0.0.1:8770/observer>。
-> 它显示快照、SSE 事件流、助手输出与用量；不提供项目管理与黑板图。
+启动 `uv run workbench api` 后，访问 <http://127.0.0.1:8770/console/> 使用基础控制台。
+它已提供项目与任务、对话输入、运行控制、发现证据、后台任务、费用、控制端耗时诊断与报告版本。
+旧的只读诊断页仍在 <http://127.0.0.1:8770/observer>。实时活动可逐页浏览，长日志只渲染可见行，点击事件从脱敏接口读取详情。“对话归档”按页显示用户指令和模型文本，并可分段展开长正文；模型正文从此版本开始归档，旧调用不会自动回填，也不作为 Agent 记忆。“当前计划”直接读取 LangGraph checkpoint，关系图只展示步骤明确关联的线索。耗时诊断把 Executor 接收、开始、结束时间分别用于排队和执行区间；缺少时间戳时显示未知。模型首个可见分片仅在流分片与最终消息 ID 匹配时记录，不能当作供应商首字节耗时。结束提议检查、Runner 复核和报告生成分别计时；报告进一步区分快照采集、证据校验、正文渲染和版本发布，并在失败时标记中断阶段。Git HEAD 独立核验区分预检查、复测调用返回和结论写入；后台复测的实际运行时间仍以任务台账为准。设置页可录入每百万 token 的模型价格，生成不可变价格版本；之后启动的运行使用新版本，历史费用保留原版本。真实小米/Kali 任务轨迹尚未验收。
+
+后端接口变更后，重新生成前端契约类型：
+
+```powershell
+uv run python scripts/export_openapi.py web/openapi.json
+cd web
+pnpm generate:api
+```
+
+报告可通过 `POST /api/sessions/{session_id}/reports` 创建版本，随后用
+`GET /api/sessions/{session_id}/reports` 查询历史版本，并用
+`GET /api/sessions/{session_id}/reports/{version}/export?format=markdown|html`
+下载附件。写请求需要本地会话 Cookie 与 CSRF 头。报告只将带独立验证记录且证据工件
+哈希可核对的发现列为已确认；候选发现单列，旧版本保留。当前只接入一类窄范围的
+确定性核验工具：`verify_public_git_head` 对 `/.git/HEAD` 做隔离 HTTP 复测，
+仅能确认 Git HEAD 分支引用公开可读，不能推断整个仓库或源码可读。
+
+领域记录可通过 `GET /api/sessions/{session_id}/assets`、`/leads`、`/findings`、
+`/coverage` 查询；单条发现的验证历史通过
+`GET /api/sessions/{session_id}/findings/{finding_id}/verifications` 查询。
+资产、线索和验证历史支持 `limit`、`offset` 分页；线索还可按 `status` 筛选。
 
 > 默认 compose 重建应用**不删除**数据库与工件卷。
 > **禁止**把 `docker compose down -v` 当作日常启动步骤，那是破坏性操作。
@@ -186,17 +214,59 @@ docs/            decisions / implementation-status / acceptance-results
 
 见 **`docs/implementation-status.md`**（P0–P9 逐项状态 + 证据）。只有具备验证证据的条目才标完成。
 
-已完成并通过验证：**P0、P1、P2**；P3/P5/P6/P8 部分落地。
+已完成并通过验证：**P0、P1、P2**；P3–P5 已有可运行切片，Kali 执行岛关键链路已验证，真实模型验收仍有缺口。P6–P8 部分落地。
 
-明确**未做**（对外不得声称"已支持"）：
+当前能力边界（未验证的部分不得声称"已支持"）：
 
 | 能力 | 现状 |
 |---|---|
-| 前端控制台（P7） | 未建立；仅有 `/observer` 只读窗口 |
-| 浏览器 / 登录探针（P4） | Executor 对 `/browser-sessions` 返回 **501** |
-| 报告生成（P6） | `POST /api/sessions/{id}/reports` 返回 **501** |
-| 文件 read/write/edit 工具（P3） | 未实现 |
+| 前端控制台（P7） | 基础控制台已可构建；事件历史虚拟列表与新产生的对话正文归档已接入，真实模型长任务交互和细粒度阶段时间线仍待验收 |
+| 浏览器 / 登录探针（P4） | 本机 Edge 与 Kali Chromium 已验证；真实模型任务未复测 |
+| 报告与独立复测（P6） | 版本创建和 Markdown/HTML 导出已通过集成测试；Git HEAD 引用复测工具已接入，真实模型及执行岛端到端效果尚未验收，其他漏洞类型没有自动核验器 |
+| 文件 read/write/edit 工具（P3） | 已实现；Linux 路径与软链接专项测试已在执行岛通过 |
 | 通用命令无人值守模式 | **已关闭**：执行岛无执行环境级出站约束 |
-| 效果 grader / 配对基线（P9） | 未实现；`evals/runner.py` 只报告观察 |
+| 效果 grader / 配对基线（P9） | 八个自然目标、独立原件判定与离线复核已实现；真实重复 trial 与旧 B1 配对效果未验收 |
 
 已锁定的技术决策与实测结论见 `docs/decisions/`。
+
+# P8 隔离备份还原演练
+
+本机使用 `compose.yaml` 的 PostgreSQL 容器时，备份命令可通过
+`workbench backup --docker-container workbench-postgres` 在容器内执行 `pg_dump`。
+`--docker-container` 只接受配置为本机回环地址的数据库；运行前请确认该容器对应
+`WORKBENCH_DATABASE_URL`。不指定时使用 PATH 中的本机 `pg_dump`。
+备份完成后运行 `workbench verify-backup <备份目录>` 可核对 SQL 和工件的
+SHA-256 清单；该校验用于发现意外损坏，不提供防篡改认证。
+
+运行 `python scripts/backup_restore_drill.py` 会创建两份带 `p8_drill_` 前缀的
+临时数据库，调用实际备份命令，再将 SQL 导入另一份数据库，核对 UTF-8 记录与
+工件正文，结束时删除这两份临时数据库。它不会还原或覆盖工作库。
+
+升级代码后先备份并运行 `workbench db-init`。API 和 Runner 启动时只读核对业务库
+Alembic 版本与当前代码的迁移 head；不一致会拒绝启动，不会自动改表。
+Runner 恢复已有 LangGraph checkpoint 前也会核对状态版本；缺失或不匹配时拒绝续跑，
+以免把旧状态误当作新任务并重复执行工具。当前只有状态版本 v1，跨版本转换尚未实现。
+
+事件流按 `WORKBENCH_EVENT_RETENTION_DAYS`（默认 30 天）提供**手动**保留策略；
+`workbench prune-events` 只预览，`workbench prune-events --apply` 才按批删除。
+可加 `--session-id <任务 ID>` 限定任务、`--limit 1000` 控制单批数量。
+按数据库写入时间判断过期；有活动 run 的任务完全跳过，每个任务至少保留最新事件。
+清理后的旧浏览器游标会收到重新获取快照的提示。该命令不删除报告版本、证据工件、
+模型调用台账或其他业务记录；需要完整审计轨迹时，应在清理前先做数据库和工件备份。
+
+运行中显式修改范围使用 `PUT /api/sessions/{session_id}/scope`，请求体需包含
+`expected_revision`、新 `scope`（其 `revision` 为旧值加一）与非空 `reason`，
+并像其他写接口一样携带本地会话、CSRF 与 `Idempotency-Key`。更新会让旧提议停止
+派发；已经提交的 job 继续核对真实状态，并作为历史结果展示，不会被盲目重做或
+直接纳入新方向的结论。当前控制台只展示范围，编辑入口仍需单独接入。
+
+
+## 隔离回归与运行诊断
+
+运行数据库集成或恢复测试时，pytest 自动创建随机 `workbench_test_*` 临时库和工件目录，初始化后再运行用例，结束时清理。本地测试数据库用户需有创建数据库权限；测试不再扫描日常工作库。初始化或清理失败会明确报错，不能记为通过。只运行单测时无需真实数据库。
+
+`workbench export-run <run-id>` 输出诊断 v2 和 SHA-256 清单，按指定 run 收集保留事件、模型调用、操作、远端任务、观察和工件完整性。领域知识单独标为导出时的当前会话快照，不冒充历史 run 成果；工件哈希在数据库快照之后检查。按已知规则脱敏，不含工件正文、完整模型请求或 checkpoint，也不能保证识别自由文本中的未知凭据。
+
+模型连续无有效分片默认等待 300 秒（`WORKBENCH_MODEL_REQUEST_TIMEOUT_SECONDS`），持续返回正文、思考或工具参数时会延长等待；单次调用另有 1800 秒墙钟保护（`WORKBENCH_MODEL_REQUEST_MAX_SECONDS`）。小米的 `reasoning_content` 会保留并在后续工具轮次回传，界面只显示思考状态，不展示思考原文。三条数据库连接路径默认 10 秒（`WORKBENCH_DB_CONNECT_TIMEOUT_SECONDS`）。超时不自动重发模型请求；点击继续或提交新指令可以恢复，存在未核实工具任务时仍需明确核对。不构成任务总时长或费用上限，费用未知或未定价时仍保持未知。
+
+评测入口保留 smoke，并已接入八个自然目标的 acceptance 矩阵、独立靶场重置、原件判定和离线复核。运行与交接方式见 [P9 评测说明](docs/p9-evaluation.md)。真实模型重复 trial 与旧 B1 配对结果尚未取得，不能用机制测试替代效果验收。真实 Earth 任务状态及本轮修复证据见 [验收记录](docs/acceptance-results/2026-10-10/README.md)。

@@ -32,6 +32,7 @@ build/
 node_modules/
 web/dist/
 web/.vite/
+web/openapi.json
 web/coverage/
 playwright-report/
 test-results/

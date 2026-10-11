@@ -1,0 +1,9 @@
+{
+  "automatic_targets": "passed",
+  "strict_mode": "passed",
+  "offline_and_reconnect": "passed",
+  "accepted_write_then_failed_read": "passed",
+  "runtime_model_test": "not_run",
+  "session_id": "95e5e482-ec26-4f4f-bce4-3e4277522aec",
+  "strict_session_id": "a73abf11-dbef-4cd2-840b-55ccaa5f2532"
+}

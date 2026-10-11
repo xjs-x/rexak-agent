@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -18,10 +19,12 @@ from langchain_core.messages import HumanMessage
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.state import AgentGraphState
+from agent_workbench.observability.logging import get_logger
 from agent_workbench.runtime.stopping import FinishGate
 
 #: 允许的修正反馈次数上限。超过后停止空转并把问题暴露给用户。
 MAX_FEEDBACK_ROUNDS = 3
+log = get_logger("agent_workbench.finish_gate")
 
 
 class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
@@ -38,10 +41,31 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         if proposal is None:
             return await self._handle_plain_text_finish(state, attempts, messages)
 
-        async with toolbox.db.session() as db:
-            decision = await FinishGate(db).evaluate(
-                session_id=toolbox.session_id, proposal=proposal
-            )
+        span = toolbox.spans.start(
+            "finish_gate.middleware",
+            session_id=toolbox.session_id,
+            run_id=toolbox.run_id,
+        )
+        try:
+            async with toolbox.db.session() as db:
+                decision = await FinishGate(db).evaluate(
+                    session_id=toolbox.session_id, proposal=proposal
+                )
+            span.finish()
+            toolbox.spans.record(span, decision=decision.decision)
+        except Exception as exc:
+            span.finish(error=type(exc).__name__)
+            raise
+        finally:
+            try:
+                async with toolbox.db.transaction() as db:
+                    await toolbox.spans.flush(db)
+            except Exception as exc:
+                log.warning(
+                    "finish_gate_span_persist_failed",
+                    run_id=str(toolbox.run_id),
+                    error_type=type(exc).__name__,
+                )
 
         if decision.allowed:
             # 通过：保留提议，由 Runner 在一致边界把 run 置为 completed
@@ -111,17 +135,17 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
 
 
 _FINISH_MARKERS = (
-    "总结",
-    "综上",
     "测试完成",
-    "已完成",
+    "已完成测试",
+    "测试已结束",
     "没有发现问题",
-    "未发现",
+    "未发现漏洞",
+    "未发现安全问题",
     "报告如下",
-    "结论",
-    "conclusion",
-    "summary",
-    "in summary",
+    "testing is complete",
+)
+_FINISH_HEADING = re.compile(
+    r"(?im)^\s*(?:#{1,6}\s*)?(?:总结|结论|综上|conclusion|summary)\s*[:：]"
 )
 
 
@@ -130,7 +154,10 @@ def _looks_like_finish(text: str) -> bool:
     if len(stripped) < 40:
         return False
     lowered = stripped.lower()
-    return any(marker in stripped or marker in lowered for marker in _FINISH_MARKERS)
+    # 普通能力说明中的“结论/总结”不等于实际完成测试；只识别明确的收尾声明。
+    return bool(_FINISH_HEADING.search(stripped)) or any(
+        marker in stripped or marker in lowered for marker in _FINISH_MARKERS
+    )
 
 
 def _render_feedback(decision: Any) -> str:

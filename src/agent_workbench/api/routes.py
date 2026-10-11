@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -24,18 +26,30 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import Text, cast, literal, select, tuple_, union_all
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from agent_workbench.api.auth import LocalAuth
+from agent_workbench.api.redaction import redact_api_value as _redact_api_value
+from agent_workbench.api.redaction import redact_event_payload
 from agent_workbench.api.sse import SSE_HEADERS, event_stream
+from agent_workbench.api.tool_activity import router as tool_activity_router
+from agent_workbench.config.catalog import PriceCatalog
 from agent_workbench.config.settings import get_settings
-from agent_workbench.contracts.enums import CommandKind, ErrorCode, RunStatus
+from agent_workbench.contracts.conversation import ConversationBody, ConversationPage
+from agent_workbench.contracts.diagnostics import ModelCallPage, OperationPage, SpanPage
+from agent_workbench.contracts.enums import ACTIVE_RUN_STATUSES, CommandKind, ErrorCode, RunStatus
 from agent_workbench.contracts.errors import ApiError
-from agent_workbench.contracts.events import EventType
+from agent_workbench.contracts.events import EventPage, EventType
 from agent_workbench.contracts.identity import (
     ProjectCreate,
+    ScopeSnapshot,
+    ScopeUpdate,
     SessionCreate,
 )
+from agent_workbench.contracts.plan import PlanRead, PlanStepRead
+from agent_workbench.domain.instruction_scope import scope_from_instructions, sync_instruction_scope
+from agent_workbench.domain.prices import PriceUpdate
 from agent_workbench.domain.run_state import (
     assert_resumable,
     bump_control_version,
@@ -46,22 +60,30 @@ from agent_workbench.observability.costs import summarize_costs
 from agent_workbench.observability.events import append_event, latest_seq, read_events_after
 from agent_workbench.persistence.repositories import (
     ArtifactRepository,
+    CommandRepository,
     ModelCallRepository,
     ProjectRepository,
     SessionRepository,
     ToolJobRepository,
 )
 from agent_workbench.persistence.tables import (
+    ArtifactRow,
+    AssetRow,
+    CommandRow,
     CoverageRow,
     FindingRow,
     IdentityRow,
     LeadRow,
+    ModelCallRow,
+    ReportVersionRow,
     RunRow,
     SessionRow,
+    VerificationRow,
 )
 from agent_workbench.runtime.commands import submit_control, submit_message
 
 router = APIRouter(prefix="/api")
+router.include_router(tool_activity_router)
 
 _auth = LocalAuth()
 
@@ -151,6 +173,50 @@ async def create_project(
         }
 
 
+@router.get("/projects/{project_id}/sessions", tags=["sessions"])
+async def list_project_sessions(
+    project_id: UUID,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    get_auth().require_session(request)
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as db:
+        project = await ProjectRepository(db).get(project_id)
+        if project is None or project.owner_id != get_settings().owner_id:
+            raise ApiError(ErrorCode.NOT_FOUND, f"项目不存在：{project_id}")
+        rows = list(
+            (
+                await db.execute(
+                    select(SessionRow)
+                    .where(SessionRow.project_id == project_id, SessionRow.status != "deleted")
+                    .order_by(SessionRow.created_at.desc(), SessionRow.id)
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return {
+        "sessions": [
+            {
+                "id": str(row.id),
+                "project_id": str(row.project_id),
+                "title": _redact_api_value(row.title),
+                "status": row.status,
+                "provider_id": row.provider_id,
+                "model_name": row.model_name,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows[:limit]
+        ],
+        "next_offset": offset + limit if len(rows) > limit else None,
+    }
+
+
 @router.post(
     "/projects/{project_id}/sessions",
     status_code=status.HTTP_201_CREATED,
@@ -173,35 +239,55 @@ async def create_session(
     from agent_workbench.domain.run_state import create_run
     from agent_workbench.persistence.db import get_database
 
-    _validate_scope_or_422(payload.scope)
+    mode_explicit = "scope" in payload.model_fields_set and "mode" in payload.scope.model_fields_set
+    supplied_scope = (
+        payload.scope if mode_explicit else payload.scope.model_copy(update={"mode": "instruction"})
+    )
+    initial_scope = scope_from_instructions(supplied_scope, [payload.initial_objective])
+    _validate_scope_or_422(initial_scope)
     settings = get_settings()
 
     async with get_database().transaction() as session:
         project = await ProjectRepository(session).get(project_id)
-        if project is None:
+        if (
+            project is None
+            or project.owner_id != settings.owner_id
+            or project.deleted_at is not None
+        ):
             raise ApiError(ErrorCode.NOT_FOUND, f"项目不存在：{project_id}")
+        if payload.project_id != project_id:
+            raise ApiError(ErrorCode.VALIDATION_FAILED, "请求中的项目与当前项目不一致")
 
         session_row = await SessionRepository(session).create(
             project_id=project_id,
             title=payload.title,
-            scope_snapshot=payload.scope.model_dump(),
+            scope_snapshot=initial_scope.model_dump(),
             policy_snapshot=payload.policy.model_dump(),
             provider_id=payload.provider_id or settings.default_provider,
             model_name=payload.model_name or settings.xiaomi_model,
         )
 
+        created_identities: dict[str, IdentityRow] = {}
         for identity in payload.identities:
-            session.add(
-                IdentityRow(
-                    project_id=project_id,
-                    display_name=identity.display_name,
-                    role_label=identity.role_label,
-                    secret_ref=identity.secret_ref,
-                    auth_state_ref=identity.auth_state_ref,
-                    auth_revision=identity.auth_revision,
-                )
+            identity_row = IdentityRow(
+                project_id=project_id,
+                display_name=identity.display_name,
+                role_label=identity.role_label,
+                secret_ref=identity.secret_ref,
+                auth_state_ref=identity.auth_state_ref,
+                auth_revision=identity.auth_revision,
             )
+            session.add(identity_row)
+            created_identities[identity.display_name] = identity_row
         await session.flush()
+        if payload.active_identity_name:
+            selected = created_identities.get(payload.active_identity_name)
+            if selected is None:
+                raise ApiError(
+                    ErrorCode.VALIDATION_FAILED,
+                    "active_identity_name 必须引用本次创建的测试身份",
+                )
+            session_row.active_identity_id = selected.id
 
         run = await create_run(
             session,
@@ -213,6 +299,7 @@ async def create_session(
                 "scope_revision": payload.scope.revision,
                 "policy_revision": payload.policy.revision,
                 "created_from_session_create": True,
+                "scope_mode_explicit": mode_explicit,
             },
         )
 
@@ -228,6 +315,9 @@ async def create_session(
             "session": {
                 "id": str(session_row.id),
                 "project_id": str(session_row.project_id),
+                "active_identity_id": (
+                    str(session_row.active_identity_id) if session_row.active_identity_id else None
+                ),
                 "thread_id": session_row.thread_id,
                 "title": session_row.title,
                 "status": session_row.status,
@@ -254,6 +344,56 @@ async def create_session(
 # --------------------------------------------------------------------------- #
 
 
+@router.delete("/sessions/{session_id}", tags=["sessions"])
+async def delete_session(session_id: UUID, request: Request) -> dict[str, Any]:
+    """从列表移除任务，保留审计记录；活动运行经取消流程确认停止。"""
+    auth = get_auth()
+    auth.check_origin(request)
+    ticket = auth.require_session(request)
+    auth.require_csrf(request, ticket)
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().transaction() as db:
+        row = (
+            await db.execute(
+                select(SessionRow).where(SessionRow.id == session_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        project = await ProjectRepository(db).get(row.project_id) if row else None
+        if row is None or project is None or project.owner_id != get_settings().owner_id:
+            raise ApiError(ErrorCode.NOT_FOUND, "任务不存在")
+        runs = list(
+            (
+                await db.execute(
+                    select(RunRow)
+                    .where(
+                        RunRow.session_id == session_id,
+                        RunRow.status.in_([str(item) for item in ACTIVE_RUN_STATUSES]),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if row.status != "deleted":
+            row.status = "deleted"
+            for run in runs:
+                await bump_control_version(db, run_id=run.id)
+                await submit_control(
+                    db,
+                    run=run,
+                    kind=CommandKind.CANCEL,
+                    idempotency_key=f"delete-session:{session_id}:{run.id}",
+                )
+                current = RunStatus(run.status)
+                if current is RunStatus.RECOVERING or current is RunStatus.PAUSING:
+                    await set_run_status(db, run_id=run.id, target=RunStatus.PAUSED)
+                if RunStatus(run.status) is not RunStatus.CANCELLING:
+                    await set_run_status(db, run_id=run.id, target=RunStatus.CANCELLING)
+        return {"id": str(session_id), "deleted": True, "cancellation_pending": bool(runs)}
+
+
 @router.post(
     "/sessions/{session_id}/messages",
     status_code=status.HTTP_202_ACCEPTED,
@@ -275,6 +415,19 @@ async def post_message(
 
     settings = get_settings()
     async with get_database().transaction() as session:
+        row = (
+            await session.execute(
+                select(SessionRow).where(SessionRow.id == session_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        project = await ProjectRepository(session).get(row.project_id) if row else None
+        if (
+            row is None
+            or row.status == "deleted"
+            or project is None
+            or project.owner_id != settings.owner_id
+        ):
+            raise ApiError(ErrorCode.NOT_FOUND, "任务不存在或已删除")
         receipt = await submit_message(
             session,
             session_id=session_id,
@@ -284,6 +437,18 @@ async def post_message(
             model_name=settings.xiaomi_model,
             config_snapshot={"created_from": "message"},
         )
+        if receipt.created and receipt.run_id:
+            run = await session.get(RunRow, receipt.run_id)
+            if (
+                run is not None
+                and RunStatus(run.status) is RunStatus.RECOVERING
+                and not await _unresolved_jobs(session, run.id)
+            ):
+                run.config_snapshot = {
+                    **run.config_snapshot,
+                    "restart_checkpoint_on_input": str(receipt.command_id),
+                }
+                await set_run_status(session, run_id=run.id, target=RunStatus.QUEUED)
     return {
         "command_id": str(receipt.command_id),
         "status": str(receipt.status),
@@ -326,9 +491,8 @@ async def resume_run(
 ) -> dict[str, Any]:
     """resume **只作用于可恢复的 run**；已 completed 的 run 必须创建新 run。
 
-    处于 `recovering` 的 run 说明**启动核对未能确认远端副作用**，此时必须带
-    `acknowledge_unknown_operations=true` 显式确认，否则拒绝恢复 ——
-    不能让"无法核实"被一次普通的 resume 悄悄盖过去。
+    `recovering` 既可能是模型超时，也可能是远端状态不明。只有实际存在
+    未核实的工具任务时才要求显式确认，不能把模型超时误报成未知副作用。
     """
     auth = get_auth()
     auth.check_origin(request)
@@ -339,21 +503,29 @@ async def resume_run(
 
     async with get_database().transaction() as session:
         run = await assert_resumable(session, run_id)
+        from agent_workbench.domain.run_state import get_session
+
+        await get_session(session, run.session_id)
+        # 与消息提交、范围应用、删除保持 Session -> Run 的锁顺序。
+        await session.execute(
+            select(SessionRow).where(SessionRow.id == run.session_id).with_for_update()
+        )
 
         if RunStatus(run.status) is RunStatus.RECOVERING and not acknowledge_unknown_operations:
             unresolved = await _unresolved_jobs(session, run_id)
-            raise ApiError(
-                ErrorCode.CONFLICT,
-                "该 run 处于 recovering：启动核对未能确认远端副作用是否已经发生。"
-                "请先确认这些任务的实际影响，再带 acknowledge_unknown_operations=true 恢复；"
-                "系统不会自动重跑未知任务。",
-                details={
-                    "status": str(RunStatus.RECOVERING),
-                    "stop_reason": run.stop_reason,
-                    "unresolved_jobs": unresolved,
-                    "required_field": "acknowledge_unknown_operations",
-                },
-            )
+            if unresolved:
+                raise ApiError(
+                    ErrorCode.CONFLICT,
+                    "该 run 处于 recovering：启动核对未能确认远端副作用是否已经发生。"
+                    "请先确认这些任务的实际影响，再带 acknowledge_unknown_operations=true 恢复；"
+                    "系统不会自动重跑未知任务。",
+                    details={
+                        "status": str(RunStatus.RECOVERING),
+                        "stop_reason": run.stop_reason,
+                        "unresolved_jobs": unresolved,
+                        "required_field": "acknowledge_unknown_operations",
+                    },
+                )
 
         receipt = await submit_control(
             session,
@@ -365,6 +537,12 @@ async def resume_run(
                 "acknowledge_unknown_operations": acknowledge_unknown_operations,
             },
         )
+        if receipt.created:
+            await sync_instruction_scope(session, session_id=run.session_id, run_id=run.id)
+            run.config_snapshot = {
+                **run.config_snapshot,
+                "restart_checkpoint_on_input": str(receipt.command_id),
+            }
         await set_run_status(session, run_id=run_id, target=RunStatus.QUEUED)
     return {
         "run_id": str(run_id),
@@ -413,9 +591,25 @@ async def _control(
         current = RunStatus(run.status)
         if current in {RunStatus.COMPLETED, RunStatus.CANCELLED}:
             raise ApiError(ErrorCode.CONFLICT, f"run 已处于终态 {current}，不能再{kind}")
+        if kind is CommandKind.CANCEL and current is RunStatus.PAUSING:
+            await set_run_status(session, run_id=run_id, target=RunStatus.PAUSED)
+        if kind is CommandKind.CANCEL and current is RunStatus.RECOVERING:
+            await set_run_status(session, run_id=run_id, target=RunStatus.PAUSED)
         receipt = await submit_control(session, run=run, kind=kind, idempotency_key=idempotency_key)
-        if current is RunStatus.RUNNING or current is RunStatus.WAITING_TOOL:
-            await set_run_status(session, run_id=run_id, target=target)
+        if kind is CommandKind.CANCEL and current is not RunStatus.FAILED:
+            if receipt.created:
+                await bump_control_version(session, run_id=run.id)
+            if RunStatus(run.status) is not target:
+                await set_run_status(session, run_id=run_id, target=target)
+        elif kind is CommandKind.PAUSE and current in {
+            RunStatus.QUEUED,
+            RunStatus.RUNNING,
+            RunStatus.WAITING_TOOL,
+            RunStatus.WAITING_USER,
+        }:
+            if receipt.created:
+                await bump_control_version(session, run_id=run.id)
+                await set_run_status(session, run_id=run_id, target=RunStatus.PAUSING)
 
     return {
         "run_id": str(run_id),
@@ -434,6 +628,35 @@ async def _control(
 # --------------------------------------------------------------------------- #
 
 
+@router.get("/sessions/{session_id}/plan", response_model=PlanRead, tags=["read"])
+async def session_plan(session_id: UUID, request: Request) -> PlanRead:
+    """从图 checkpoint 读取当前计划，不把事件投影当作第二份权威状态。"""
+    get_auth().require_session(request)
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    from agent_workbench.persistence.bootstrap import open_checkpointer_connection
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as db:
+        session_row = (
+            await db.execute(select(SessionRow).where(SessionRow.id == session_id))
+        ).scalar_one_or_none()
+        if session_row is None or session_row.status == "deleted":
+            raise ApiError(ErrorCode.NOT_FOUND, f"session 不存在：{session_id}")
+        thread_id = session_row.thread_id
+
+    async with open_checkpointer_connection(get_settings()) as connection:
+        saved = await AsyncPostgresSaver(connection).aget_tuple(
+            {"configurable": {"thread_id": thread_id}}
+        )
+    values = saved.checkpoint.get("channel_values", {}) if saved is not None else {}
+    raw_steps = values.get("plan") or []
+    return PlanRead(
+        revision=int(values.get("plan_revision") or 0),
+        steps=[PlanStepRead.model_validate(_redact_api_value(step)) for step in raw_steps],
+    )
+
+
 @router.get("/sessions/{session_id}/snapshot", tags=["read"])
 async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]:
     """**一致读**的业务快照 + `event_cursor`。
@@ -448,7 +671,7 @@ async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]
         session_row = (
             await session.execute(select(SessionRow).where(SessionRow.id == session_id))
         ).scalar_one_or_none()
-        if session_row is None:
+        if session_row is None or session_row.status == "deleted":
             raise ApiError(ErrorCode.NOT_FOUND, f"session 不存在：{session_id}")
         cursor = await latest_seq(session, session_id)
         runs = (
@@ -501,6 +724,7 @@ async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]
                 "completion_reason": row.completion_reason,
                 "objective": row.objective,
                 "control_version": row.control_version,
+                "stop_reason": _redact_api_value(row.stop_reason),
                 "owner_generation": row.owner_generation,
                 "created_at": row.created_at.isoformat(),
             }
@@ -590,9 +814,430 @@ async def _seq_for_event_id(db: Any, session_id: UUID, event_id: str) -> int | N
     return int(row.session_seq) if row is not None else None
 
 
+@router.get("/sessions/{session_id}/events/page", response_model=EventPage, tags=["read"])
+async def page_session_events(
+    session_id: UUID,
+    request: Request,
+    before: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=100, ge=1, le=200),
+) -> dict[str, Any]:
+    """有界读取最近事件；历史日志不靠 SSE 从零重放到浏览器。"""
+    get_auth().require_session(request)
+    from agent_workbench.persistence.db import get_database
+    from agent_workbench.persistence.tables import EventRow
+
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        stmt = select(EventRow).where(EventRow.session_id == session_id)
+        if before is not None:
+            stmt = stmt.where(EventRow.session_seq < before)
+        rows = list(
+            (await db.execute(stmt.order_by(EventRow.session_seq.desc()).limit(limit + 1)))
+            .scalars()
+            .all()
+        )
+    page = rows[:limit]
+    return {
+        "events": [
+            {
+                "schema_version": row.schema_version,
+                "event_id": str(row.event_id),
+                "session_seq": row.session_seq,
+                "session_id": str(row.session_id),
+                "run_id": str(row.run_id) if row.run_id else None,
+                "type": row.type,
+                "occurred_at": row.occurred_at.isoformat(),
+                "payload": redact_event_payload(row.type, row.payload),
+            }
+            for row in reversed(page)
+        ],
+        "next_before": page[-1].session_seq if len(rows) > limit else None,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # 发现 / 覆盖 / 任务 / 工件 / 用量
 # --------------------------------------------------------------------------- #
+
+
+async def _require_session_row(db: Any, session_id: UUID) -> None:
+    exists = (
+        await db.execute(
+            select(SessionRow.id).where(SessionRow.id == session_id, SessionRow.status != "deleted")
+        )
+    ).scalar_one_or_none()
+    if exists is None:
+        raise ApiError(ErrorCode.NOT_FOUND, f"session 不存在：{session_id}")
+
+
+def _conversation_sources(session_id: UUID) -> Any:
+    """每条正文只保留一个来源；运行恢复不重复展示目标。"""
+    empty_text = cast(literal(None), Text)
+    empty_uuid = cast(literal(None), PG_UUID(as_uuid=True))
+    return union_all(
+        select(
+            RunRow.id.label("id"),
+            literal("objective").label("source"),
+            literal(0).label("rank"),
+            RunRow.created_at.label("occurred_at"),
+            RunRow.id.label("run_id"),
+            RunRow.objective.label("body"),
+            empty_uuid.label("artifact_id"),
+        ).where(
+            RunRow.session_id == session_id,
+            RunRow.config_snapshot["created_from_session_create"].as_boolean().is_(True),
+        ),
+        select(
+            CommandRow.id,
+            literal("message"),
+            literal(1),
+            CommandRow.created_at,
+            CommandRow.run_id,
+            CommandRow.content,
+            empty_uuid,
+        ).where(CommandRow.session_id == session_id, CommandRow.kind == "message"),
+        select(
+            ModelCallRow.model_call_id,
+            literal("assistant"),
+            literal(2),
+            ModelCallRow.completed_at,
+            ModelCallRow.run_id,
+            empty_text,
+            ModelCallRow.response_artifact_id,
+        ).where(
+            ModelCallRow.session_id == session_id,
+            ModelCallRow.response_artifact_id.is_not(None),
+            ModelCallRow.completed_at.is_not(None),
+        ),
+    ).subquery("conversation")
+
+
+def _conversation_cursor(row: Any) -> str:
+    key = f"{row['occurred_at'].isoformat()}|{row['rank']}|{row['id']}"
+    return base64.urlsafe_b64encode(key.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _parse_conversation_cursor(cursor: str) -> tuple[datetime, int, UUID]:
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode("utf-8")
+        when, rank_text, entry_id = raw.split("|", 2)
+        timestamp = datetime.fromisoformat(when)
+        rank = int(rank_text)
+        if timestamp.tzinfo is None or rank not in {0, 1, 2}:
+            raise ValueError("无效游标")
+        return timestamp, rank, UUID(entry_id)
+    except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, "对话分页游标无效") from exc
+
+
+@router.get("/sessions/{session_id}/conversation", response_model=ConversationPage, tags=["read"])
+async def page_conversation(
+    session_id: UUID,
+    request: Request,
+    limit: int = Query(default=30, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=256),
+) -> dict[str, Any]:
+    """按时间倒序分页；旧版本未归档的模型正文不会凭事件增量补造。"""
+    get_auth().require_session(request)
+    from agent_workbench.evidence.artifacts import ArtifactError, build_artifact_store, redact_text
+    from agent_workbench.persistence.db import get_database
+
+    source = _conversation_sources(session_id)
+    stmt = select(source)
+    if cursor is not None:
+        timestamp, rank, entry_id = _parse_conversation_cursor(cursor)
+        stmt = stmt.where(
+            tuple_(source.c.occurred_at, source.c.rank, source.c.id)
+            < tuple_(timestamp, rank, entry_id)
+        )
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        rows = list(
+            (
+                await db.execute(
+                    stmt.order_by(
+                        source.c.occurred_at.desc(), source.c.rank.desc(), source.c.id.desc()
+                    ).limit(limit + 1)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        artifact_ids = [row["artifact_id"] for row in rows[:limit] if row["artifact_id"]]
+        artifacts = (
+            {
+                row.id: row
+                for row in (
+                    (
+                        await db.execute(
+                            select(ArtifactRow).where(
+                                ArtifactRow.id.in_(artifact_ids),
+                                ArtifactRow.session_id == session_id,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            }
+            if artifact_ids
+            else {}
+        )
+
+    store = build_artifact_store()
+    entries: list[dict[str, Any]] = []
+    for row in rows[:limit]:
+        artifact = artifacts.get(row["artifact_id"])
+        available = row["source"] != "assistant"
+        body = redact_text(row["body"] or "")
+        if artifact is not None and artifact.availability == "available":
+            try:
+                body = store.render_redacted_view(
+                    artifact.relative_key, media_type=artifact.media_type
+                )
+                available = True
+            except (ArtifactError, OSError, ValueError):
+                available = False
+        entries.append(
+            {
+                "id": row["id"],
+                "role": "assistant" if row["source"] == "assistant" else "user",
+                "source": row["source"],
+                "run_id": row["run_id"],
+                "occurred_at": row["occurred_at"],
+                "preview": body[:1200] if available else "[正文工件不可用]",
+                "has_more": len(body) > 1200 if available else False,
+                "available": available,
+            }
+        )
+    return {
+        "entries": entries,
+        "next_cursor": _conversation_cursor(rows[limit - 1]) if len(rows) > limit else None,
+    }
+
+
+@router.get(
+    "/sessions/{session_id}/conversation/{source}/{entry_id}/text",
+    response_model=ConversationBody,
+    tags=["read"],
+)
+async def read_conversation_body(
+    session_id: UUID,
+    source: str,
+    entry_id: UUID,
+    request: Request,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=65536, ge=1, le=1048576),
+) -> dict[str, Any]:
+    """对完整脱敏视图按字符切片，避免把凭证拆到两次响应中。"""
+    get_auth().require_session(request)
+    from agent_workbench.evidence.artifacts import build_artifact_store, redact_text
+    from agent_workbench.persistence.db import get_database
+
+    if source not in {"objective", "message", "assistant"}:
+        raise ApiError(ErrorCode.NOT_FOUND, "对话记录不存在")
+    union = _conversation_sources(session_id)
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        row = (
+            (
+                await db.execute(
+                    select(union).where(union.c.id == entry_id, union.c.source == source)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        artifact = (
+            await ArtifactRepository(db).get(row["artifact_id"])
+            if row and row["artifact_id"]
+            else None
+        )
+    if row is None:
+        raise ApiError(ErrorCode.NOT_FOUND, "对话记录不存在")
+    if source == "assistant":
+        if (
+            artifact is None
+            or artifact.session_id != session_id
+            or artifact.availability != "available"
+        ):
+            raise ApiError(ErrorCode.CONFLICT, "模型正文工件不可用")
+        store = build_artifact_store()
+        if not store.exists(artifact.relative_key):
+            raise ApiError(ErrorCode.CONFLICT, "模型正文工件文件缺失")
+        body = store.render_redacted_view(artifact.relative_key, media_type=artifact.media_type)
+    else:
+        body = redact_text(row["body"] or "")
+    end = offset + limit
+    return {
+        "id": entry_id,
+        "role": "assistant" if source == "assistant" else "user",
+        "text": body[offset:end],
+        "offset": offset,
+        "next_offset": end if end < len(body) else None,
+    }
+
+
+@router.get("/sessions/{session_id}/assets", tags=["read"])
+async def list_assets(
+    session_id: UUID,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    get_auth().require_session(request)
+    from agent_workbench.evidence.artifacts import redact_text
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        rows = list(
+            (
+                await db.execute(
+                    select(AssetRow)
+                    .where(AssetRow.session_id == session_id)
+                    .order_by(AssetRow.first_seen_at, AssetRow.id)
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    has_more = len(rows) > limit
+    return {
+        "assets": [
+            {
+                "id": str(row.id),
+                "scheme": row.scheme,
+                "host": row.host,
+                "port": row.port,
+                "path": redact_text(row.path),
+                "method": row.method,
+                "query_keys": list(row.query_keys or []),
+                "identity_refs": list(row.identity_refs or []),
+                "source_artifact_id": (
+                    str(row.source_artifact_id) if row.source_artifact_id else None
+                ),
+                "first_seen_at": row.first_seen_at.isoformat(),
+                "last_seen_at": row.last_seen_at.isoformat(),
+            }
+            for row in rows[:limit]
+        ],
+        "next_offset": offset + limit if has_more else None,
+    }
+
+
+@router.get("/sessions/{session_id}/leads", tags=["read"])
+async def list_leads(
+    session_id: UUID,
+    request: Request,
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    get_auth().require_session(request)
+    from agent_workbench.evidence.artifacts import redact_text
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        stmt = select(LeadRow).where(LeadRow.session_id == session_id)
+        if status_filter is not None:
+            stmt = stmt.where(LeadRow.status == status_filter)
+        rows = list(
+            (
+                await db.execute(
+                    stmt.order_by(LeadRow.priority.desc(), LeadRow.created_at, LeadRow.id)
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    has_more = len(rows) > limit
+    return {
+        "leads": [
+            {
+                "id": str(row.id),
+                "hypothesis": redact_text(row.hypothesis),
+                "asset_id": str(row.asset_id) if row.asset_id else None,
+                "identity_refs": list(row.identity_refs or []),
+                "priority": row.priority,
+                "priority_rationale": _redact_api_value(row.priority_rationale),
+                "status": row.status,
+                "next_action": redact_text(row.next_action) if row.next_action else None,
+                "blocked_reason": (redact_text(row.blocked_reason) if row.blocked_reason else None),
+                "resume_condition": (
+                    redact_text(row.resume_condition) if row.resume_condition else None
+                ),
+                "evidence_refs": list(row.evidence_refs or []),
+                "revision": row.revision,
+            }
+            for row in rows[:limit]
+        ],
+        "next_offset": offset + limit if has_more else None,
+    }
+
+
+@router.get("/sessions/{session_id}/findings/{finding_id}/verifications", tags=["read"])
+async def list_verifications(
+    session_id: UUID,
+    finding_id: UUID,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    get_auth().require_session(request)
+    from agent_workbench.evidence.artifacts import redact_text
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        finding = (
+            await db.execute(
+                select(FindingRow.id).where(
+                    FindingRow.id == finding_id, FindingRow.session_id == session_id
+                )
+            )
+        ).scalar_one_or_none()
+        if finding is None:
+            raise ApiError(ErrorCode.NOT_FOUND, f"发现不存在：{finding_id}")
+        rows = list(
+            (
+                await db.execute(
+                    select(VerificationRow)
+                    .where(VerificationRow.finding_id == finding_id)
+                    .order_by(VerificationRow.created_at, VerificationRow.id)
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    has_more = len(rows) > limit
+    return {
+        "verifications": [
+            {
+                "id": str(row.id),
+                "method_version": row.method_version,
+                "input_evidence_refs": list(row.input_evidence_refs or []),
+                "recheck_evidence_refs": list(row.recheck_evidence_refs or []),
+                "conclusion": row.conclusion,
+                "limitations": (redact_text(row.limitations) if row.limitations else None),
+                "tested_conditions": _redact_api_value(row.tested_conditions),
+                "executed_by_identity_id": (
+                    str(row.executed_by_identity_id) if row.executed_by_identity_id else None
+                ),
+                "performed_by": row.performed_by,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows[:limit]
+        ],
+        "next_offset": offset + limit if has_more else None,
+    }
 
 
 @router.get("/sessions/{session_id}/findings", tags=["read"])
@@ -600,30 +1245,45 @@ async def list_findings(
     session_id: UUID,
     request: Request,
     status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     get_auth().require_session(request)
     from agent_workbench.persistence.db import get_database
 
     async with get_database().session() as session:
+        await _require_session_row(session, session_id)
         stmt = select(FindingRow).where(FindingRow.session_id == session_id)
-        if status_filter:
+        if status_filter is not None:
             stmt = stmt.where(FindingRow.status == status_filter)
-        rows = (await session.execute(stmt.order_by(FindingRow.created_at.desc()))).scalars().all()
+        rows = list(
+            (
+                await session.execute(
+                    stmt.order_by(FindingRow.created_at.desc(), FindingRow.id)
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    has_more = len(rows) > limit
     return {
         "findings": [
             {
                 "id": str(row.id),
-                "title": row.title,
+                "title": _redact_api_value(row.title),
                 "category": row.category,
                 "status": row.status,
-                "impact": row.impact,
-                "description": row.description,
+                "impact": _redact_api_value(row.impact),
+                "description": _redact_api_value(row.description),
                 "evidence_refs": list(row.evidence_refs or []),
                 "verification_id": str(row.verification_id) if row.verification_id else None,
                 "revision": row.revision,
             }
-            for row in rows
+            for row in rows[:limit]
         ],
+        "next_offset": offset + limit if has_more else None,
         "note": (
             "candidate 是候选，不计入已确认数量；confirmed 必须有 verification_id 且引用可用工件。"
         ),
@@ -637,6 +1297,7 @@ async def get_coverage(session_id: UUID, request: Request) -> dict[str, Any]:
     from agent_workbench.persistence.db import get_database
 
     async with get_database().session() as session:
+        await _require_session_row(session, session_id)
         summary = await CoverageService(session).summary(session_id)
     return dict(summary)
 
@@ -728,7 +1389,15 @@ async def get_usage(
     from agent_workbench.persistence.db import get_database
 
     async with get_database().session() as session:
+        await _require_session_row(session, session_id)
         if run_id is not None:
+            owned_run = (
+                await session.execute(
+                    select(RunRow.id).where(RunRow.id == run_id, RunRow.session_id == session_id)
+                )
+            ).scalar_one_or_none()
+            if owned_run is None:
+                raise ApiError(ErrorCode.NOT_FOUND, f"run 不存在：{run_id}")
             rows = await ModelCallRepository(session).list_for_run(run_id)
         else:
             from agent_workbench.persistence.tables import ModelCallRow
@@ -760,18 +1429,301 @@ async def get_usage(
     return {**summary, "call_count": len(payloads)}
 
 
+@router.get("/sessions/{session_id}/model-calls", response_model=ModelCallPage, tags=["read"])
+async def list_model_calls(
+    session_id: UUID,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """费用时间线读取台账最终值；不累加流式估计与最终用量。"""
+    get_auth().require_session(request)
+    from agent_workbench.persistence.db import get_database
+    from agent_workbench.persistence.tables import ModelCallRow
+
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        rows = list(
+            (
+                await db.execute(
+                    select(ModelCallRow)
+                    .where(ModelCallRow.session_id == session_id)
+                    .order_by(
+                        ModelCallRow.submitted_at.desc().nullslast(),
+                        ModelCallRow.model_call_id,
+                    )
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return {
+        "model_calls": [
+            {
+                "model_call_id": str(row.model_call_id),
+                "run_id": str(row.run_id),
+                "phase": row.phase,
+                "retry_index": row.retry_index,
+                "provider_id": row.provider_id,
+                "model_name": row.model_name,
+                "usage_status": row.usage_status,
+                "cost_status": row.cost_status,
+                "input_tokens": row.input_tokens,
+                "output_tokens": row.output_tokens,
+                "cache_read_tokens": row.cache_read_tokens,
+                "cache_write_tokens": row.cache_write_tokens,
+                "reasoning_tokens": row.reasoning_tokens,
+                "cost_amount": str(row.cost_amount) if row.cost_amount is not None else None,
+                "cost_currency": row.cost_currency,
+                "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
+                "first_token_at": (row.first_token_at.isoformat() if row.first_token_at else None),
+                "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+                "error_code": row.error_code,
+            }
+            for row in rows[:limit]
+        ],
+        "next_offset": offset + limit if len(rows) > limit else None,
+    }
+
+
+@router.get("/sessions/{session_id}/operations", response_model=OperationPage, tags=["read"])
+async def list_tool_operations(
+    session_id: UUID,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """只读工具操作时间线；时间戳为控制端记录，不冒充远端执行耗时。"""
+    get_auth().require_session(request)
+    from agent_workbench.persistence.db import get_database
+    from agent_workbench.persistence.tables import ToolJobRow, ToolOperationRow
+
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        rows = list(
+            (
+                await db.execute(
+                    select(ToolOperationRow, ToolJobRow)
+                    .outerjoin(ToolJobRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+                    .where(ToolOperationRow.session_id == session_id)
+                    .order_by(ToolOperationRow.created_at.desc(), ToolOperationRow.operation_id)
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            ).all()
+        )
+    return {
+        "operations": [
+            {
+                "operation_id": str(operation.operation_id),
+                "run_id": str(operation.run_id),
+                "tool_name": operation.tool_name,
+                "status": operation.status,
+                "created_at": operation.created_at.isoformat(),
+                "updated_at": operation.updated_at.isoformat(),
+                "job_state": job.state if job else None,
+                "sync_status": job.sync_status if job else None,
+                "executor_accepted_at": job.executor_accepted_at if job else None,
+                "executor_started_at": job.executor_started_at if job else None,
+                "executor_finished_at": job.executor_finished_at if job else None,
+            }
+            for operation, job in rows[:limit]
+        ],
+        "next_offset": offset + limit if len(rows) > limit else None,
+    }
+
+
+@router.get("/sessions/{session_id}/spans", response_model=SpanPage, tags=["read"])
+async def list_diagnostic_spans(
+    session_id: UUID,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """只读阶段耗时；仅暴露确定的类别和结果，不返回原始属性或异常正文。"""
+    get_auth().require_session(request)
+    from agent_workbench.persistence.db import get_database
+    from agent_workbench.persistence.tables import SpanRow
+
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        rows = list(
+            (
+                await db.execute(
+                    select(SpanRow)
+                    .where(SpanRow.session_id == session_id)
+                    .order_by(SpanRow.started_at.desc(), SpanRow.id)
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return {
+        "spans": [
+            {
+                "id": str(row.id),
+                "run_id": str(row.run_id) if row.run_id else None,
+                "name": row.name,
+                "started_at": row.started_at,
+                "duration_ms": float(row.duration_ms) if row.duration_ms is not None else None,
+                "error": (
+                    row.error
+                    if row.error and row.error.isascii() and row.error.isidentifier()
+                    else None
+                ),
+                "decision": (
+                    row.attributes.get("decision")
+                    if row.attributes.get("decision")
+                    in {"complete", "continue", "wait_user", "wait_tool"}
+                    else None
+                ),
+                "status": (
+                    row.attributes.get("status")
+                    if row.attributes.get("status") in {"completed", "failed"}
+                    else None
+                ),
+            }
+            for row in rows[:limit]
+        ],
+        "next_offset": offset + limit if len(rows) > limit else None,
+    }
+
+
 @router.post(
     "/sessions/{session_id}/reports",
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    tags=["read"],
+    status_code=status.HTTP_201_CREATED,
+    tags=["reports"],
 )
 async def create_report(session_id: UUID, request: Request) -> dict[str, Any]:
-    """报告生成在 P6 交付；此处**如实返回未实现**，不用假实现冒充。"""
-    get_auth().require_session(request)
-    _ = session_id
+    """从当前业务表创建不可变报告版本；已确认发现必须通过证据校验。"""
+    auth = get_auth()
+    auth.check_origin(request)
+    ticket = auth.require_session(request)
+    auth.require_csrf(request, ticket)
+    from agent_workbench.domain.reports import create_report_snapshot
+    from agent_workbench.evidence.artifacts import build_artifact_store
+    from agent_workbench.persistence.db import get_database
+
+    result = await create_report_snapshot(get_database(), build_artifact_store(), session_id)
     return {
-        "code": "not_implemented",
-        "message": "报告快照与 Markdown/HTML 渲染在 P6 交付；当前版本不提供该能力。",
+        "version": result.version,
+        "markdown_artifact_id": str(result.markdown_artifact_id),
+        "html_artifact_id": str(result.html_artifact_id),
+        "confirmed_count": result.confirmed_count,
+        "candidate_count": result.candidate_count,
+    }
+
+
+@router.get("/sessions/{session_id}/reports", tags=["reports"])
+async def list_reports(session_id: UUID, request: Request) -> dict[str, Any]:
+    get_auth().require_session(request)
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as session:
+        exists = (
+            await session.execute(select(SessionRow.id).where(SessionRow.id == session_id))
+        ).scalar_one_or_none()
+        if exists is None:
+            raise ApiError(ErrorCode.NOT_FOUND, f"session 不存在：{session_id}")
+        rows = (
+            (
+                await session.execute(
+                    select(ReportVersionRow)
+                    .where(ReportVersionRow.session_id == session_id)
+                    .order_by(ReportVersionRow.version.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return {"reports": [_report_metadata(row) for row in rows]}
+
+
+@router.get("/sessions/{session_id}/reports/{version}", tags=["reports"])
+async def get_report(session_id: UUID, version: int, request: Request) -> dict[str, Any]:
+    get_auth().require_session(request)
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as session:
+        row = (
+            await session.execute(
+                select(ReportVersionRow).where(
+                    ReportVersionRow.session_id == session_id,
+                    ReportVersionRow.version == version,
+                )
+            )
+        ).scalar_one_or_none()
+    if row is None:
+        raise ApiError(ErrorCode.NOT_FOUND, f"报告版本不存在：{version}")
+    return _report_metadata(row)
+
+
+@router.get("/sessions/{session_id}/reports/{version}/export", tags=["reports"])
+async def export_report(
+    session_id: UUID,
+    version: int,
+    request: Request,
+    format: str = Query(default="markdown", pattern="^(markdown|html)$"),
+) -> Response:
+    """导出生成时已脱敏的快照；始终作为附件下载。"""
+    get_auth().require_session(request)
+    from agent_workbench.evidence.artifacts import ArtifactError, build_artifact_store
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as session:
+        row = (
+            await session.execute(
+                select(ReportVersionRow).where(
+                    ReportVersionRow.session_id == session_id,
+                    ReportVersionRow.version == version,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise ApiError(ErrorCode.NOT_FOUND, f"报告版本不存在：{version}")
+        artifact_id = row.html_artifact_id if format == "html" else row.markdown_artifact_id
+        artifact = await ArtifactRepository(session).get(artifact_id) if artifact_id else None
+    store = build_artifact_store()
+    valid = False
+    if (
+        artifact is not None
+        and artifact.session_id == session_id
+        and artifact.availability == "available"
+    ):
+        try:
+            valid = store.verify(artifact.relative_key, artifact.sha256)
+        except ArtifactError:
+            valid = False
+    if not valid or artifact is None:
+        raise ApiError(ErrorCode.CONFLICT, "报告工件缺失或哈希校验失败")
+    extension = "html" if format == "html" else "md"
+    return Response(
+        content=store.read_bytes(artifact.relative_key),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="report-v{version}.{extension}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'",
+        },
+    )
+
+
+def _report_metadata(row: ReportVersionRow) -> dict[str, Any]:
+    return {
+        "version": row.version,
+        "status": row.generation_status,
+        "is_historical": row.is_historical,
+        "created_at": row.created_at.isoformat(),
+        "run_id": str(row.run_id) if row.run_id else None,
+        "markdown_artifact_id": str(row.markdown_artifact_id) if row.markdown_artifact_id else None,
+        "html_artifact_id": str(row.html_artifact_id) if row.html_artifact_id else None,
+        "artifact_refs": list(row.artifact_refs or []),
+        "input_data_revision": row.input_data_revision,
     }
 
 
@@ -783,12 +1735,16 @@ async def create_report(session_id: UUID, request: Request) -> dict[str, Any]:
 @router.get("/settings/models", tags=["settings"])
 async def get_model_settings(request: Request) -> dict[str, Any]:
     get_auth().require_session(request)
-    from agent_workbench.config.catalog import default_price_catalog, default_provider_profiles
+    from agent_workbench.config.catalog import default_provider_profiles
     from agent_workbench.config.secrets import build_secret_store
+    from agent_workbench.domain.prices import current_price_catalog
+    from agent_workbench.persistence.db import get_database
 
     settings = get_settings()
     store = build_secret_store()
     profiles = default_provider_profiles()
+    async with get_database().session() as db:
+        catalog = await current_price_catalog(db)
     return {
         "default_provider": settings.default_provider,
         "profiles": [
@@ -810,9 +1766,32 @@ async def get_model_settings(request: Request) -> dict[str, Any]:
             }
             for profile in profiles.values()
         ],
-        "price_catalog_version": default_price_catalog().version,
-        "effective_scope": "修改默认模型只影响**新建的 run**；活动 run 保持其配置快照。",
+        "price_catalog_version": catalog.version,
+        "effective_scope": "价格修改只影响**之后启动的 run**；活动 run 保持启动时的价格快照。",
     }
+
+
+@router.get("/settings/prices", response_model=PriceCatalog, tags=["settings"])
+async def get_price_settings(request: Request) -> PriceCatalog:
+    get_auth().require_session(request)
+    from agent_workbench.domain.prices import current_price_catalog
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as db:
+        return await current_price_catalog(db)
+
+
+@router.post("/settings/prices", response_model=PriceCatalog, tags=["settings"])
+async def update_price_settings(request: Request, payload: PriceUpdate) -> PriceCatalog:
+    auth = get_auth()
+    auth.check_origin(request)
+    ticket = auth.require_session(request)
+    auth.require_csrf(request, ticket)
+    from agent_workbench.domain.prices import update_price_catalog
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().transaction() as db:
+        return await update_price_catalog(db, payload)
 
 
 @router.post("/executors/{executor_id}/doctor", status_code=status.HTTP_200_OK, tags=["settings"])
@@ -913,6 +1892,44 @@ async def change_objective(
         ).scalar_one_or_none()
         if run is None:
             raise ApiError(ErrorCode.NOT_FOUND, f"run 不存在：{run_id}")
+        await session.execute(
+            select(SessionRow).where(SessionRow.id == run.session_id).with_for_update()
+        )
+        run = (
+            await session.execute(
+                select(RunRow)
+                .where(RunRow.id == run_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        existing = (
+            await session.execute(
+                select(CommandRow).where(
+                    CommandRow.session_id == run.session_id,
+                    CommandRow.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            if (
+                existing.run_id != run_id
+                or existing.kind != str(CommandKind.MESSAGE)
+                or existing.content != content
+                or existing.payload.get("explicit_direction_change") is not True
+            ):
+                raise ApiError(
+                    ErrorCode.IDEMPOTENCY_KEY_REUSED,
+                    "幂等键已用于不同指令或内容；请使用新键",
+                )
+            return {
+                "run_id": str(run_id),
+                "control_version": existing.control_version,
+                "command_id": str(existing.id),
+                "status": existing.status,
+            }
+        if RunStatus(run.status) not in ACTIVE_RUN_STATUSES:
+            raise ApiError(ErrorCode.CONFLICT, "该 run 已结束，请在任务中发送新消息开始下一阶段")
         version = await bump_control_version(session, run_id=run_id)
         receipt = await submit_message(
             session,
@@ -940,6 +1957,120 @@ async def change_objective(
         "control_version": version,
         "command_id": str(receipt.command_id),
         "status": str(receipt.status),
+    }
+
+
+@router.put("/sessions/{session_id}/scope", tags=["sessions"])
+async def change_session_scope(
+    session_id: UUID,
+    request: Request,
+    payload: ScopeUpdate,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> dict[str, Any]:
+    """显式应用新范围，并让旧模型提议和已派发 job 带上历史版本标记。"""
+    auth = get_auth()
+    auth.check_origin(request)
+    ticket = auth.require_session(request)
+    auth.require_csrf(request, ticket)
+    _validate_scope_or_422(payload.scope)
+    if payload.scope.revision != payload.expected_revision + 1:
+        raise ApiError(
+            ErrorCode.VALIDATION_FAILED,
+            "新范围 revision 必须等于 expected_revision + 1",
+        )
+
+    from agent_workbench.persistence.db import get_database
+
+    scope_data = payload.scope.model_dump(mode="json")
+    async with get_database().transaction() as session:
+        task = (
+            await session.execute(
+                select(SessionRow).where(SessionRow.id == session_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if task is None:
+            raise ApiError(ErrorCode.NOT_FOUND, f"session 不存在：{session_id}")
+        existing = (
+            await session.execute(
+                select(CommandRow).where(
+                    CommandRow.session_id == session_id,
+                    CommandRow.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            if (
+                existing.kind != str(CommandKind.SCOPE_CHANGE)
+                or existing.content != payload.reason
+                or existing.payload.get("expected_revision") != payload.expected_revision
+                or existing.payload.get("scope") != scope_data
+            ):
+                raise ApiError(ErrorCode.IDEMPOTENCY_KEY_REUSED, "幂等键已用于不同范围变更")
+            return {
+                "session_id": str(session_id),
+                "run_id": str(existing.run_id),
+                "scope_revision": existing.payload["scope_revision"],
+                "control_version": existing.control_version,
+                "command_id": str(existing.id),
+                "status": existing.status,
+            }
+
+        old_scope = ScopeSnapshot.model_validate(task.scope_snapshot or {})
+        if old_scope.revision != payload.expected_revision:
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "范围修订已变化，请获取最新范围后重试",
+                details={"current_revision": old_scope.revision},
+            )
+        run = (
+            await session.execute(
+                select(RunRow)
+                .where(
+                    RunRow.session_id == session_id,
+                    RunRow.status.in_([str(item) for item in ACTIVE_RUN_STATUSES]),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if run is None:
+            raise ApiError(ErrorCode.CONFLICT, "当前没有活动 run，请先开始新的运行阶段")
+
+        await SessionRepository(session).update_scope(session_id, scope_data)
+        version = await bump_control_version(session, run_id=run.id)
+        submitted = await CommandRepository(session).submit(
+            session_id=session_id,
+            run_id=run.id,
+            kind=CommandKind.SCOPE_CHANGE,
+            content=payload.reason,
+            idempotency_key=idempotency_key,
+            payload={
+                "applied": True,
+                "expected_revision": payload.expected_revision,
+                "scope_revision": payload.scope.revision,
+                "scope": scope_data,
+            },
+            control_version=version,
+        )
+        await append_event(
+            session,
+            session_id=session_id,
+            run_id=run.id,
+            event_type=EventType.RUN_STATUS,
+            payload={
+                "event": "scope_updated",
+                "scope_revision": payload.scope.revision,
+                "control_version": version,
+                "reason": payload.reason,
+                "note": "旧提议不再派发；已派发 job 继续核对并标记为历史结果。",
+            },
+        )
+    return {
+        "session_id": str(session_id),
+        "run_id": str(run.id),
+        "scope_revision": payload.scope.revision,
+        "control_version": version,
+        "command_id": str(submitted.row.id),
+        "status": submitted.row.status,
     }
 
 

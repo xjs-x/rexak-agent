@@ -7,8 +7,8 @@
 - 提供"这条 URL 是否在声明范围内"的**预检**，用于提前给出清楚原因，
   但**不得**因此声称"范围强制保护已生效"（§10）。
 
-反例：旧实现会归一化掉协议/端口后放行所有服务。这里**必须**把 scheme/host/port
-作为范围的一部分显式保留。
+严格范围模式保留 scheme/host/port 的精确匹配；按指令模式将用户目标主机写为
+显式 any 协议、任意端口规则。两种模式都使用同一份持久化范围与 Executor 检查。
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def _is_private(host: str) -> bool:
 
 
 class ScopePolicy:
-    """一次任务固定的范围策略。"""
+    """当前修订的范围策略；用户新指令应用后替换快照。"""
 
     def __init__(self, snapshot: ScopeSnapshot) -> None:
         self._snapshot = snapshot
@@ -122,10 +122,12 @@ class ScopePolicy:
                 raise ScopeViolation("目标是私网地址且规则未允许私网", target=url)
             return target
 
-        raise ScopeViolation(
-            "目标不在声明的测试范围内（范围按 scheme/host/port 匹配，不做端口剥离）",
-            target=url,
+        reason = (
+            "用户指令中尚未提供这个目标。请在聊天里明确目标网址或 IP，无需填写 scope"
+            if self._snapshot.mode == "instruction"
+            else "目标不在声明的测试范围内（范围按 scheme/host/port 精确匹配）"
         )
+        raise ScopeViolation(reason, target=url)
 
     def is_allowed(self, url: str) -> bool:
         try:
@@ -144,11 +146,11 @@ class ScopeDeniedError(Exception):
 
 
 def validate_scope(snapshot: ScopeSnapshot) -> None:
-    """拒绝含糊条目：空规则、无端口的 `any`+包含子域组合会放大范围，要求显式。"""
-    if not snapshot.rules:
-        raise ValueError("范围必须至少包含一条规则；不允许空范围表示全放行")
+    """校验显式规则；空规则表示拒绝全部网络访问，可先进行需求沟通。"""
     for index, rule in enumerate(snapshot.rules):
-        if rule.scheme == "any" and rule.port is None:
+        if snapshot.mode == "instruction" and (not rule.host or any(c in rule.host for c in "*?[/\\")):
+            raise ValueError("按指令模式的目标必须是明确主机或 IP，不能使用通配符")
+        if snapshot.mode == "scoped" and rule.scheme == "any" and rule.port is None:
             raise ValueError(
                 f"第 {index + 1} 条规则缺少端口约束：'any' 协议 + 任意端口会放行所有服务；"
                 "请显式声明 scheme 或 port"

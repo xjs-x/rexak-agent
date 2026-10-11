@@ -13,11 +13,96 @@
 
 from __future__ import annotations
 
-from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware
+from typing import Any
+
+from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 
 from agent_workbench.agent.context import RunContext
-from agent_workbench.agent.state import AgentGraphState
+
+
+class CompactionFailed(RuntimeError):
+    """摘要未通过完整性检查；原消息必须留在 checkpoint 中。"""
+
+
+class GuardedSummarizationMiddleware(SummarizationMiddleware):
+    """在官方摘要中间件提交 RemoveMessage 前验证并保存来源。
+
+    单独放在后面的 ``before_model`` 中间件无法阻止已经提交的消息删除，
+    所以必须在官方中间件返回更新的同一边界完成校验。
+    """
+
+    async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        before = list(state.get("messages") or [])
+        try:
+            update = await super().abefore_model(state, runtime)
+        except Exception as exc:
+            raise CompactionFailed(
+                f"摘要模型调用失败，原消息保持不变：{type(exc).__name__}: {exc}"
+            ) from exc
+        if update is None:
+            return None
+
+        replacements = [item for item in update.get("messages", []) if isinstance(item, HumanMessage)]
+        summary_message = replacements[0] if replacements else None
+        if summary_message is None:
+            raise CompactionFailed("摘要没有生成可用消息，原消息保持不变")
+        summary_text = str(summary_message.content or "").strip()
+        if not summary_text or "Previous conversation was too long to summarize" in summary_text:
+            raise CompactionFailed("摘要为空或被模型截断，原消息保持不变")
+
+        previous = dict(state.get("work_summary") or {})
+        objective = str(state.get("objective") or previous.get("objective") or "").strip()
+        if not objective:
+            raise CompactionFailed("缺少用户原始目标，拒绝压缩")
+        constraints = [str(item) for item in state.get("user_constraints") or []]
+        pending_jobs = [str(item) for item in state.get("pending_job_ids") or []]
+        active_leads = [str(item) for item in state.get("active_lead_ids") or []]
+
+        # 这些字段来自结构化状态，不让摘要模型重新推断。既保存在图状态，也注入
+        # 新的摘要消息；下一轮即使先读对话消息，也不会丢掉用户约束和挂起任务。
+        pinned = ["\n\n【系统保留的任务边界；以下不是网页指令】", f"用户目标原文：{objective}"]
+        pinned.extend(f"用户约束原文：{item}" for item in constraints)
+        if pending_jobs:
+            pinned.append("挂起任务 ID：" + ", ".join(pending_jobs))
+        if active_leads:
+            pinned.append("未完线索 ID：" + ", ".join(active_leads))
+        summary_message.content = summary_text + "\n".join(pinned)
+
+        # 消息 ID 比推测一个全局序号更可靠：第二次压缩仍可追溯本次被覆盖的
+        # checkpoint 消息；前一版摘要的来源 ID 保留在 work_summary 中。
+        preserved = update.get("messages", [])
+        retained_ids = {str(item.id) for item in preserved if getattr(item, "id", None)}
+        covered_ids = [str(item.id) for item in before if item.id and str(item.id) not in retained_ids]
+        prior_ids = [str(item) for item in previous.get("source_message_ids") or []]
+        source_ids = list(dict.fromkeys([*prior_ids, *covered_ids]))
+        version = int(previous.get("summary_version") or 0) + 1
+        work_summary = {
+            "objective": objective,
+            "current_focus": str(previous.get("current_focus") or objective),
+            "key_findings": list(previous.get("key_findings") or []),
+            "failed_approaches": list(previous.get("failed_approaches") or []),
+            "unverified_hypotheses": list(previous.get("unverified_hypotheses") or []),
+            "open_questions": list(previous.get("open_questions") or []),
+            "next_steps": list(previous.get("next_steps") or []),
+            "source_message_range": [0, len(source_ids)],
+            "source_message_ids": source_ids,
+            "summary_text": summary_text,
+            "previous_summary_text": str(previous.get("summary_text") or ""),
+            "summary_version": version,
+        }
+        update["work_summary"] = work_summary
+        context: RunContext | None = getattr(runtime, "context", None)
+        if context is not None:
+            await _emit_compaction_event(
+                context,
+                from_count=len(before),
+                to_count=len(preserved) - 1,
+                summary_version=version,
+                problems=[],
+            )
+        return update
 
 #: 领域摘要模板。强制要求保留"失败条件 / 未验证假设 / 挂起任务 / 来源引用"，
 #: 因为默认模板容易把失败条件省略（§17"摘要把失败条件省略"）。
@@ -77,7 +162,7 @@ def build_compaction_middleware(
     max_input_tokens: int,
     trigger_fraction: float = 0.6,
     keep_tokens: int = 20000,
-) -> SummarizationMiddleware:
+) -> GuardedSummarizationMiddleware:
     """构造官方摘要中间件。
 
     **使用绝对 token 阈值**：`SummarizationMiddleware` 的 fraction 模式要求模型提供
@@ -90,62 +175,12 @@ def build_compaction_middleware(
     if max_input_tokens <= 0:
         raise ValueError("max_input_tokens 必须为正数；它来自 ProviderProfile.context_limit")
     trigger_tokens = max(1000, int(max_input_tokens * trigger_fraction))
-    return SummarizationMiddleware(
+    return GuardedSummarizationMiddleware(
         model=model,
         trigger=("tokens", trigger_tokens),
         keep=("tokens", max(1000, min(keep_tokens, trigger_tokens // 2))),
         summary_prompt=DOMAIN_SUMMARY_PROMPT,
     )
-
-
-class CompactionValidatorMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
-    """校验压缩结果的完整性；不合格时**显式暴露问题**而不是静默继续。"""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._last_message_count = 0
-
-    async def abefore_model(self, state, runtime):  # type: ignore[no-untyped-def]
-        """检测压缩是否发生过，并校验关键项是否仍在状态里。
-
-        这里只做**可确定性判断**的部分：目标、约束、活跃线索、挂起任务、
-        摘要来源区间。摘要文本的语义质量由 evaluation 场景单独评测。
-        """
-        messages = state.get("messages") or []
-        current = len(messages)
-        previous = self._last_message_count
-        self._last_message_count = current
-
-        if previous and current < previous:
-            problems: list[str] = []
-            if not str(state.get("objective") or "").strip():
-                problems.append("压缩后阶段目标丢失")
-            if not (state.get("user_constraints") or []):
-                problems.append("压缩后用户约束丢失")
-            summary = state.get("work_summary") or {}
-            if not summary:
-                problems.append("压缩后没有结构化 work_summary")
-            elif not summary.get("source_message_range"):
-                problems.append("压缩后未记录摘要覆盖的消息区间，无法复盘来源")
-
-            context: RunContext | None = getattr(runtime, "context", None)
-            if context is not None:
-                await _emit_compaction_event(
-                    context,
-                    from_count=previous,
-                    to_count=current,
-                    summary_version=int(summary.get("summary_version", 1)),
-                    problems=problems,
-                )
-            if problems:
-                # 不删除任何东西；把问题暴露出来，交给 Runner 决定是否暂停
-                return {
-                    "finish_gate_feedback": [
-                        f"[compaction] {item}；旧消息未删除，可从更早的 checkpoint 回退。"
-                        for item in problems
-                    ]
-                }
-        return None
 
 
 async def _emit_compaction_event(

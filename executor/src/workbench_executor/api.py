@@ -22,16 +22,20 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import shutil
+import socket
 import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -89,6 +93,11 @@ class ScopePayload(_Base):
     denied_metadata_hosts: list[str] = Field(default_factory=list)
 
 
+class TargetProbeRequest(_Base):
+    url: str
+    scope: ScopePayload
+
+
 class HttpRequestPayload(_Base):
     method: str = "GET"
     url: str
@@ -100,6 +109,11 @@ class HttpRequestPayload(_Base):
     max_redirects: int = 10
     #: 是否把原始响应字节保存为工件（由控制端决定是否引用）
     save_artifact: bool = True
+    verify_tls: bool = True
+    csrf_source_url: str | None = None
+    csrf_input_name: str | None = None
+    csrf_destination: Literal["form", "json", "header"] = "form"
+    csrf_target_name: str | None = None
 
 
 class CommandPayload(_Base):
@@ -129,10 +143,63 @@ class FilesystemPayload(_Base):
     limit: int | None = None
 
 
+class BrowserPayload(_Base):
+    """浏览器动作。
+
+    `identity_id` 决定使用哪个浏览器上下文；不同身份之间的 cookie / storage
+    **完全隔离**，切换身份不会影响其他身份。
+    """
+
+    action: Literal[
+        "navigate",
+        "click",
+        "fill",
+        "press",
+        "snapshot",
+        "text",
+        "screenshot",
+        "download",
+        "back",
+        "login",
+    ]
+    identity_id: str
+    url: str | None = None
+    selector: str | None = None
+    text: str | None = None
+    value: str | None = None
+    key: str | None = None
+    wait_until: str | None = None
+    wait_for_navigation: bool = True
+    submit: bool = False
+    full_page: bool = False
+    max_elements: int | None = None
+    max_text_chars: int | None = None
+    max_chars: int | None = None
+    login_url: str | None = None
+    username: str | None = None
+    password: str | None = None
+    username_selector: str | None = None
+    password_selector: str | None = None
+    submit_selector: str | None = None
+    probe_url: str | None = None
+    logged_in_selector: str | None = None
+
+
+class BrowserSessionRequest(_Base):
+    """创建/取回一个身份的浏览器会话。"""
+
+    identity_id: str
+    #: 可选探针：给一个 URL 与"已登录才存在"的选择器，用于判定登录态是否仍有效。
+    #: 探针是一次真实导航，因此**必须**同时给 scope，否则它无法做范围校验。
+    probe_url: str | None = None
+    logged_in_selector: str | None = None
+    scope: ScopePayload | None = None
+
+
 class JobCreateRequest(_Base):
     operation_id: str
     job_id: str | None = None
-    kind: Literal["http_request", "command", "filesystem"]
+    kind: Literal["http_request", "command", "filesystem", "browser"]
     request_digest: str
     scope_revision: int = 1
     scope: ScopePayload = Field(default_factory=ScopePayload)
@@ -216,6 +283,7 @@ class CapabilitiesResponse(_Base):
     started_at: str
     browser_available: bool
     browser_version: str | None = None
+    browser_note: str | None = None
     http_available: bool
     command_available: bool
     command_unattended_allowed: bool
@@ -243,6 +311,12 @@ class ExecutorState:
             output_limit_bytes=settings.job_output_limit_bytes,
             terminate_grace_seconds=settings.command_terminate_grace_seconds,
         )
+        from workbench_executor.browser import BrowserManager
+        from workbench_executor.http_sessions import HttpSessionRegistry
+
+        # 浏览器进程常驻：登录态不因一次动作结束而丢失（§10）
+        self.browser = BrowserManager(settings)
+        self.http_sessions = HttpSessionRegistry(None, use_system_proxy=False)
         self.remote_events: list[dict[str, Any]] = []
         self._event_seq = 0
         self._events_path = settings.data_root / "remote-events.jsonl"
@@ -312,6 +386,11 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     try:
         yield
     finally:
+        # 关闭顺序：先把各身份的 storage_state 落盘再关浏览器。
+        # 不落盘的话"重启后登录态还在"就是空话。
+        with contextlib.suppress(Exception):
+            await _state.browser.close()
+        await _state.http_sessions.close()
         await _state.ledger.close()
         _state = None
 
@@ -402,7 +481,7 @@ async def health() -> HealthResponse:
 async def capabilities() -> CapabilitiesResponse:
     state = get_state()
     env = describe_environment()
-    browser_version = _playwright_version() if state.settings.browser_enabled else None
+    browser_version = _browser_capability(state.settings)
     return CapabilitiesResponse(
         executor_id=state.settings.executor_id,
         service_version=__version__,
@@ -411,13 +490,16 @@ async def capabilities() -> CapabilitiesResponse:
         started_at=state.started_at.isoformat(),
         browser_available=browser_version is not None,
         browser_version=browser_version,
+        browser_note=(
+            "browser_available 依据**是否存在可用可执行文件**判定，不只看 playwright 包是否安装。"
+        ),
         http_available=True,
         command_available=True,
-        command_unattended_allowed=state.settings.network_isolation == "enforced",
+        command_unattended_allowed=False,
         interpreter=env["interpreter"],
         filesystem_available=True,
         # 首版如实报告 unavailable：仅靠 Python URL 校验不构成隔离（§10）
-        network_isolation=state.settings.network_isolation,
+        network_isolation="unavailable",
         capabilities_version=state.settings.capabilities_version,
         details={
             "platform": env["platform"],
@@ -426,7 +508,7 @@ async def capabilities() -> CapabilitiesResponse:
             "control_link_age_seconds": state.control_link_age(),
             "disconnect_grace_seconds": state.settings.disconnect_grace_seconds,
             "notes": [
-                f"通用命令模式的无人值守使用要求执行环境级出站约束；当前 network_isolation={state.settings.network_isolation} "
+                "通用命令模式的无人值守使用要求执行环境级出站约束；当前 network_isolation=unavailable "
                 "因此 command_unattended_allowed=false。",
                 "正则命令黑名单、工作目录与提示词均不构成网络隔离。",
             ],
@@ -434,17 +516,101 @@ async def capabilities() -> CapabilitiesResponse:
     )
 
 
-def _playwright_version() -> str | None:
+@app.post("/target-probe", dependencies=[Depends(_require_token)])
+async def target_probe(request: TargetProbeRequest) -> dict[str, Any]:
+    """从执行岛检查实际解析、TLS 和 HTTP 连通性；不继承系统代理。"""
+    from workbench_executor.http_sessions import HttpSessionRegistry
+
+    state = get_state()
+    policy = _build_policy(request.scope, state.settings)
     try:
-        from playwright.async_api import async_playwright  # noqa: F401
-    except ImportError:
+        mapped, _headers = policy.resolve_mapping(request.url)
+        policy.check(mapped)
+    except PolicyDenied as exc:
+        if "SNI" in str(exc):
+            return {"status": "unsupported", "stage": "tls_sni", "reason": str(exc)}
+        return {"status": "scope_denied", "stage": "scope", "reason": str(exc)}
+    parts = urlsplit(mapped)
+    original = urlsplit(request.url)
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        return {"status": "unsupported", "stage": "url", "reason": "只支持 HTTP/HTTPS 目标"}
+    if mapped != request.url and original.scheme == "https" and original.hostname != parts.hostname:
+        return {
+            "status": "unsupported",
+            "stage": "tls_sni",
+            "reason": "HTTPS 主机映射需要原始主机名的 SNI；当前执行器不能验证该映射",
+            "actual_url": mapped,
+        }
+
+    try:
+        addresses = await asyncio.wait_for(
+            asyncio.to_thread(
+                socket.getaddrinfo,
+                parts.hostname,
+                parts.port or (443 if parts.scheme == "https" else 80),
+            ),
+            timeout=5,
+        )
+        resolved = sorted({str(item[4][0]) for item in addresses})
+    except Exception as exc:
+        return {
+            "status": "unreachable",
+            "stage": "dns",
+            "actual_url": mapped,
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+
+    registry = HttpSessionRegistry(policy, use_system_proxy=False)
+    try:
+        response = await registry.request(
+            identity_id="__target_probe__",
+            method="HEAD",
+            url=request.url,
+            max_redirects=5,
+            max_body_bytes=0,
+        )
+    except Exception as exc:
+        return {
+            "status": "unreachable",
+            "stage": "tls_or_http",
+            "actual_url": mapped,
+            "dns_addresses": resolved,
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+    finally:
+        await registry.close()
+    return {
+        "status": "reachable",
+        "actual_url": mapped,
+        "final_url": response.final_url,
+        "dns_addresses": resolved,
+        "tls_verified": parts.scheme == "https",
+        "http_status": response.status_code,
+        "redirect_chain": response.redirect_chain,
+        "proxy_inherited": False,
+        "note": "HTTP 状态只代表可达性，不代表被测目标安全或存在缺陷。",
+    }
+
+
+def _browser_capability(settings: ExecutorSettings) -> str | None:
+    """返回真实可用的浏览器版本，不可用则 None。
+
+    早期实现只要 `import playwright` 成功就报 `browser_available=true`，
+    而那只能说明**包**装了 —— 浏览器二进制一条都没有，能力预检等于在说谎。
+    这里要求同时满足：包可用 + 存在可执行文件 + 包版本可读。
+    """
+    if not settings.browser_enabled:
+        return None
+    executable = settings.resolve_browser_executable()
+    if executable is None:
         return None
     try:
         from importlib.metadata import version
 
-        return version("playwright")
+        package_version = version("playwright")
     except Exception:
         return None
+    return f"{package_version} ({executable})"
 
 
 # --------------------------------------------------------------------------- #
@@ -520,12 +686,19 @@ async def create_job(request: JobCreateRequest) -> JobCreateResponse:
     policy = _build_policy(request.scope, state.settings)
 
     # 先持久化接收事实
+    ledger_payload = dict(request.payload)
+    if request.kind == "browser" and ledger_payload.get("action") == "login":
+        # 凭据仅供当前执行任务使用；台账只保存接收事实与脱敏参数。
+        # 进程在派发前崩溃时此操作保持 unknown，绝不从脱敏台账重放登录。
+        for field in ("username", "password"):
+            if field in ledger_payload:
+                ledger_payload[field] = "[REDACTED]"
     record = await state.ledger.insert(
         job_id=job_id,
         operation_id=request.operation_id,
         request_digest=request.request_digest,
         kind=request.kind,
-        payload=request.payload,
+        payload=ledger_payload,
         state="received",
     )
     state.emit(
@@ -566,6 +739,8 @@ async def _run_job(
             await _run_command_job(state, job_id, request, policy)
         elif request.kind == "filesystem":
             await _run_filesystem_job(state, job_id, request)
+        elif request.kind == "browser":
+            await _run_browser_job(state, job_id, request)
         else:  # pragma: no cover - Literal 已约束
             await state.ledger.update(job_id, state="failed", error_code="unsupported_kind")
     except PolicyDenied as exc:
@@ -592,13 +767,12 @@ async def _run_job(
 async def _run_http_job(
     state: ExecutorState, job_id: str, request: JobCreateRequest, policy: NetworkPolicy
 ) -> None:
-    from workbench_executor.http_sessions import HttpSessionRegistry
-
     payload = HttpRequestPayload.model_validate(request.payload)
-    registry = HttpSessionRegistry(policy, use_system_proxy=False)
+    started = time.perf_counter()
+    from workbench_executor.http_sessions import CsrfTokenUnavailable
+
     try:
-        started = time.perf_counter()
-        response = await registry.request(
+        response = await state.http_sessions.request(
             identity_id=payload.identity_id,
             method=payload.method,
             url=payload.url,
@@ -607,77 +781,112 @@ async def _run_http_job(
             content=payload.body,
             json_body=payload.json_body,
             max_redirects=payload.max_redirects,
+            policy=policy,
+            csrf_source_url=payload.csrf_source_url,
+            csrf_input_name=payload.csrf_input_name,
+            csrf_destination=payload.csrf_destination,
+            csrf_target_name=payload.csrf_target_name,
+            verify_tls=payload.verify_tls,
         )
-        elapsed_ms = (time.perf_counter() - started) * 1000
-
-        job_dir = state.supervisor.job_dir(job_id)
-        body_path = job_dir / "response.body"
-        body_path.write_bytes(response.body)
-
-        meta = {
-            "url": response.url,
-            "final_url": response.final_url,
-            "status_code": response.status_code,
-            "reason_phrase": response.reason_phrase,
-            "http_version": response.http_version,
-            "headers": response.headers,
-            "content_type": response.content_type,
-            "redirect_chain": response.redirect_chain,
-            "body_bytes": len(response.body),
-            "body_sha256": hashlib.sha256(response.body).hexdigest(),
-            "truncated": response.truncated,
-            "elapsed_ms": round(elapsed_ms, 1),
-        }
-        (job_dir / "response.meta.json").write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-
-        text, decode_error = response.decoded_text(limit=64 * 1024)
-        if decode_error:
-            meta["decode_error"] = decode_error
-        # 输出日志：只写"可读视图"，原始字节在 response.body 中
-        preview = text[:2000]
-        (job_dir / "stdout.log").write_text(
-            json.dumps(
-                {
-                    "status_code": response.status_code,
-                    "final_url": response.final_url,
-                    "content_type": response.content_type,
-                    "body_bytes": len(response.body),
-                    "elapsed_ms": round(elapsed_ms, 1),
-                    "redirect_chain": response.redirect_chain,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n\n--- 正文前 2000 字符 ---\n"
-            + preview,
-            encoding="utf-8",
-            newline="\n",
-        )
-
+    except CsrfTokenUnavailable as exc:
         await state.ledger.update(
             job_id,
-            state="succeeded",
-            exit_code=0,
-            byte_count=len(response.body),
-            truncated=response.truncated,
-            output_path=str(job_dir / "stdout.log"),
+            state="failed",
             finished_at=datetime.now(UTC).isoformat(),
-            error_code=None,
-            error_message=None,
+            error_code="csrf_unavailable",
+            error_message=str(exc),
         )
-        state.emit(
-            "job.succeeded",
+        state.emit("job.failed", {"job_id": job_id, "code": "csrf_unavailable"})
+        return
+    except httpx.HTTPError as exc:
+        code = (
+            "tls_certificate_error"
+            if "CERTIFICATE_VERIFY_FAILED" in str(exc)
+            else "http_timeout"
+            if isinstance(exc, httpx.TimeoutException)
+            else "http_connection_error"
+            if isinstance(exc, httpx.ConnectError)
+            else "http_transport_error"
+        )
+        await state.ledger.update(
+            job_id,
+            state="failed",
+            finished_at=datetime.now(UTC).isoformat(),
+            error_code=code,
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
+        state.emit("job.failed", {"job_id": job_id, "code": code})
+        return
+    elapsed_ms = (time.perf_counter() - started) * 1000
+
+    job_dir = state.supervisor.job_dir(job_id)
+    body_path = job_dir / "response.body"
+    body_path.write_bytes(response.body)
+
+    meta = {
+        "url": response.url,
+        "final_url": response.final_url,
+        "status_code": response.status_code,
+        "reason_phrase": response.reason_phrase,
+        "http_version": response.http_version,
+        "headers": response.headers,
+        "content_type": response.content_type,
+        "redirect_chain": response.redirect_chain,
+        "body_bytes": len(response.body),
+        "body_sha256": hashlib.sha256(response.body).hexdigest(),
+        "truncated": response.truncated,
+        "elapsed_ms": round(elapsed_ms, 1),
+        "tls_verified": response.final_url.startswith("https://") and payload.verify_tls,
+        "tls_verification_enabled": payload.verify_tls,
+    }
+    (job_dir / "response.meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+    text, decode_error = response.decoded_text(limit=64 * 1024)
+    if decode_error:
+        meta["decode_error"] = decode_error
+    # 输出日志：只写"可读视图"，原始字节在 response.body 中
+    preview = text[:2000]
+    (job_dir / "stdout.log").write_text(
+        json.dumps(
             {
-                "job_id": job_id,
                 "status_code": response.status_code,
                 "final_url": response.final_url,
+                "content_type": response.content_type,
                 "body_bytes": len(response.body),
+                "elapsed_ms": round(elapsed_ms, 1),
+                "redirect_chain": response.redirect_chain,
             },
+            ensure_ascii=False,
+            indent=2,
         )
-    finally:
-        await registry.close()
+        + "\n\n--- 正文前 2000 字符 ---\n"
+        + preview,
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    await state.ledger.update(
+        job_id,
+        state="succeeded",
+        exit_code=0,
+        byte_count=len(response.body),
+        truncated=response.truncated,
+        output_path=str(job_dir / "stdout.log"),
+        finished_at=datetime.now(UTC).isoformat(),
+        error_code=None,
+        error_message=None,
+    )
+    state.emit(
+        "job.succeeded",
+        {
+            "job_id": job_id,
+            "status_code": response.status_code,
+            "final_url": response.final_url,
+            "body_bytes": len(response.body),
+        },
+    )
 
 
 async def _run_command_job(
@@ -692,8 +901,8 @@ async def _run_command_job(
             state="failed",
             error_code="command_unattended_disabled",
             error_message=(
-                "执行岛未提供执行环境级出站网络约束（network_isolation="
-                f"{state.settings.network_isolation}）；通用命令的无人值守模式已关闭。"
+                "执行岛未提供已验证的执行环境级出站网络约束（network_isolation="
+                f"{policy.network_isolation}）；通用命令的无人值守模式已关闭。"
                 "正则黑名单/工作目录/提示词都不能替代网络隔离。"
             ),
         )
@@ -905,6 +1114,8 @@ async def get_job(job_id: str) -> JobStatusResponse:
     for name, media in (
         ("response.body", "application/octet-stream"),
         ("result.json", "application/json"),
+        ("screenshot.png", "image/png"),
+        ("page.txt", "text/plain; charset=utf-8"),
         ("stdout.log", "text/plain"),
     ):
         path = job_dir / name
@@ -1090,7 +1301,7 @@ async def read_events(
     return {"events": events, "next_after": events[-1]["seq"] if events else after}
 
 
-@app.get("/artifacts/{job_id}/{name}", dependencies=[Depends(_require_token)])
+@app.get("/artifacts/{job_id}/{name:path}", dependencies=[Depends(_require_token)])
 async def read_artifact(
     job_id: str,
     name: str,
@@ -1104,7 +1315,7 @@ async def read_artifact(
         raise HTTPException(status_code=404, detail="job 不存在")
     job_dir = state.supervisor.job_dir(job_id).resolve()
     target = (job_dir / name).resolve()
-    if not str(target).startswith(str(job_dir)) or not target.is_file():
+    if not target.is_relative_to(job_dir) or not target.is_file():
         raise HTTPException(status_code=404, detail="工件不存在")
     size = target.stat().st_size
     with target.open("rb") as handle:
@@ -1112,7 +1323,10 @@ async def read_artifact(
         data = handle.read(limit)
     return Response(
         content=data,
-        media_type="application/octet-stream",
+        # 按实际文件类型返回：截图应当是 image/png，正文应当是 text/plain。
+        # 一律返回 octet-stream 会让调用方无法凭 HTTP 层判断类型，
+        # 也让"下载下来的是不是图"这种基本检查失去意义。
+        media_type=_artifact_media_type(target.name),
         headers={
             "X-Artifact-Sha256": _sha256_file(target),
             "X-Artifact-Size": str(size),
@@ -1121,30 +1335,353 @@ async def read_artifact(
     )
 
 
+_ARTIFACT_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".json": "application/json",
+    ".txt": "text/plain; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".pdf": "application/pdf",
+    ".zip": "application/zip",
+    ".csv": "text/csv; charset=utf-8",
+}
+
+
+def _artifact_media_type(name: str) -> str:
+    return _ARTIFACT_MEDIA_TYPES.get(Path(name).suffix.lower(), "application/octet-stream")
+
+
 # --------------------------------------------------------------------------- #
 # 浏览器会话（P4 交付；此处如实返回未实现，不用假实现冒充）
 # --------------------------------------------------------------------------- #
 
 
-@app.post("/browser-sessions", dependencies=[Depends(_require_token)])
-async def create_browser_session() -> JSONResponse:
+async def _run_browser_job(state: ExecutorState, job_id: str, request: JobCreateRequest) -> None:
+    """浏览器动作。
+
+    范围由**执行岛**在两层强制：导航前判一次（越界连请求都不发），
+    以及 `page.route` 对**每个请求**逐跳检查（含 XHR / 图片 / iframe）。
+    只检查导航挡不住页面脚本直接 fetch 外部地址。
+    """
+    from workbench_executor.browser import BrowserActionError, BrowserUnavailable
+
+    payload = BrowserPayload.model_validate(request.payload)
+    job_dir = state.supervisor.job_dir(job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    if not state.settings.browser_enabled:
+        await _write_browser_result(
+            state,
+            job_id,
+            job_dir,
+            ok=False,
+            code="browser_disabled",
+            message="浏览器能力在配置中被关闭。",
+        )
+        return
+
+    policy = _build_policy(request.scope, state.settings)
+    try:
+        result = await state.browser.run_action(
+            action=payload.action,
+            identity_id=payload.identity_id,
+            payload=payload.model_dump(exclude_none=True),
+            policy=policy,
+            job_dir=job_dir,
+        )
+    except BrowserUnavailable as exc:
+        await _write_browser_result(
+            state, job_id, job_dir, ok=False, code="browser_unavailable", message=str(exc)
+        )
+        return
+    except BrowserActionError as exc:
+        if payload.action == "login" or exc.code in {"browser_crashed", "page_crashed"}:
+            await state.http_sessions.clear(payload.identity_id)
+        await _write_browser_result(
+            state,
+            job_id,
+            job_dir,
+            ok=False,
+            code=exc.code,
+            message=exc.message,
+            details=exc.details,
+        )
+        return
+    except Exception as exc:
+        await _write_browser_result(
+            state,
+            job_id,
+            job_dir,
+            ok=False,
+            code="browser_error",
+            message=f"{type(exc).__name__}: {exc}",
+        )
+        return
+
+    final_url = result.get("final_url")
+    if (
+        isinstance(final_url, str)
+        and final_url.startswith(("http://", "https://"))
+        and not result.get("final_url_out_of_scope")
+    ):
+        try:
+            mapped_url = policy.resolve_mapping(final_url)[0]
+            policy.check(mapped_url)
+            cookies = await state.browser.export_cookies(payload.identity_id, final_url, mapped_url)
+            logical_host = (urlsplit(final_url).hostname or "").lower()
+            actual_host = (urlsplit(mapped_url).hostname or "").lower()
+            if logical_host and actual_host and logical_host != actual_host:
+                cookies = [
+                    {
+                        **cookie,
+                        "domain": actual_host
+                        if str(cookie.get("domain") or "").lstrip(".").lower() == logical_host
+                        else cookie.get("domain"),
+                    }
+                    for cookie in cookies
+                ]
+            await state.http_sessions.import_cookies(payload.identity_id, cookies)
+        except (PolicyDenied, ValueError):
+            # 页面最终位置越界时不导出任何认证状态。
+            pass
+    await _write_browser_result(state, job_id, job_dir, ok=True, result=result)
+
+
+async def _write_browser_result(
+    state: ExecutorState,
+    job_id: str,
+    job_dir: Any,
+    *,
+    ok: bool,
+    result: dict[str, Any] | None = None,
+    code: str | None = None,
+    message: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    payload: dict[str, Any] = {"ok": ok}
+    if ok:
+        payload["result"] = result or {}
+    else:
+        payload["error"] = {"code": code, "message": message, "details": details or {}}
+
+    (job_dir / "result.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (job_dir / "stdout.log").write_text(
+        json.dumps(payload.get("result") or payload.get("error"), ensure_ascii=False)[:4000] + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    if ok:
+        await state.ledger.update(
+            job_id,
+            state="succeeded",
+            exit_code=0,
+            finished_at=datetime.now(UTC).isoformat(),
+            error_code=None,
+            error_message=None,
+        )
+        state.emit(
+            "job.succeeded",
+            {
+                "job_id": job_id,
+                "kind": "browser",
+                "action": (result or {}).get("action"),
+                "final_url_out_of_scope": bool((result or {}).get("final_url_out_of_scope")),
+            },
+        )
+    else:
+        await state.ledger.update(
+            job_id,
+            state="failed",
+            error_code=code,
+            error_message=message,
+            finished_at=datetime.now(UTC).isoformat(),
+        )
+        state.emit("job.failed", {"job_id": job_id, "kind": "browser", "code": code})
+
+
+@app.get("/browser-sessions", dependencies=[Depends(_require_token)])
+async def list_browser_sessions() -> JSONResponse:
+    """列出当前存活的身份会话。"""
+    state = get_state()
     return JSONResponse(
-        status_code=501,
         content={
-            "code": "not_implemented",
-            "message": "浏览器会话在 P4 交付；当前版本不提供该能力，请勿按『已支持』使用。",
-        },
+            "browser_available": state.settings.resolve_browser_executable() is not None,
+            "browser_alive": state.browser.is_alive(),
+            "sessions": state.browser.describe_sessions(),
+        }
     )
 
 
-@app.post("/browser-sessions/{session_id}/restore", dependencies=[Depends(_require_token)])
-async def restore_browser_session(session_id: str) -> JSONResponse:
+@app.post("/browser-sessions", dependencies=[Depends(_require_token)])
+async def create_browser_session(request: BrowserSessionRequest) -> JSONResponse:
+    """创建（或取回）某身份的浏览器会话。
+
+    幂等：同一 `identity_id` 重复调用返回**同一个**上下文，
+    因此登录态不会因为重复建会话而丢失。
+    """
+    from workbench_executor.browser import BrowserActionError, BrowserUnavailable
+
+    state = get_state()
+    if not state.settings.browser_enabled:
+        return JSONResponse(
+            status_code=503,
+            content={"code": "browser_disabled", "message": "浏览器能力在配置中被关闭。"},
+        )
+    try:
+        session = await state.browser.session_for(request.identity_id)
+    except BrowserActionError as exc:
+        return JSONResponse(status_code=422, content={"code": exc.code, "message": exc.message})
+    except BrowserUnavailable as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"code": "browser_unavailable", "message": str(exc)},
+        )
+
+    probe: dict[str, Any] | None = None
+    if request.probe_url:
+        # 探针仍走范围门：它也是一次真实请求
+        if request.scope is None:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "code": "validation_failed",
+                    "message": "带 probe_url 时必须同时提供 scope，否则探针无法做范围校验。",
+                },
+            )
+        try:
+            policy = _build_policy(request.scope, state.settings)
+            probe_result = await state.browser.run_action(
+                action="navigate",
+                identity_id=request.identity_id,
+                payload={
+                    "action": "navigate",
+                    "identity_id": request.identity_id,
+                    "url": request.probe_url,
+                },
+                policy=policy,
+                job_dir=state.supervisor.job_dir("browser-probe"),
+            )
+            logged_in: bool | None = None
+            if request.logged_in_selector:
+                try:
+                    logged_in = await session.page.locator(request.logged_in_selector).count() > 0
+                except Exception:
+                    logged_in = None
+            probe = {
+                "probe_url": request.probe_url,
+                "final_url": probe_result.get("final_url"),
+                "status": probe_result.get("status"),
+                "logged_in_selector": request.logged_in_selector,
+                "logged_in": logged_in,
+            }
+        except BrowserActionError as exc:
+            probe = {"probe_url": request.probe_url, "error_code": exc.code, "error": exc.message}
+
     return JSONResponse(
-        status_code=501,
         content={
-            "code": "not_implemented",
-            "message": f"browser-sessions/{session_id}/restore 在 P4 交付。",
-        },
+            "identity_id": session.identity_id,
+            "state_saved": session.state_path.exists(),
+            "state_path": str(session.state_path),
+            "browser_version": state.browser.browser_version(),
+            "probe": probe,
+        }
+    )
+
+
+@app.delete("/browser-sessions/{identity_id}", dependencies=[Depends(_require_token)])
+async def delete_browser_session(identity_id: str) -> JSONResponse:
+    """关闭某身份的会话（先把 storage_state 落盘，登录态可在重建后继续用）。"""
+    state = get_state()
+    from workbench_executor.browser import BrowserActionError
+
+    try:
+        closed = await state.browser.close_session(identity_id)
+    except BrowserActionError as exc:
+        return JSONResponse(status_code=503, content={"code": exc.code, "message": exc.message})
+    return JSONResponse(content={"identity_id": identity_id, "closed": closed})
+
+
+@app.post("/browser-sessions/{identity_id}/restore", dependencies=[Depends(_require_token)])
+async def restore_browser_session(
+    identity_id: str, request: BrowserSessionRequest | None = None
+) -> JSONResponse:
+    """从磁盘上的 storage_state 重建该身份的会话，并可选用探针判定登录是否仍有效。
+
+    **不夸大能力**：这个接口保证的是"把已保存的 cookie/storage 装回去"；
+    至于"登录是否真的还有效"，只有在调用方给出 `probe_url` 与
+    `logged_in_selector` 时才给出判定，否则如实返回 `logged_in=null`。
+    """
+    from workbench_executor.browser import BrowserActionError, BrowserUnavailable
+
+    state = get_state()
+    try:
+        await state.browser.close_session(identity_id)
+        session = await state.browser.session_for(identity_id)
+    except BrowserActionError as exc:
+        return JSONResponse(status_code=422, content={"code": exc.code, "message": exc.message})
+    except BrowserUnavailable as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"code": "browser_unavailable", "message": str(exc)},
+        )
+
+    probe: dict[str, Any] | None = None
+    if request is not None and request.probe_url:
+        if request.scope is None:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "code": "validation_failed",
+                    "message": "带 probe_url 时必须同时提供 scope，否则探针无法做范围校验。",
+                },
+            )
+        try:
+            policy = _build_policy(request.scope, state.settings)
+            outcome = await state.browser.run_action(
+                action="navigate",
+                identity_id=identity_id,
+                payload={
+                    "action": "navigate",
+                    "identity_id": identity_id,
+                    "url": request.probe_url,
+                },
+                policy=policy,
+                job_dir=state.supervisor.job_dir("browser-probe"),
+            )
+            logged_in: bool | None = None
+            if request.logged_in_selector:
+                try:
+                    logged_in = await session.page.locator(request.logged_in_selector).count() > 0
+                except Exception:
+                    logged_in = None
+            probe = {
+                "probe_url": request.probe_url,
+                "final_url": outcome.get("final_url"),
+                "status": outcome.get("status"),
+                "logged_in_selector": request.logged_in_selector,
+                "logged_in": logged_in,
+            }
+        except BrowserActionError as exc:
+            probe = {"probe_url": request.probe_url, "error_code": exc.code, "error": exc.message}
+
+    return JSONResponse(
+        content={
+            "identity_id": identity_id,
+            "restored_from": str(session.state_path),
+            "state_existed": session.state_path.exists(),
+            "browser_version": state.browser.browser_version(),
+            "probe": probe,
+        }
     )
 
 

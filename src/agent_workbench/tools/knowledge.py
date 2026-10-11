@@ -160,6 +160,7 @@ async def propose_memory(
     runtime: ToolRuntime[RunContext],
     content: str,
     memory_type: str = "observation",
+    subject_key: str | None = None,
     source_artifact_ids_json: list[str] | str | None = None,
     applicable_conditions: str | None = None,
     invalid_conditions: str | None = None,
@@ -169,6 +170,7 @@ async def propose_memory(
     Args:
         content: 经验内容（应当是可复用的、跨任务成立的判断，而不是本次任务的临时状态）。
         memory_type: 类别，例如 endpoint_behavior / auth_mechanism / tech_stack / tool_usage。
+        subject_key: 同一事实主体的稳定键，例如 URL 或身份+端点；用于检测冲突。
         source_artifact_ids_json: 支持该经验的工件 ID 的 JSON 数组字符串。
         applicable_conditions: 适用条件（什么情况下成立）。
         invalid_conditions: 失效条件（什么情况下不再成立）。
@@ -215,6 +217,7 @@ async def propose_memory(
         project_id=row.project_id,
         memory_type=memory_type,
         content=content,
+        subject_key=subject_key,
         source_run_id=toolbox.run_id,
         source_artifact_ids=refs,
         applicable_conditions=applicable_conditions,

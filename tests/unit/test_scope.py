@@ -75,15 +75,22 @@ def test_query_string_is_preserved_in_parsed_path() -> None:
 @pytest.mark.parametrize(
     "rules",
     [
-        [],
         [ScopeRule(scheme="any", host="example.test", port=None)],
         [ScopeRule(scheme="http", host="test", port=80, include_subdomains=True)],
     ],
 )
-def test_validate_scope_rejects_overbroad_or_empty(rules: list[ScopeRule]) -> None:
+def test_validate_scope_rejects_overbroad(rules: list[ScopeRule]) -> None:
     with pytest.raises(ValueError):
         validate_scope(ScopeSnapshot(rules=rules))
 
 
 def test_validate_scope_accepts_explicit_rules() -> None:
     validate_scope(ScopeSnapshot(rules=[ScopeRule(scheme="http", host="127.0.0.1", port=8899)]))
+
+
+def test_empty_scope_allows_setup_but_denies_every_network_target() -> None:
+    scope = ScopeSnapshot(rules=[])
+    validate_scope(scope)
+    policy = ScopePolicy(scope)
+    for url in ("https://example.test/", "http://127.0.0.1/", "http://10.0.0.1:8080/"):
+        assert not policy.is_allowed(url)

@@ -137,7 +137,9 @@ async def run_filesystem_action(
         except Exception as exc:
             return transport_unknown_result(operation_id, exc)
 
-        await record_submitted(toolbox, operation_id, receipt.job_id)
+        await record_submitted(
+            toolbox, operation_id, receipt.job_id, accepted_at=receipt.accepted_at
+        )
 
         accepted = await wait_or_accept(
             toolbox, operation_id, receipt.job_id, accept_note=_ACCEPT_NOTE
@@ -158,6 +160,7 @@ async def run_filesystem_action(
             operation_id=operation_id,
             job_id=receipt.job_id,
             status=state,
+            snapshot=snapshot,
         )
         return ToolResult(
             operation_id=operation_id,
@@ -182,6 +185,7 @@ async def run_filesystem_action(
             operation_id=operation_id,
             job_id=receipt.job_id,
             status=str(OperationStatus.UNKNOWN),
+            snapshot=snapshot,
         )
         return ToolResult(
             operation_id=operation_id,
@@ -206,6 +210,7 @@ async def run_filesystem_action(
         operation_id=operation_id,
         job_id=receipt.job_id,
         status=(str(OperationStatus.FAILED) if error else str(OperationStatus.SUCCEEDED)),
+        snapshot=snapshot,
     )
 
     if error:

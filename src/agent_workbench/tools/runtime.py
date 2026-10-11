@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -111,6 +112,8 @@ class Toolbox:
     control_version: int = 0
     #: 交互等待阈值：超过则工具返回 accepted + job_id，而不是占着模型调用链（§8.3）
     interactive_threshold_seconds: float = 20.0
+    #: 从执行岛同步单个工件的字节上限（资源初值，不是任务总时长限制）
+    artifact_sync_limit_bytes: int = 8 * 1024 * 1024
     #: 由 Runner 注入：在当前一致边界检查控制版本与暂停/取消
     control_check: Any = None
     #: 最近一次上下文装配的 manifest（只读投影，供诊断导出与复盘）
@@ -158,3 +161,16 @@ def origin_lock_key(url: str) -> str:
 
     target = parse_target(url)
     return f"origin:{target.origin}"
+
+
+def execution_identity(toolbox: Toolbox, label: str = "anonymous") -> str:
+    """将模型可见身份标签绑定到当前任务，防止跨任务共用 Cookie。"""
+    normalized = label.strip() or "anonymous"
+    if normalized == "anonymous":
+        if toolbox.identity_id is not None:
+            return f"session-{toolbox.session_id}-identity-{toolbox.identity_id}"
+        return f"session-{toolbox.session_id}"
+    if toolbox.identity_id is not None and normalized == str(toolbox.identity_id):
+        return f"session-{toolbox.session_id}-identity-{toolbox.identity_id}"
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"session-{toolbox.session_id}-{digest}"
