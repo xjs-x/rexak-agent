@@ -208,6 +208,8 @@ docs/            decisions / implementation-status / acceptance-results
 
 详细状态见 `docs/implementation-status.md`；已锁定决策见 `docs/decisions/`。
 
+V1 六阶段代码已接通。验收证据及限制见 [V1 实施进度](docs/implementation-v1-progress.md)，启用、独立试验、封包和离线复盘见 [操作说明](docs/experiments/v1-operation-guide.md)。工程回归不代表真实靶场效果验收。
+
 ---
 
 ## 7. 当前状态

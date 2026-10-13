@@ -1,4 +1,4 @@
-"""阶段完成后，从有来源的观察提炼项目候选记忆。
+"""阶段边界（含暂停及失败）从有来源的观察提炼项目候选记忆。
 
 只投影业务表中的既有事实；网页或模型文字不获得新的指令权限。
 原始证据仍由工件库保存，Store 只保存短摘要与引用。
@@ -20,12 +20,19 @@ from agent_workbench.persistence.tables import ArtifactRow, ObservationRow, RunR
 
 
 async def distill_completed_run(db: Database, settings: Settings, run_id: UUID) -> int:
-    """仅提炼该 run 的有工件观察，全部保持 candidate。重复调用按内容去重。"""
+    """保留旧调用名；提炼终态及等待边界的有工件观察，按来源事件去重。"""
     async with db.session() as session:
         run = (
             await session.execute(select(RunRow).where(RunRow.id == run_id))
         ).scalar_one_or_none()
-        if run is None or run.status != "completed":
+        if run is None or run.status not in {
+            "completed",
+            "paused",
+            "cancelled",
+            "failed",
+            "waiting_user",
+            "waiting_tool",
+        }:
             return 0
         rows = (
             await session.execute(
@@ -84,6 +91,7 @@ async def distill_completed_run(db: Database, settings: Settings, run_id: UUID) 
                 source_run_id=run_id,
                 source_artifact_ids=refs,
                 applicable_conditions=f"身份={observation.identity_label}; URL={subject}",
+                source_event_id=f"observation:{observation.id}:1",
             )
             count += 1
     return count

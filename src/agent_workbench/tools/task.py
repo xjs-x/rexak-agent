@@ -20,12 +20,18 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import Command
 
 from agent_workbench.agent.context import RunContext
-from agent_workbench.agent.state import PlanStep
-from agent_workbench.contracts.enums import CoverageStatus, FindingCategory, LeadStatus
+from agent_workbench.agent.state import CurrentFocus, PlanStep
+from agent_workbench.contracts.enums import (
+    CoverageStatus,
+    FindingCategory,
+    LeadStatus,
+    ToolEffectClass,
+)
 from agent_workbench.domain.assets import record_asset
 from agent_workbench.domain.findings import CoverageService, FindingService
 from agent_workbench.domain.leads import LeadService, lead_summary
 from agent_workbench.domain.observations import record_observation_ref
+from agent_workbench.tools.operation import OperationRegistry, PreparedOperation
 from agent_workbench.tools.params import coerce_str_list
 from agent_workbench.tools.runtime import Toolbox
 
@@ -55,6 +61,7 @@ async def update_plan(
     steps_json: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
     rationale: str | None = None,
+    focus_json: str | None = None,
 ) -> Command:
     """更新**当前计划**（有界、可修订，不是预先锁死的 DAG）。
 
@@ -63,6 +70,7 @@ async def update_plan(
             `{"step_id": "s1", "description": "...", "status": "pending|in_progress|done|dropped|blocked",
               "rationale": "为什么做这一步", "lead_id": "可选关联线索"}`
         rationale: 本次计划变更的原因（会被记录，便于复盘方向变化）。
+        focus_json: 可选焦点对象，含 step_id、lead_id、intent、reason、return_to_step_id。
         tool_call_id: 由框架注入，不要自己填写。
 
     Returns:
@@ -99,14 +107,45 @@ async def update_plan(
                 status=status,  # type: ignore[typeddict-item]
                 rationale=item.get("rationale"),
                 lead_id=item.get("lead_id"),
+                done_when=item.get("done_when"),
+                resume_note=item.get("resume_note"),
+                evidence_refs=coerce_str_list(item.get("evidence_refs"), "evidence_refs"),
             )
         )
 
     revision = int(runtime.state.get("plan_revision") or 0) + 1
+    focus = runtime.state.get("current_focus")
+    if focus_json is not None:
+        parsed = _parse_json(focus_json, "focus_json")
+        if not isinstance(parsed, dict):
+            raise ValueError("focus_json 必须为对象")
+        for field in ("step_id", "return_to_step_id"):
+            if parsed.get(field) is not None and parsed[field] not in seen:
+                raise ValueError(f"焦点 {field} 不属于当前计划")
+        if (
+            not str(parsed.get("intent") or "").strip()
+            or not str(parsed.get("reason") or "").strip()
+        ):
+            raise ValueError("焦点必须说明行动目的与简短理由")
+        if parsed.get("lead_id"):
+            async with runtime.context.toolbox.db.session() as db:
+                lead = await LeadService(db).get(UUID(parsed["lead_id"]))
+                if lead is None or lead.session_id != runtime.context.toolbox.session_id:
+                    raise ValueError("焦点线索不属于当前会话")
+        focus = CurrentFocus(
+            step_id=parsed.get("step_id"),
+            lead_id=parsed.get("lead_id"),
+            intent=str(parsed["intent"]),
+            reason=str(parsed["reason"]),
+            return_to_step_id=parsed.get("return_to_step_id"),
+        )
+    elif focus and focus.get("step_id") not in seen:
+        focus = None
     text = json.dumps(
         {
             "ok": True,
             "plan_revision": revision,
+            "current_focus": focus,
             "steps": len(steps),
             "note": "计划已写入图状态（LangGraph checkpoint 为权威）；前端只做只读投影。",
         },
@@ -116,6 +155,7 @@ async def update_plan(
         update={
             "plan": steps,
             "plan_revision": revision,
+            "current_focus": focus,
             "messages": [_tool_message(tool_call_id, text)],
         }
     )
@@ -130,10 +170,11 @@ async def update_plan(
 async def record_lead(
     runtime: ToolRuntime[RunContext],
     hypothesis: str,
-    impact: int = 3,
-    evidence_strength: int = 1,
-    feasibility: int = 3,
-    information_gain: int = 3,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    impact: int | None = None,
+    evidence_strength: int | None = None,
+    feasibility: int | None = None,
+    information_gain: int | None = None,
     url: str | None = None,
     identity_refs_json: list[str] | str | None = None,
     next_action: str | None = None,
@@ -142,11 +183,14 @@ async def record_lead(
     status: str | None = None,
     blocked_reason: str | None = None,
     resume_condition: str | None = None,
+    merge_into_id: str | None = None,
+    observation_summary: str | None = None,
 ) -> str:
     """登记或更新一条**假设（线索）**。
 
     Args:
         hypothesis: 假设内容，例如"该接口可能缺少服务端权限校验"。
+        tool_call_id: 框架注入的重放身份，不要自行填写。
         impact: 影响程度 0-5。
         evidence_strength: 已有证据强度 0-5（仅凭猜测请填 0-1）。
         feasibility: 可执行性 0-5（当前条件下能否验证）。
@@ -160,12 +204,14 @@ async def record_lead(
             blocked/deferred。
         blocked_reason: blocked/deferred 时**必填**。
         resume_condition: 恢复条件（什么条件下可以继续推进）。
+        merge_into_id: 真正重复线索的目标 ID，同会话且禁止循环；原来源保留。
+        observation_summary: 可选关键观察，与线索同一事务联记，必须引用真实工件。
 
     Returns:
         线索记录摘要（JSON）。
 
     Notes:
-        - 优先级由影响、证据强度、可执行性、预期信息增益共同决定，不是只看"扫描器严重等级"；
+        - 评分仅供旧接口辅助展示，不作为必填或硬调度依据；
         - `confirmed` 只能由确定性核验器写入，这里**不接受**把线索直接标为 confirmed。
     """
     toolbox: Toolbox = runtime.context.toolbox
@@ -185,6 +231,56 @@ async def record_lead(
             )
 
     async with toolbox.db.transaction() as db:
+        from sqlalchemy import text as sql_text
+
+        await db.execute(
+            sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"record-lead:{toolbox.run_id}:{tool_call_id}"},
+        )
+        operation = await OperationRegistry(db).prepare(
+            run_id=toolbox.run_id,
+            session_id=toolbox.session_id,
+            tool_call_id=tool_call_id,
+            tool_name="record_lead",
+            effect_class=ToolEffectClass.IDEMPOTENT_WRITE,
+            policy_revision=getattr(toolbox, "policy_revision", 1),
+            scope_revision=getattr(toolbox, "scope_revision", 1),
+            dispatch_control_version=runtime.state.get("dispatch_control_version"),
+            arguments={
+                "hypothesis": hypothesis,
+                "lead_id": lead_id,
+                "url": url,
+                "identity_refs": identity_refs,
+                "evidence_refs": evidence_refs,
+                "next_action": next_action,
+                "status": status,
+                "blocked_reason": blocked_reason,
+                "resume_condition": resume_condition,
+                "merge_into_id": merge_into_id,
+                "observation_summary": observation_summary,
+                "impact": impact,
+                "evidence_strength": evidence_strength,
+                "feasibility": feasibility,
+                "information_gain": information_gain,
+            },
+        )
+        if operation.row.result_snapshot is not None:
+            return json.dumps(operation.row.result_snapshot, ensure_ascii=False, sort_keys=True)
+        if observation_summary and not evidence_refs:
+            raise ValueError("关键观察必须引用真实可用工件")
+        if evidence_refs:
+            from agent_workbench.persistence.tables import ArtifactRow
+
+            for ref in evidence_refs:
+                artifact = await db.get(ArtifactRow, UUID(ref))
+                if (
+                    artifact is None
+                    or artifact.session_id != toolbox.session_id
+                    or artifact.source_operation_id is None
+                    or artifact.availability != "available"
+                    or not toolbox.artifacts.verify(artifact.relative_key, artifact.sha256)
+                ):
+                    raise ValueError("线索证据必须为当前会话真实工具工件")
         asset_id: UUID | None = None
         if url:
             asset, _created = await record_asset(
@@ -203,10 +299,10 @@ async def record_lead(
             hypothesis=hypothesis,
             asset_id=asset_id,
             identity_refs=[str(item) for item in identity_refs],
-            impact=int(impact),
-            evidence_strength=int(evidence_strength),
-            feasibility=int(feasibility),
-            information_gain=int(information_gain),
+            impact=impact,
+            evidence_strength=evidence_strength,
+            feasibility=feasibility,
+            information_gain=information_gain,
             next_action=next_action,
             evidence_refs=[str(item) for item in evidence_refs],
             lead_id=UUID(lead_id) if lead_id else None,
@@ -219,9 +315,31 @@ async def record_lead(
                 resume_condition=resume_condition,
             )
         payload = lead_summary(row)
+        observation_id = None
+        if observation_summary:
+            observation_id = await record_observation_ref(
+                db,
+                session_id=toolbox.session_id,
+                source_run_id=toolbox.run_id,
+                summary=observation_summary,
+                artifact_ids=evidence_refs,
+                source_operation_id=operation.operation_id,
+                url=url,
+            )
+        if merge_into_id:
+            row = await service.merge(toolbox.session_id, row.id, UUID(merge_into_id))
+            payload = lead_summary(row)
+        result = {
+            "ok": True,
+            "lead": payload,
+            "operation_id": str(operation.operation_id),
+            "observation_id": str(observation_id) if observation_id else None,
+        }
+        operation.row.result_snapshot = result
+        operation.row.status = "succeeded"
 
     runtime.context.note_progress(f"lead:{payload['lead_id']}:{payload['status']}")
-    return json.dumps({"ok": True, "lead": payload}, ensure_ascii=False)
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -238,6 +356,7 @@ async def record_observation(
     url: str | None = None,
     category: str = "other",
     coverage_status: str = "checked_negative",
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """记录一次**观察**：索引已有工件，并更新覆盖状态。
 
@@ -250,6 +369,7 @@ async def record_observation(
             input_validation / configuration / transport / session_management / other。
         coverage_status: not_checked / checked_negative / checked_positive / blocked /
             not_applicable。
+        tool_call_id: 框架注入，用于返回原重放回执。
 
     Returns:
         写入结果摘要（JSON）。
@@ -268,6 +388,23 @@ async def record_observation(
         raise ValueError(f"coverage_status 非法：{coverage_status}") from exc
 
     async with toolbox.db.transaction() as db:
+        receipt = await _prepare_domain_receipt(
+            db,
+            toolbox,
+            runtime,
+            tool_call_id,
+            "record_observation",
+            {
+                "summary": summary,
+                "artifact_ids": resolved,
+                "identity": identity,
+                "url": url,
+                "category": category,
+                "coverage_status": coverage_status,
+            },
+        )
+        if receipt.row.result_snapshot is not None:
+            return json.dumps(receipt.row.result_snapshot, ensure_ascii=False, sort_keys=True)
         asset_id: UUID | None = None
         if url:
             asset, _created = await record_asset(
@@ -287,6 +424,7 @@ async def record_observation(
             artifact_ids=resolved,
             identity=identity,
             url=url,
+            source_operation_id=receipt.operation_id,
         )
         await CoverageService(db).record(
             session_id=toolbox.session_id,
@@ -303,9 +441,12 @@ async def record_observation(
             "coverage_status": coverage_status,
             "category": category,
         }
+        result = {"ok": True, "observation": payload}
+        receipt.row.result_snapshot = result
+        receipt.row.status = "succeeded"
 
     runtime.context.note_progress(f"obs:{ref}")
-    return json.dumps({"ok": True, "observation": payload}, ensure_ascii=False)
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -322,6 +463,7 @@ async def propose_finding(
     url: str | None = None,
     evidence_refs_json: list[str] | str | None = None,
     impact: str | None = None,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """提出一条**候选发现**（candidate）。
 
@@ -333,6 +475,7 @@ async def propose_finding(
         url: 关联入口。
         evidence_refs_json: 支持该发现的工件 ID 的 JSON 数组字符串。**必须**引用真实工件。
         impact: 影响说明。
+        tool_call_id: 框架注入，用于返回原重放回执。
 
     Returns:
         候选发现摘要（JSON）。
@@ -351,6 +494,23 @@ async def propose_finding(
         parsed_category = FindingCategory.OTHER
 
     async with toolbox.db.transaction() as db:
+        receipt = await _prepare_domain_receipt(
+            db,
+            toolbox,
+            runtime,
+            tool_call_id,
+            "propose_finding",
+            {
+                "title": title,
+                "description": description,
+                "category": category,
+                "url": url,
+                "evidence_refs": resolved,
+                "impact": impact,
+            },
+        )
+        if receipt.row.result_snapshot is not None:
+            return json.dumps(receipt.row.result_snapshot, ensure_ascii=False, sort_keys=True)
         asset_id: UUID | None = None
         if url:
             asset, _created = await record_asset(
@@ -380,14 +540,47 @@ async def propose_finding(
                 "请在说明中写清验证方法与限制。"
             ),
         }
+        result = {"ok": True, "finding": payload}
+        receipt.row.result_snapshot = result
+        receipt.row.status = "succeeded"
 
     runtime.context.note_progress(f"finding:{payload['finding_id']}")
-    return json.dumps({"ok": True, "finding": payload}, ensure_ascii=False)
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
 # --------------------------------------------------------------------------- #
 # 辅助
 # --------------------------------------------------------------------------- #
+
+
+async def _prepare_domain_receipt(
+    db: Any,
+    toolbox: Toolbox,
+    runtime: ToolRuntime[RunContext],
+    call_id: str,
+    name: str,
+    arguments: dict[str, Any],
+) -> PreparedOperation:
+    from sqlalchemy import text as sql_text
+
+    call_id = call_id or str(runtime.tool_call_id or "")
+    if not call_id:
+        raise ValueError("领域写工具缺少稳定 tool_call_id，拒绝产生不可去重记录")
+    await db.execute(
+        sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"domain-receipt:{toolbox.run_id}:{call_id}"},
+    )
+    return await OperationRegistry(db).prepare(
+        run_id=toolbox.run_id,
+        session_id=toolbox.session_id,
+        tool_call_id=call_id,
+        tool_name=name,
+        arguments=arguments,
+        effect_class=ToolEffectClass.IDEMPOTENT_WRITE,
+        policy_revision=getattr(toolbox, "policy_revision", 1),
+        scope_revision=getattr(toolbox, "scope_revision", 1),
+        dispatch_control_version=runtime.state.get("dispatch_control_version"),
+    )
 
 
 async def _verify_artifacts_exist(toolbox: Toolbox, raw_ids: list[str]) -> list[str]:
@@ -411,7 +604,11 @@ async def _verify_artifacts_exist(toolbox: Toolbox, raw_ids: list[str]) -> list[
             row = (
                 await db.execute(select(ArtifactRow).where(ArtifactRow.id == artifact_id))
             ).scalar_one_or_none()
-            if row is None or row.availability != "available":
+            if (
+                row is None
+                or row.session_id != toolbox.session_id
+                or row.availability != "available"
+            ):
                 missing.append(candidate)
                 continue
             if not toolbox.artifacts.exists(row.relative_key):

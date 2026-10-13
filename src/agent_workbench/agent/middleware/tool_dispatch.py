@@ -27,6 +27,7 @@ from agent_workbench.contracts.events import EventType
 from agent_workbench.domain.run_state import is_current_owner
 from agent_workbench.observability.events import append_event
 from agent_workbench.persistence.tables import RunRow, ToolOperationRow
+from agent_workbench.tools.execution_context import context_from_state, execution_context
 
 log = structlog.get_logger(__name__)
 
@@ -60,6 +61,7 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 log.warning("tool_activity_event_failed", error_type=type(exc).__name__)
 
         await emit("started", "preparing")
+        token = execution_context.set(context_from_state(dict(request.state or {})))
         try:
             result = await self._dispatch_tool_call(request, handler)
         except asyncio.CancelledError:
@@ -70,6 +72,8 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         except Exception as exc:
             await emit("finished", "failed", f"工具派发检查失败：{type(exc).__name__}")
             raise
+        finally:
+            execution_context.reset(token)
         state, output = result_view(result)
         await emit("finished", state, output)
         return result

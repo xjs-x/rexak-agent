@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_openai import ChatOpenAI
 
 
@@ -36,9 +36,14 @@ class XiaomiChatOpenAI(ChatOpenAI):
     def _get_request_payload(self, input_: Any, *, stop: list[str] | None = None, **kwargs: Any):
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         messages = self._convert_input(input_).to_messages()
-        for message, wire in zip(messages, payload.get("messages") or [], strict=True):
-            if isinstance(message, AIMessage):
-                reasoning = message.additional_kwargs.get("reasoning_content")
-                if isinstance(reasoning, str):
-                    wire["reasoning_content"] = reasoning
+        add_return_fields(messages, payload.get("messages") or [])
         return payload
+
+
+def add_return_fields(messages: list[BaseMessage], wire_messages: list[dict[str, Any]]) -> None:
+    """协议必要字段的唯一适配位置，预算预览和发送使用同一实现。"""
+    for message, wire in zip(messages, wire_messages, strict=True):
+        if isinstance(message, AIMessage):
+            reasoning = message.additional_kwargs.get("reasoning_content")
+            if isinstance(reasoning, str):
+                wire["reasoning_content"] = reasoning

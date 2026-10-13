@@ -4,7 +4,7 @@
 
 1. 没有未处理的**高优先级用户指令**；
 2. 没有未交待的**运行中 job** 或执行状态未知的关键操作；
-3. **重点线索**已验证或有明确阻碍（不能只把其改为 deferred 来绕过检查）；
+3. 提议声明的目标相关未决线索有处理结果或具体搁置理由，不按固定分数强制收尾；
 4. 确认发现具有**验证记录与可用证据**；
 5. 开放探索收尾时做一次**覆盖缺口复查**，仍无有效方向才允许 `exploration_converged`；
 6. 缺账号/目标不可达等问题进入 `waiting_user`/受阻说明，不冒充完成。
@@ -36,10 +36,6 @@ from agent_workbench.persistence.tables import (
 )
 
 Decision = Literal["complete", "continue", "wait_user", "wait_tool"]
-
-#: 与 `agent.stopping` 共享的阈值：重点线索的优先级下限
-HIGH_PRIORITY_THRESHOLD = 60
-
 
 @dataclass(slots=True)
 class CompletionDecision:
@@ -101,13 +97,17 @@ class FinishGate:
             blocking["unresolved_jobs"] = unresolved_jobs
 
         # 3) 重点线索必须已验证或有明确阻碍
-        open_leads = await self._open_high_priority_leads(session_id)
+        open_leads = await self._open_relevant_leads(session_id, proposal)
         if open_leads:
-            reasons.append("存在既未验证也未受阻的重点线索")
+            reasons.append("目标相关未决线索缺少处理或搁置理由")
             blocking["open_leads"] = open_leads
 
         # 4) 确认发现必须有验证记录且证据可用
         unverified = await self._confirmed_without_verification(session_id)
+        invalid_refs = await self._invalid_proposal_refs(session_id, proposal)
+        if invalid_refs:
+            reasons.append("结束提议引用不可用或其他会话证据")
+            blocking["invalid_evidence_refs"] = invalid_refs
         if unverified:
             reasons.append("存在缺少验证记录或证据不可用的已确认发现")
             blocking["unverified_findings"] = unverified
@@ -115,7 +115,9 @@ class FinishGate:
         # 缺账号/连通性等外部前置条件时，重点线索可能仍是 open；应明确等待用户，
         # 但未决任务、待处理指令和不可信的确认发现不能借此被掩盖。
         missing_conditions = proposal.get("missing_conditions") or []
-        if missing_conditions and not (pending_command_ids or unresolved_jobs or unverified):
+        if missing_conditions and not (
+            pending_command_ids or unresolved_jobs or unverified or invalid_refs
+        ):
             return CompletionDecision(
                 decision="wait_user",
                 reasons=[*reasons, *(f"缺少必要条件：{item}" for item in missing_conditions)],
@@ -127,7 +129,12 @@ class FinishGate:
 
         if reasons:
             return CompletionDecision(
-                decision="continue", reasons=reasons, blocking_objects=blocking
+                decision="wait_tool"
+                if unresolved_jobs
+                and not (pending_command_ids or unverified or invalid_refs or open_leads)
+                else "continue",
+                reasons=reasons,
+                blocking_objects=blocking,
             )
 
         # 5) 开放探索：收尾覆盖缺口复查
@@ -184,15 +191,71 @@ class FinishGate:
             .scalars()
             .all()
         )
-        return [f"{row.job_id}:{row.state}" for row in rows]
+        standalone = (
+            (
+                await self._s.execute(
+                    select(ToolOperationRow).where(
+                        ToolOperationRow.session_id == session_id,
+                        ToolOperationRow.job_id.is_(None),
+                        ToolOperationRow.status.in_(("accepted", "running", "unknown")),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [f"{row.job_id}:{row.state}" for row in rows] + [
+            f"operation:{row.operation_id}:{row.status}" for row in standalone
+        ]
 
-    async def _open_high_priority_leads(self, session_id: UUID) -> list[str]:
+    async def _invalid_proposal_refs(
+        self, session_id: UUID, proposal: Mapping[str, Any]
+    ) -> list[str]:
+        invalid = []
+        for raw in proposal.get("evidence_refs") or []:
+            try:
+                row = await self._s.get(ArtifactRow, UUID(str(raw)))
+                valid = (
+                    row is not None
+                    and row.session_id == session_id
+                    and row.availability == "available"
+                    and row.source_operation_id is not None
+                    and not row.truncated
+                    and self._store.verify(row.relative_key, row.sha256)
+                )
+            except (ValueError, ArtifactError):
+                valid = False
+            if not valid:
+                invalid.append(str(raw))
+        return invalid
+
+    async def _open_relevant_leads(
+        self, session_id: UUID, proposal: Mapping[str, Any]
+    ) -> list[str]:
+        declared = (proposal.get("coverage_summary") or {}).get("unresolved_items") or []
+        explanations = {
+            str(item.get("lead_id")): item for item in declared if isinstance(item, dict)
+        }
+        ids = set(proposal.get("relevant_lead_ids") or []) | set(explanations)
+        for raw in proposal.get("remaining_leads") or []:
+            try:
+                ids.add(str(UUID(str(raw))))
+            except ValueError:
+                continue  # 旧工具允许文字说明，保留为报告资料，不伪造 ID。
+        parsed = []
+        for raw in ids:
+            try:
+                parsed.append(UUID(str(raw)))
+            except ValueError:
+                return [f"{raw}:目标相关线索 ID 无效"]
+        if not parsed:
+            return []
         rows = (
             (
                 await self._s.execute(
                     select(LeadRow).where(
                         LeadRow.session_id == session_id,
-                        LeadRow.priority >= HIGH_PRIORITY_THRESHOLD,
+                        LeadRow.id.in_(parsed),
                     )
                 )
             )
@@ -204,11 +267,20 @@ class FinishGate:
             str(LeadStatus.DISPROVED),
             str(LeadStatus.BLOCKED),
         }
-        return [
-            f"{row.id}:{row.status}:{row.hypothesis[:60]}"
-            for row in rows
-            if row.status not in terminal
+        problems = [
+            f"{key}:不属于当前会话" for key in parsed if key not in {row.id for row in rows}
         ]
+        for row in rows:
+            if row.status in terminal or row.merged_into_id is not None:
+                continue
+            explanation = explanations.get(str(row.id)) or {}
+            if (
+                explanation.get("disposition") in {"deferred", "outside_goal", "not_required"}
+                and str(explanation.get("reason") or "").strip()
+            ):
+                continue
+            problems.append(f"{row.id}:{row.status}:{row.hypothesis[:60]}")
+        return problems
 
     async def _confirmed_without_verification(self, session_id: UUID) -> list[str]:
         rows = (

@@ -1,0 +1,21 @@
+{
+  "trial_id": "T01-V1-1",
+  "environment_alias": "T01",
+  "group": "V1",
+  "repetition": 1,
+  "source_commit": null,
+  "source_tree_hash": null,
+  "lock_hash": null,
+  "prompt_version": null,
+  "model_config": null,
+  "tool_manifest_hash": null,
+  "environment_snapshot_id": null,
+  "memory_snapshot_id": null,
+  "session_id": null,
+  "run_ids": [],
+  "started_at": null,
+  "ended_at": null,
+  "end_kind": null,
+  "assisted_from": null,
+  "timezone": "Asia/Shanghai"
+}

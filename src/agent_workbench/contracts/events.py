@@ -25,6 +25,12 @@ class EventType(StrEnum):
     MESSAGE_DELTA = "message.delta"
     MESSAGE_COMPLETED = "message.completed"
     PLAN_UPDATED = "plan.updated"
+    # V1 审计事件预留；相应阶段实现前不产生事件，不代表能力已经启用。
+    FOCUS_UPDATED = "focus.updated"
+    LEADS_RECALLED = "leads.recalled"
+    CONTEXT_SELECTED = "context.selected"
+    SEGMENT_YIELDED = "segment.yielded"
+    SNAPSHOT_CAPTURED = "snapshot.captured"
     TOOL_ACCEPTED = "tool.accepted"
     TOOL_OUTPUT = "tool.output"
     TOOL_COMPLETED = "tool.completed"

@@ -47,7 +47,7 @@ from agent_workbench.contracts.identity import (
     ScopeUpdate,
     SessionCreate,
 )
-from agent_workbench.contracts.plan import PlanRead, PlanStepRead
+from agent_workbench.contracts.plan import CurrentFocusRead, PlanRead, PlanStepRead
 from agent_workbench.domain.instruction_scope import scope_from_instructions, sync_instruction_scope
 from agent_workbench.domain.prices import PriceUpdate
 from agent_workbench.domain.run_state import (
@@ -654,6 +654,9 @@ async def session_plan(session_id: UUID, request: Request) -> PlanRead:
     return PlanRead(
         revision=int(values.get("plan_revision") or 0),
         steps=[PlanStepRead.model_validate(_redact_api_value(step)) for step in raw_steps],
+        current_focus=CurrentFocusRead.model_validate(_redact_api_value(values["current_focus"]))
+        if values.get("current_focus")
+        else None,
     )
 
 
@@ -1166,6 +1169,7 @@ async def list_leads(
                 "identity_refs": list(row.identity_refs or []),
                 "priority": row.priority,
                 "priority_rationale": _redact_api_value(row.priority_rationale),
+                "merged_into_id": str(row.merged_into_id) if row.merged_into_id else None,
                 "status": row.status,
                 "next_action": redact_text(row.next_action) if row.next_action else None,
                 "blocked_reason": (redact_text(row.blocked_reason) if row.blocked_reason else None),

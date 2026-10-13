@@ -17,6 +17,7 @@ from agent_workbench.tools.browser import BROWSER_TOOLS
 from agent_workbench.tools.completion import COMPLETION_TOOLS
 from agent_workbench.tools.evidence import EVIDENCE_TOOLS
 from agent_workbench.tools.files import FILE_TOOLS
+from agent_workbench.tools.history import search_history
 from agent_workbench.tools.http import HTTP_TOOLS
 from agent_workbench.tools.jobs import JOB_TOOLS
 from agent_workbench.tools.knowledge import KNOWLEDGE_TOOLS
@@ -91,6 +92,7 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
         tools.extend(BROWSER_TOOLS)
     if chosen.evidence:
         tools.extend(EVIDENCE_TOOLS)
+        tools.append(search_history)
     if chosen.jobs:
         tools.extend(JOB_TOOLS)
     if chosen.task:

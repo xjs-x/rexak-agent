@@ -54,7 +54,11 @@ async def _load_artifact(toolbox: Toolbox, artifact_id: str) -> ArtifactRow | No
         return None
     async with toolbox.db.session() as db:
         return (
-            await db.execute(select(ArtifactRow).where(ArtifactRow.id == parsed))
+            await db.execute(
+                select(ArtifactRow).where(
+                    ArtifactRow.id == parsed, ArtifactRow.session_id == toolbox.session_id
+                )
+            )
         ).scalar_one_or_none()
 
 

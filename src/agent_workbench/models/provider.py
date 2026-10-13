@@ -9,11 +9,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from langchain_core.messages import BaseMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_openai import ChatOpenAI
+from langchain_openai.chat_models.base import _convert_message_to_dict
 from pydantic import SecretStr
 
 from agent_workbench.config.catalog import ProviderProfile, default_provider_profiles
@@ -43,6 +47,8 @@ class ModelBinding:
             "base_url": self.profile.base_url,
             "context_limit": self.profile.context_limit,
             "output_reserve": self.profile.output_reserve,
+            "input_budget_tokens": self.profile.input_budget_tokens,
+            "budget_safety_margin_ratio": self.profile.budget_safety_margin_ratio,
             "profile_version": self.profile.profile_version,
             "token_estimation_method": self.profile.token_estimation_method,
             "supports_tools": self.profile.supports_tools,
@@ -80,6 +86,7 @@ def resolve_provider_profile(
             secret_ref="env:XIAOMI_API_KEY",
             context_limit=profile.context_limit,
             output_reserve=cfg.output_reserve_tokens,
+            budget_safety_margin_ratio=profile.budget_safety_margin_ratio,
             supports_tools=profile.supports_tools,
             supports_streaming=profile.supports_streaming,
             supports_images=profile.supports_images,
@@ -115,6 +122,14 @@ def build_chat_model(
 
     model_class = XiaomiChatOpenAI if binding.profile.provider_id == "xiaomi" else ChatOpenAI
     extra = dict(binding.extra or {})
+    if binding.max_retries != 0:
+        raise ProviderConfigurationError("SDK 隐藏重试必须关闭，实际尝试由公共调用层观测")
+    extra.setdefault("max_tokens", binding.profile.output_reserve)
+    if (
+        int(extra.get("max_completion_tokens", extra["max_tokens"]))
+        > binding.profile.output_reserve
+    ):
+        raise ProviderConfigurationError("输出上限不能超过用于请求预算的输出预留")
     if binding.profile.provider_id == "xiaomi":
         extra.setdefault("use_responses_api", False)
     return model_class(
@@ -129,3 +144,28 @@ def build_chat_model(
         stream_chunk_timeout=binding.request_timeout_seconds,
         **extra,
     )
+
+
+def request_payload(
+    model: Any,
+    messages: Sequence[BaseMessage],
+    *,
+    tools: Sequence[Any] | None = None,
+    model_settings: dict[str, Any] | None = None,
+    tool_choice: Any = None,
+    profile: ProviderProfile | None = None,
+) -> dict[str, Any]:
+    """使用锁定适配器的实际序列化接缝；不发网络请求，不记录正文。"""
+    settings = dict(model_settings or {})
+    if tools:
+        settings["tools"] = [convert_to_openai_tool(tool) for tool in tools]
+        if tool_choice is not None:
+            settings["tool_choice"] = tool_choice
+    if isinstance(model, ChatOpenAI):
+        return model._get_request_payload(messages, **settings)
+    wire = [_convert_message_to_dict(message) for message in messages]
+    if profile is not None and profile.provider_id == "xiaomi":
+        from agent_workbench.models.xiaomi import add_return_fields
+
+        add_return_fields(list(messages), wire)
+    return {"messages": wire, **settings}

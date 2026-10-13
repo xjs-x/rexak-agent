@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     access_token: str = "change-me-local-access-token"
     allowed_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
     owner_id: str = "local-owner"
+    # 项目事实与 owner 级方法经验同时隔离；None 保留日常命名空间。
+    memory_read_branch: str | None = None
+    memory_write_branch: str | None = None
+    experiment_trial_id: str | None = None
+    experiment_group: str | None = None
 
     # ---------- 数据根目录 ----------
     data_root: Path = REPO_ROOT / "data"
@@ -80,6 +85,7 @@ class Settings(BaseSettings):
     run_lease_seconds: int = 60
     lease_heartbeat_seconds: int = 15
     segment_step_threshold: int = 40
+    segment_decision_rounds: int = Field(default=4, ge=1, le=5)
     #: 后台任务唤醒巡检间隔。等待期间**不调用模型**，只按这个间隔核对远端状态。
     #: 这是资源初值，不是任务总时长限制。
     job_wakeup_interval_seconds: float = 3.0

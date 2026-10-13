@@ -47,8 +47,13 @@ async def retention_candidates(
 
 
 async def prune_old_events(
-    session: AsyncSession, *, days: int, limit: int = 1000, apply: bool = False,
-    now: datetime | None = None, session_id: UUID | None = None,
+    session: AsyncSession,
+    *,
+    days: int,
+    limit: int = 1000,
+    apply: bool = False,
+    now: datetime | None = None,
+    session_id: UUID | None = None,
 ) -> int:
     """预览或删除至多 limit 个旧事件，返回数量；调用方管理事务。"""
     if days < 1:

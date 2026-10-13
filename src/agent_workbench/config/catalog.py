@@ -34,6 +34,7 @@ class ProviderProfile(BaseModel):
     secret_ref: str
     context_limit: int
     output_reserve: int = 8192
+    budget_safety_margin_ratio: float = Field(default=0.1, ge=0, lt=1)
     supports_tools: Capability = "unknown"
     supports_streaming: Capability = "unknown"
     supports_images: Capability = "unknown"

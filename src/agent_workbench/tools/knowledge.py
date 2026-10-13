@@ -10,11 +10,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
 from langchain.tools import ToolRuntime
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolCallId, tool
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.prompts.methods import MethodNotAvailable, list_methods, load_method
@@ -98,6 +98,7 @@ async def search_memory(
     query: str | None = None,
     include_candidates: bool = True,
     limit: int = 10,
+    include_methods: bool = True,
 ) -> str:
     """检索**本项目**的跨任务经验。
 
@@ -105,6 +106,7 @@ async def search_memory(
         query: 关键词；留空返回最近的条目。
         include_candidates: 是否包含未验证的候选经验（默认包含，但会标注状态）。
         limit: 最多返回条数。
+        include_methods: 同时检索当前实验读取分支的 owner 级通用方法经验。
 
     Returns:
         记忆条目 JSON：content、verified_status、适用条件、失效条件、来源引用、冲突信息。
@@ -141,11 +143,16 @@ async def search_memory(
         limit=int(limit),
         include_candidates=bool(include_candidates),
     )
+    methods = await memory.list_methods(limit=int(limit), query=query) if include_methods else []
+    if not include_candidates:
+        methods = [item for item in methods if item.get("verified_status") == "verified"]
     return _ok(
         {
             "project_id": str(row.project_id),
             "count": len(entries),
             "entries": [summarize_entry(entry) for entry in entries],
+            "methods": [summarize_entry(entry) for entry in methods],
+            "read_branch": toolbox.settings.memory_read_branch,
             "usage_note": (
                 "candidate 条目只是候选经验，不能作为已验证事实；"
                 "与当前观察冲突时以当前证据为准，并记录冲突。"
@@ -164,6 +171,8 @@ async def propose_memory(
     source_artifact_ids_json: list[str] | str | None = None,
     applicable_conditions: str | None = None,
     invalid_conditions: str | None = None,
+    memory_scope: str = "project",
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """提交一条**候选**跨任务经验。
 
@@ -174,6 +183,8 @@ async def propose_memory(
         source_artifact_ids_json: 支持该经验的工件 ID 的 JSON 数组字符串。
         applicable_conditions: 适用条件（什么情况下成立）。
         invalid_conditions: 失效条件（什么情况下不再成立）。
+        memory_scope: project 或 method；方法经验必须说明适用和失败条件。
+        tool_call_id: 框架注入来源事件，不要填写。
 
     Returns:
         写入结果。`verified_status` 一定是 `candidate`。
@@ -195,6 +206,10 @@ async def propose_memory(
             "内容看起来包含凭据或令牌，长期记忆不保存敏感信息",
             hint="请改为描述『如何取得凭据』，而不是凭据本身。",
         )
+    if memory_scope not in {"project", "method"}:
+        return _fail(ErrorCode.VALIDATION_FAILED, "memory_scope 必须为 project 或 method")
+    if memory_scope == "method" and not (applicable_conditions and invalid_conditions):
+        return _fail(ErrorCode.VALIDATION_FAILED, "方法候选需要适用条件与失败/失效条件")
 
     try:
         refs = coerce_str_list(source_artifact_ids_json, "source_artifact_ids_json")
@@ -213,6 +228,10 @@ async def propose_memory(
         return _fail(ErrorCode.NOT_FOUND, "找不到当前 session，无法定位记忆命名空间")
 
     memory = MemoryStore(store, toolbox.settings)
+    if refs:
+        from agent_workbench.tools.task import _verify_artifacts_exist
+
+        await _verify_artifacts_exist(toolbox, refs)
     entry = await memory.propose(
         project_id=row.project_id,
         memory_type=memory_type,
@@ -222,6 +241,8 @@ async def propose_memory(
         source_artifact_ids=refs,
         applicable_conditions=applicable_conditions,
         invalid_conditions=invalid_conditions,
+        memory_scope=memory_scope,  # type: ignore[arg-type]
+        source_event_id=f"tool:{toolbox.run_id}:{tool_call_id or runtime.tool_call_id}",
     )
     return _ok(
         {"entry": summarize_entry(entry)},
@@ -237,4 +258,50 @@ def _looks_sensitive(text: str) -> bool:
     return any(marker in lowered for marker in _SENSITIVE_MARKERS)
 
 
-KNOWLEDGE_TOOLS = [search_methods, search_memory, propose_memory]
+@tool("record_memory_usage")
+async def record_memory_usage(
+    runtime: ToolRuntime[RunContext],
+    memory_id: str,
+    outcome: str,
+    conditions: str,
+    evidence_refs_json: list[str] | str | None = None,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> str:
+    """记录一次实际经验使用反馈，重放不累加成功次数、不自动提升经验。
+
+    Args:
+        memory_id: search_memory 返回的经验 ID。
+        outcome: helpful/failed/inapplicable/uncertain。
+        conditions: 此次实际使用条件及观察限制。
+        evidence_refs_json: 真实工件来源，helpful/failed 时必须提供。
+        tool_call_id: 框架注入的事件身份。
+    """
+    toolbox = runtime.context.toolbox
+    if runtime.store is None:
+        raise ValueError("本次运行没有挂载 Store")
+    refs = coerce_str_list(evidence_refs_json, "evidence_refs_json")
+    if outcome in {"helpful", "failed"} and not refs:
+        raise ValueError("有效/失败反馈需要实际测试工件")
+    from agent_workbench.tools.task import _verify_artifacts_exist
+
+    await _verify_artifacts_exist(toolbox, refs)
+    memory = MemoryStore(runtime.store, toolbox.settings)
+    from agent_workbench.persistence.tables import SessionRow
+
+    async with toolbox.db.session() as db:
+        session_row = await db.get(SessionRow, toolbox.session_id)
+    if session_row is None:
+        raise ValueError("当前会话不存在")
+    result = await memory.record_usage(
+        memory_id=memory_id,
+        source_event_id=f"tool:{toolbox.run_id}:{tool_call_id or runtime.tool_call_id}",
+        source_run_id=toolbox.run_id,
+        outcome=outcome,
+        conditions=conditions,
+        evidence_refs=refs,
+        project_id=session_row.project_id,
+    )
+    return _ok({"usage": result}, "经验使用反馈已保存，不自动成为通用规则")
+
+
+KNOWLEDGE_TOOLS = [search_methods, search_memory, propose_memory, record_memory_usage]

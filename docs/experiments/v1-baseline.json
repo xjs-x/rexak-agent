@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "group": "B0",
+  "source_commit": "a37ae3786ab495035bbe14bd50276a7553438995",
+  "source_tree_hash": "93d028e377d841c33734a39ff9bcd236140e3ef61c4bb637788b6d3028d4e6b1",
+  "lock_hash": "e7d6797de1d851b37296b01538983984d7ed1ad12f5fe6dd9c7d4b4626693b6d",
+  "hash_method": "sha256_sorted_path_mode_size_content_sha256_v1",
+  "hash_scope": "committed_files_except_workbuddy_and_local_env",
+  "dependency_versions": {
+    "langchain": "1.4.3",
+    "langgraph": "1.2.14",
+    "langchain-core": "1.6.7"
+  },
+  "runtime_source": "original_commit_no_instrumentation_patch",
+  "existing_uncommitted_paths": [
+    ".workbuddy/memory/2026-10-09.md",
+    ".workbuddy/memory/MEMORY.md",
+    "docs/implementation-and-experiments-v1.md"
+  ],
+  "working_inventory": "data/implementation-v1/baseline-before-implementation.json (local private, not versioned)"
+}

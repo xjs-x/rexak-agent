@@ -4,8 +4,8 @@
 1. 模型调用 `propose_completion`，写出结构化 `completion_proposal`；
 2. 本中间件用**确定性检查**评估（见 `runtime/stopping.FinishGate`）；
 3. 不通过 -> 把**具体反馈**写回状态并清除提议，让模型继续；
-4. 模型用普通文本收尾但**未**形成提议 -> 最多给少量明确的修正反馈；
-   重复不合格时标记"无法形成可靠结论"并暴露问题，**不无限调用同一提示**。
+4. 已提交提议反复被拒时继续反馈具体未决项，不按次数要求用户介入。
+   普通文字未形成提议时保留原有有限格式提醒，不冒充通过结束判定。
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import HumanMessage
+from langchain.agents.middleware import AgentMiddleware, hook_config
+from langchain_core.messages import SystemMessage
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.state import AgentGraphState
@@ -28,6 +28,17 @@ log = get_logger("agent_workbench.finish_gate")
 
 
 class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
+    @hook_config(can_jump_to=["end"])
+    async def abefore_model(self, state, runtime):  # type: ignore[no-untyped-def]
+        if not state.get("completion_proposal") or getattr(runtime, "context", None) is None:
+            return None
+        update = await self.aafter_model(state, runtime)
+        if update is None:
+            return {"jump_to": "end"}
+        update.pop("jump_to", None)
+        return update
+
+    @hook_config(can_jump_to=["model"])
     async def aafter_model(self, state, runtime):  # type: ignore[no-untyped-def]
         context: RunContext | None = getattr(runtime, "context", None)
         if context is None:
@@ -67,30 +78,21 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     error_type=type(exc).__name__,
                 )
 
-        if decision.allowed:
+        if decision.allowed or decision.decision in {"wait_user", "wait_tool"}:
             # 通过：保留提议，由 Runner 在一致边界把 run 置为 completed
             return None
-
-        if attempts >= MAX_FEEDBACK_ROUNDS:
-            return {
-                "completion_proposal": None,
-                "finish_gate_feedback": [
-                    "已连续多次提交不合格的结束提议，停止继续追问。"
-                    "当前状态：**无法形成可靠结论**。请把未解决的具体问题直接告诉用户。"
-                ],
-                "work_summary": {
-                    **(state.get("work_summary") or {}),
-                    "unresolved_blockers": decision.reasons,
-                    "blocking_objects": decision.blocking_objects,
-                },
-            }
 
         feedback = _render_feedback(decision)
         return {
             "completion_proposal": None,
             "finish_gate_feedback": decision.reasons,
             "finish_gate_attempts": attempts + 1,
-            "messages": [HumanMessage(content=feedback)],
+            "messages": [SystemMessage(content=feedback)],
+            **(
+                {"jump_to": "model"}
+                if messages and not getattr(messages[-1], "tool_calls", None)
+                else {}
+            ),
         }
 
     async def _handle_plain_text_finish(
@@ -122,7 +124,7 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         return {
             "finish_gate_attempts": attempts + 1,
             "messages": [
-                HumanMessage(
+                SystemMessage(
                     content=(
                         "【系统提示】看起来你在收尾，但没有提交结构化结束提议。"
                         "如果要结束本阶段，请调用 `propose_completion` 并给出："

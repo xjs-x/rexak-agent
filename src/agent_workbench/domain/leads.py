@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_workbench.contracts.enums import LEAD_STATUSES_REQUIRE_REASON, ErrorCode, LeadStatus
@@ -61,29 +61,36 @@ class LeadService:
         hypothesis: str,
         asset_id: UUID | None = None,
         identity_refs: list[str] | None = None,
-        impact: int = 3,
-        evidence_strength: int = 1,
-        feasibility: int = 3,
-        information_gain: int = 3,
+        impact: int | None = None,
+        evidence_strength: int | None = None,
+        feasibility: int | None = None,
+        information_gain: int | None = None,
         next_action: str | None = None,
         evidence_refs: list[str] | None = None,
         lead_id: UUID | None = None,
     ) -> LeadRow:
         score, parts = compute_priority(
-            impact=impact,
-            evidence_strength=evidence_strength,
-            feasibility=feasibility,
-            information_gain=information_gain,
+            impact=impact or 0,
+            evidence_strength=evidence_strength or 0,
+            feasibility=feasibility or 0,
+            information_gain=information_gain or 0,
         )
+        scored = any(
+            value is not None
+            for value in (impact, evidence_strength, feasibility, information_gain)
+        )
+        if not hypothesis.strip():
+            raise ValueError("假设不能为空")
         if lead_id is not None:
             row = await self.get(lead_id)
-            if row is None:
+            if row is None or row.session_id != session_id:
                 raise ApiError(ErrorCode.NOT_FOUND, f"线索不存在：{lead_id}")
             row.hypothesis = hypothesis
             row.asset_id = asset_id or row.asset_id
             row.identity_refs = list(identity_refs or row.identity_refs)
-            row.priority = score
-            row.priority_rationale = parts
+            if scored:
+                row.priority = score
+                row.priority_rationale = parts
             row.next_action = next_action or row.next_action
             row.evidence_refs = _merge(row.evidence_refs, evidence_refs)
             row.revision = int(row.revision) + 1
@@ -97,7 +104,7 @@ class LeadService:
             asset_id=asset_id,
             identity_refs=list(identity_refs or []),
             priority=score,
-            priority_rationale=parts,
+            priority_rationale=parts if scored else {},
             status=str(LeadStatus.NEW),
             next_action=next_action,
             evidence_refs=list(evidence_refs or []),
@@ -105,6 +112,45 @@ class LeadService:
         self._s.add(row)
         await self._s.flush()
         return row
+
+    async def merge(self, session_id: UUID, source_id: UUID, target_id: UUID) -> LeadRow:
+        """同会话串行合并，保留原记录状态；引用并集传播到最终目标。"""
+        await self._s.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"lead-merge:{session_id}"},
+        )
+        source = await self.get(source_id)
+        if source is None or source.session_id != session_id:
+            raise ValueError("源线索不属于当前会话")
+        visited = {source_id}
+        cursor = target_id
+        while True:
+            if cursor in visited:
+                raise ValueError("线索合并不能形成循环别名")
+            visited.add(cursor)
+            target = await self.get(cursor)
+            if target is None or target.session_id != session_id:
+                raise ValueError("不能跨会话合并线索")
+            if target.merged_into_id is None:
+                break
+            cursor = target.merged_into_id
+        if source.merged_into_id is not None and source.merged_into_id != target.id:
+            raise ValueError("已合并线索不能重新指向其他目标")
+        if source.merged_into_id == target.id:
+            refs = _merge(target.evidence_refs, source.evidence_refs)
+            identities = _merge(target.identity_refs, source.identity_refs)
+            if refs != target.evidence_refs or identities != target.identity_refs:
+                target.evidence_refs, target.identity_refs = refs, identities
+                target.revision += 1
+                await self._s.flush()
+            return source
+        source.merged_into_id = target.id
+        target.evidence_refs = _merge(target.evidence_refs, source.evidence_refs)
+        target.identity_refs = _merge(target.identity_refs, source.identity_refs)
+        source.revision += 1
+        target.revision += 1
+        await self._s.flush()
+        return source
 
     async def get(self, lead_id: UUID) -> LeadRow | None:
         return (
@@ -187,6 +233,7 @@ def _merge(left: list[str] | None, right: list[str] | None) -> list[str]:
 def lead_summary(row: LeadRow) -> dict[str, Any]:
     return {
         "lead_id": str(row.id),
+        "merged_into_id": str(row.merged_into_id) if row.merged_into_id else None,
         "hypothesis": row.hypothesis,
         "status": row.status,
         "priority": row.priority,

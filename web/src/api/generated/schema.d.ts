@@ -194,9 +194,8 @@ export interface paths {
          * Resume Run
          * @description resume **只作用于可恢复的 run**；已 completed 的 run 必须创建新 run。
          *
-         *     处于 `recovering` 的 run 说明**启动核对未能确认远端副作用**，此时必须带
-         *     `acknowledge_unknown_operations=true` 显式确认，否则拒绝恢复 ——
-         *     不能让"无法核实"被一次普通的 resume 悄悄盖过去。
+         *     `recovering` 既可能是模型超时，也可能是远端状态不明。只有实际存在
+         *     未核实的工具任务时才要求显式确认，不能把模型超时误报成未知副作用。
          */
         post: operations["resume_run_api_runs__run_id__resume_post"];
         delete?: never;
@@ -785,6 +784,19 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        /** CurrentFocusRead */
+        CurrentFocusRead: {
+            /** Step Id */
+            step_id?: string | null;
+            /** Lead Id */
+            lead_id?: string | null;
+            /** Intent */
+            intent: string;
+            /** Reason */
+            reason: string;
+            /** Return To Step Id */
+            return_to_step_id?: string | null;
+        };
         /**
          * EventEnvelope
          * @description SSE 事件信封。同时作为 OpenAPI 可导出的 schema。
@@ -834,7 +846,7 @@ export interface components {
          * EventType
          * @enum {string}
          */
-        EventType: "run.status" | "message.delta" | "message.completed" | "plan.updated" | "tool.accepted" | "tool.output" | "tool.completed" | "lead.updated" | "finding.updated" | "coverage.updated" | "usage.updated" | "memory.compacted" | "input.required" | "report.ready" | "error" | "stream.resync_required" | "stream.heartbeat";
+        EventType: "run.status" | "message.delta" | "message.completed" | "plan.updated" | "focus.updated" | "leads.recalled" | "context.selected" | "segment.yielded" | "snapshot.captured" | "tool.accepted" | "tool.output" | "tool.completed" | "lead.updated" | "finding.updated" | "coverage.updated" | "usage.updated" | "memory.compacted" | "input.required" | "report.ready" | "error" | "stream.resync_required" | "stream.heartbeat";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1010,6 +1022,7 @@ export interface components {
             revision: number;
             /** Steps */
             steps: components["schemas"]["PlanStepRead"][];
+            current_focus?: components["schemas"]["CurrentFocusRead"] | null;
             /**
              * Source
              * @default langgraph_checkpoint
@@ -1032,6 +1045,12 @@ export interface components {
             rationale?: string | null;
             /** Lead Id */
             lead_id?: string | null;
+            /** Done When */
+            done_when?: string | null;
+            /** Resume Note */
+            resume_note?: string | null;
+            /** Evidence Refs */
+            evidence_refs?: string[];
         };
         /**
          * PolicySnapshot
@@ -1261,6 +1280,10 @@ export interface components {
             result_text: string;
             /** Note */
             note: string;
+            /** Execution Context */
+            execution_context?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** ToolActivityPage */
         ToolActivityPage: {

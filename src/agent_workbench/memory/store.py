@@ -31,12 +31,18 @@ from agent_workbench.config.settings import Settings, get_settings
 VerifiedStatus = Literal["candidate", "verified", "rejected", "superseded"]
 
 
-def project_namespace(owner_id: str, project_id: UUID | str) -> tuple[str, ...]:
-    return (owner_id, str(project_id), "project_facts")
+def project_namespace(
+    owner_id: str, project_id: UUID | str, branch: str | None = None
+) -> tuple[str, ...]:
+    return (
+        (owner_id, "trials", branch, str(project_id), "project_facts")
+        if branch
+        else (owner_id, str(project_id), "project_facts")
+    )
 
 
-def methods_namespace(owner_id: str) -> tuple[str, ...]:
-    return (owner_id, "methods")
+def methods_namespace(owner_id: str, branch: str | None = None) -> tuple[str, ...]:
+    return (owner_id, "trials", branch, "methods") if branch else (owner_id, "methods")
 
 
 def memory_id_for(content: str, memory_type: str) -> str:
@@ -103,14 +109,49 @@ class MemoryStore:
         applicable_conditions: str | None = None,
         invalid_conditions: str | None = None,
         expires_at: str | None = None,
+        memory_scope: Literal["project", "method"] = "project",
+        source_event_id: str | None = None,
     ) -> dict[str, Any]:
         """写入一条**候选**经验。冲突时保留来源，不覆盖已有条目。"""
-        namespace = project_namespace(self.owner_id, project_id)
+        namespace = (
+            methods_namespace(self.owner_id, self._settings.memory_write_branch)
+            if memory_scope == "method"
+            else project_namespace(self.owner_id, project_id, self._settings.memory_write_branch)
+        )
         key = memory_id_for(content, memory_type)
+        if source_event_id:
+            receipt_ns = (
+                self.owner_id,
+                "memory_source_events",
+                self._settings.memory_write_branch or "default",
+                memory_scope,
+                str(project_id) if memory_scope == "project" else "shared",
+            )
+            receipt_key = memory_id_for(source_event_id, "memory_source")
+            receipt = await self._store.aget(receipt_ns, receipt_key)
+            if receipt is not None and receipt.value.get("memory_id") != key:
+                raise ValueError("同一来源事件不能改写为不同经验")
+            if receipt is None:
+                await self._store.aput(
+                    receipt_ns,
+                    receipt_key,
+                    {
+                        "memory_id": key,
+                        "source_event_id": source_event_id,
+                        "source_run_id": str(source_run_id) if source_run_id else None,
+                        "source_artifact_ids": list(source_artifact_ids or []),
+                        "applicable_conditions": applicable_conditions,
+                        "invalid_conditions": invalid_conditions,
+                        "note": "来源事件收据保留原参数，不以候选聚合索引替代全部来源。",
+                    },
+                )
         existing = await self._store.aget(namespace, key)
 
         if existing is not None:
             current = dict(existing.value)
+            source_events = list(current.get("source_event_ids") or [])
+            if source_event_id and source_event_id in source_events:
+                return current
             current.update(
                 {
                     "source_artifact_ids": sorted(
@@ -124,6 +165,8 @@ class MemoryStore:
                     "updated_at": datetime.now(UTC).isoformat(),
                 }
             )
+            if source_event_id:
+                current["source_event_ids"] = [*source_events, source_event_id]
             await self._store.aput(namespace, key, current)
             return current
 
@@ -160,6 +203,9 @@ class MemoryStore:
                 "conflicts_with": [item.get("memory_id") for item in conflicts],
                 "note": "同一主体存在内容不同的已验证条目；新观察保持 candidate，等待复核。",
             }
+        payload["memory_scope"] = memory_scope
+        payload["method_description"] = content if memory_scope == "method" else None
+        payload["source_event_ids"] = [source_event_id] if source_event_id else []
         await self._store.aput(namespace, key, payload)
         return payload
 
@@ -178,7 +224,7 @@ class MemoryStore:
         """
         if not evidence_refs:
             raise ValueError("提升为 verified 需要至少一条可追溯证据引用")
-        namespace = project_namespace(self.owner_id, project_id)
+        namespace = project_namespace(self.owner_id, project_id, self._settings.memory_write_branch)
         key = memory_id_for(content, memory_type)
         existing = await self._store.aget(namespace, key)
         payload = (
@@ -219,7 +265,7 @@ class MemoryStore:
         include_candidates: bool = True,
     ) -> list[dict[str, Any]]:
         """按项目检索。**只检索当前项目命名空间**，不召回其他项目的记忆。"""
-        namespace = project_namespace(self.owner_id, project_id)
+        namespace = project_namespace(self.owner_id, project_id, self._settings.memory_read_branch)
         items = await self._store.asearch(namespace, query=query, limit=max(1, min(limit, 50)))
         results: list[dict[str, Any]] = []
         now = datetime.now(UTC)
@@ -238,15 +284,76 @@ class MemoryStore:
             results.append(payload)
         return results
 
-    async def list_methods(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        namespace = methods_namespace(self.owner_id)
+    async def list_methods(
+        self, *, limit: int = 50, query: str | None = None
+    ) -> list[dict[str, Any]]:
+        namespace = methods_namespace(self.owner_id, self._settings.memory_read_branch)
         items = await self._store.asearch(namespace, limit=max(1, min(limit, 50)))
-        return [dict(item.value) for item in items]
+        return [
+            dict(item.value)
+            for item in items
+            if not query or query.casefold() in str(item.value.get("content") or "").casefold()
+        ]
+
+    async def record_usage(
+        self,
+        *,
+        memory_id: str,
+        source_event_id: str,
+        source_run_id: UUID,
+        outcome: str,
+        conditions: str,
+        evidence_refs: list[str],
+        project_id: UUID | str | None = None,
+    ) -> dict[str, Any]:
+        """反馈以实际工具使用事件为键，不重放累加成功数，也不自动提升候选。"""
+        if outcome not in {"helpful", "failed", "inapplicable", "uncertain"}:
+            raise ValueError("经验反馈 outcome 非法")
+        if not conditions.strip():
+            raise ValueError("经验反馈必须说明实际条件")
+        namespaces = [methods_namespace(self.owner_id, self._settings.memory_read_branch)]
+        if project_id is not None:
+            namespaces.append(
+                project_namespace(self.owner_id, project_id, self._settings.memory_read_branch)
+            )
+        known = False
+        for namespace in namespaces:
+            if await self._store.aget(namespace, memory_id) is not None:
+                known = True
+                break
+        if not known:
+            raise ValueError("经验 ID 不属于当前可读项目或方法分支")
+        branch = self._settings.memory_write_branch
+        namespace = (
+            (self.owner_id, "trials", branch, "memory_usage")
+            if branch
+            else (self.owner_id, "memory_usage")
+        )
+        key = memory_id_for(source_event_id, "usage_event")
+        payload = {
+            "memory_id": memory_id,
+            "source_event_id": source_event_id,
+            "source_run_id": str(source_run_id),
+            "outcome": outcome,
+            "conditions": conditions,
+            "source_artifact_ids": list(evidence_refs),
+        }
+        existing = await self._store.aget(namespace, key)
+        if existing is not None:
+            if existing.value != payload:
+                raise ValueError("同一经验使用事件不能更改反馈")
+            return dict(existing.value)
+        await self._store.aput(namespace, key, payload)
+        return payload
 
 
 def summarize_entry(entry: dict[str, Any]) -> dict[str, Any]:
     return {
         "memory_id": entry.get("memory_id"),
+        "memory_scope": entry.get("memory_scope", "project"),
+        "method_description": entry.get("method_description"),
+        "source_run_id": entry.get("source_run_id"),
+        "source_event_ids": entry.get("source_event_ids") or [],
         "type": entry.get("type"),
         "verified_status": entry.get("verified_status"),
         "content": entry.get("content"),

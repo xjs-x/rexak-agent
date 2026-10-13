@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -12,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_workbench.contracts.enums import ErrorCode, Sensitivity
@@ -34,6 +35,7 @@ from agent_workbench.persistence.tables import (
     CoverageRow,
     FindingRow,
     LeadRow,
+    ObservationRow,
     ReportVersionRow,
     RunRow,
     SessionRow,
@@ -69,7 +71,9 @@ class ReportService:
     def __init__(self, session: AsyncSession) -> None:
         self._s = session
 
-    async def capture(self, session_id: UUID) -> CapturedReport:
+    async def capture(
+        self, session_id: UUID, stage_metadata: dict[str, Any] | None = None
+    ) -> CapturedReport:
         # 串行分配版本；报告正文只使用本次捕获的字段和修订号。
         target = (
             await self._s.execute(
@@ -78,6 +82,32 @@ class ReportService:
         ).scalar_one_or_none()
         if target is None:
             raise ApiError(ErrorCode.NOT_FOUND, f"session 不存在：{session_id}")
+        if stage_metadata and stage_metadata.get("stage_key"):
+            existing = (
+                await self._s.execute(
+                    select(ReportVersionRow)
+                    .where(
+                        ReportVersionRow.session_id == session_id,
+                        ReportVersionRow.input_data_revision["stage_key"].astext
+                        == str(stage_metadata["stage_key"]),
+                    )
+                    .order_by(ReportVersionRow.version.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if existing is not None and existing.captured_snapshot is not None:
+                saved = existing.captured_snapshot
+                if existing.generation_status == "failed":
+                    existing.generation_status = "pending"
+                return CapturedReport(
+                    existing.id,
+                    session_id,
+                    existing.version,
+                    existing.run_id,
+                    saved["body"],
+                    tuple((UUID(item[0]), item[1], item[2]) for item in saved["artifacts"]),
+                    {UUID(key): value for key, value in saved["finding_revisions"].items()},
+                )
 
         previous = (
             await self._s.execute(
@@ -171,6 +201,40 @@ class ReportService:
             finding_revisions[finding.id] = finding.revision
 
         checked = sum(row.status in {"checked_negative", "checked_positive"} for row in coverage)
+        observations = (
+            (
+                await self._s.execute(
+                    select(ObservationRow)
+                    .where(ObservationRow.session_id == session_id)
+                    .order_by(ObservationRow.observed_at, ObservationRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        observation_sources: dict[str, list[dict[str, Any]]] = {}
+        for observation in observations:
+            sources = []
+            for ref in observation.artifact_ids:
+                try:
+                    artifact = await self._s.get(ArtifactRow, UUID(ref))
+                except ValueError:
+                    artifact = None
+                usable = (
+                    artifact is not None
+                    and artifact.session_id == session_id
+                    and artifact.availability == "available"
+                    and not artifact.truncated
+                )
+                sources.append(
+                    {
+                        "artifact_id": ref,
+                        "status": "available_at_capture" if usable else "unavailable_or_truncated",
+                    }
+                )
+                if usable and artifact is not None:
+                    protected[artifact.id] = (artifact.id, artifact.relative_key, artifact.sha256)
+            observation_sources[str(observation.id)] = sources
         snapshot = {
             "session_id": str(session_id),
             "version": version,
@@ -192,6 +256,18 @@ class ReportService:
                 for row in leads
                 if row.status not in {"confirmed", "disproved", "blocked"}
             ],
+            "observations": [
+                {
+                    "id": str(row.id),
+                    "summary": redact_text(row.summary),
+                    "artifact_ids": list(row.artifact_ids),
+                    "identity": row.identity_label,
+                    "sources": observation_sources[str(row.id)],
+                    "url": redact_text(row.url or ""),
+                }
+                for row in observations
+            ],
+            "stage": stage_metadata,
         }
         latest_run = runs[-1] if runs else None
         report = ReportVersionRow(
@@ -202,11 +278,19 @@ class ReportService:
             input_data_revision={
                 "findings": {str(row.id): row.revision for row in findings},
                 "coverage": {str(row.id): row.revision for row in coverage},
+                "leads": {str(row.id): row.revision for row in leads},
+                "observations": [str(row.id) for row in observations],
+                "stage_key": stage_metadata.get("stage_key") if stage_metadata else None,
                 "runs": [str(row.id) for row in runs],
             },
             artifact_refs=[str(item) for item in protected],
             generation_status="pending",
             is_historical=True,
+            captured_snapshot={
+                "body": snapshot,
+                "artifacts": [[str(item[0]), item[1], item[2]] for item in protected.values()],
+                "finding_revisions": {str(key): value for key, value in finding_revisions.items()},
+            },
         )
         self._s.add(report)
         await self._s.flush()
@@ -413,6 +497,37 @@ async def create_report_snapshot(
     db: Database,
     store: ArtifactStore,
     session_id: UUID,
+    *,
+    stage_metadata: dict[str, Any] | None = None,
+) -> ReportResult:
+    if not stage_metadata:
+        return await _create_report_snapshot(db, store, session_id)
+    # 专用会话锁防止同一阶段并发渲染；不持业务行锁跨文件 I/O。
+    async with db.session() as lock_session:
+        key = f"stage-report:{session_id}"
+        locked = (
+            await lock_session.execute(
+                text("SELECT pg_try_advisory_lock(hashtextextended(:key, 0))"), {"key": key}
+            )
+        ).scalar_one()
+        if not locked:
+            raise ApiError(ErrorCode.CONFLICT, "阶段报告正在生成，稍后可按原阶段版本重试")
+        try:
+            return await _create_report_snapshot(
+                db, store, session_id, stage_metadata=stage_metadata
+            )
+        finally:
+            await lock_session.execute(
+                text("SELECT pg_advisory_unlock(hashtextextended(:key, 0))"), {"key": key}
+            )
+
+
+async def _create_report_snapshot(
+    db: Database,
+    store: ArtifactStore,
+    session_id: UUID,
+    *,
+    stage_metadata: dict[str, Any] | None = None,
 ) -> ReportResult:
     spans = SpanRecorder()
     span = spans.start("report.generate", session_id=session_id)
@@ -421,7 +536,22 @@ async def create_report_snapshot(
     try:
         with _report_stage(spans, "report.capture", session_id) as stage:
             async with db.transaction() as session:
-                captured = await ReportService(session).capture(session_id)
+                captured = await ReportService(session).capture(session_id, stage_metadata)
+                existing = await session.get(ReportVersionRow, captured.report_id)
+                if (
+                    existing is not None
+                    and existing.generation_status == "completed"
+                    and existing.markdown_artifact_id
+                    and existing.html_artifact_id
+                ):
+                    outcome = "completed"
+                    return ReportResult(
+                        existing.version,
+                        existing.markdown_artifact_id,
+                        existing.html_artifact_id,
+                        len(captured.snapshot["confirmed"]),
+                        len(captured.snapshot["candidates"]),
+                    )
             stage.run_id = captured.run_id
         with _report_stage(spans, "report.verify", session_id, captured.run_id):
             for artifact_id, key, sha256 in captured.artifacts:
@@ -495,6 +625,24 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
         "",
     ]
     lines.extend(f"- {_safe_markdown(item)}" for item in snapshot["objectives"])
+    if snapshot.get("stage"):
+        lines.extend(
+            [
+                "",
+                "## 阶段进度与模型解释",
+                "",
+                _safe_markdown(json.dumps(snapshot["stage"], ensure_ascii=False)),
+                "",
+            ]
+        )
+    if snapshot.get("observations"):
+        lines.extend(["", "## 关键观察与来源", ""])
+        for observation in snapshot["observations"]:
+            lines.append(
+                f"- {_safe_markdown(observation['summary'])}；观察 ID `{observation['id']}`；"
+                + "工件："
+                + "、".join(f"`{ref}`" for ref in observation["artifact_ids"])
+            )
     lines.extend(["", "## 已确认发现", ""])
     if not snapshot["confirmed"]:
         lines.extend(["本版本没有满足独立验证与证据校验条件的已确认发现。", ""])

@@ -13,6 +13,7 @@ from sqlalchemy.dialects.postgresql import distinct_on
 from agent_workbench.contracts.enums import ErrorCode
 from agent_workbench.contracts.errors import ApiError
 from agent_workbench.contracts.tool_activity import ToolActivityDetail, ToolActivityPage
+from agent_workbench.evidence.redaction import redact_api_value
 from agent_workbench.observability.tool_activity import visible_text
 from agent_workbench.persistence.bootstrap import open_checkpointer_connection
 from agent_workbench.persistence.db import get_database
@@ -164,11 +165,20 @@ async def activity_detail(
     run_id: UUID,
     tool_call_id: str,
     task: Annotated[Any, Depends(require_task)],
-) -> dict[str, str]:
+) -> dict[str, Any]:
     async with get_database().session() as db:
         run = await db.get(RunRow, run_id)
         if run is None or run.session_id != session_id:
             raise ApiError(ErrorCode.NOT_FOUND, "该任务没有此工具调用")
+        operation = (
+            await db.execute(
+                select(ToolOperationRow).where(
+                    ToolOperationRow.run_id == run_id,
+                    ToolOperationRow.session_id == session_id,
+                    ToolOperationRow.tool_call_id == tool_call_id,
+                )
+            )
+        ).scalar_one_or_none()
         trace = list(
             (
                 await db.execute(
@@ -195,15 +205,10 @@ async def activity_detail(
                 else "参数展示事件已过期",
                 "result_text": end.payload.get("result_text", "") if end else "尚未返回结果",
                 "note": "展示内容已脱敏并限制长度；远端工作状态以执行台账为准。",
+                "execution_context": redact_api_value(operation.execution_context)
+                if operation
+                else None,
             }
-        operation = (
-            await db.execute(
-                select(ToolOperationRow).where(
-                    ToolOperationRow.run_id == run_id,
-                    ToolOperationRow.tool_call_id == tool_call_id,
-                )
-            )
-        ).scalar_one_or_none()
     if operation is None:
         raise ApiError(ErrorCode.NOT_FOUND, "该任务没有此工具调用")
     # 仅展开旧记录时读取官方 checkpoint；不将历史参数复制到另一份可写状态。
@@ -230,4 +235,5 @@ async def activity_detail(
         if result is not None
         else "官方历史中没有可用结果，请结合执行台账。",
         "note": "来自官方 checkpoint 的历史只读展示，已脱敏并限制长度。",
+        "execution_context": redact_api_value(operation.execution_context),
     }

@@ -361,6 +361,7 @@ class ToolOperationRepository:
         policy_revision: int,
         scope_revision: int,
         dispatch_control_version: int | None = None,
+        execution_context: dict[str, Any] | None = None,
         identity_id: UUID | None = None,
     ) -> tuple[ToolOperationRow, bool]:
         """准备一条逻辑操作。
@@ -389,6 +390,7 @@ class ToolOperationRepository:
             policy_revision=policy_revision,
             scope_revision=scope_revision,
             dispatch_control_version=dispatch_control_version,
+            execution_context=execution_context,
             identity_id=identity_id,
             status="accepted",
         )

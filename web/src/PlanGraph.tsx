@@ -14,8 +14,8 @@ export function PlanGraph({ plan, leads }: Props) {
       id: `step:${step.step_id}`,
       position: { x: 20, y: index * 104 },
       sourcePosition: Position.Right,
-      data: { label: `${step.step_id} · ${step.description.slice(0, 55)} (${step.status})` },
-      style: { width: 300, background: "#20314a", color: "#e7f0fb", border: "1px solid #56729a" },
+      data: { label: `${plan.current_focus?.step_id === step.step_id ? "当前焦点 · " : ""}${step.step_id} · ${step.description.slice(0, 55)} (${step.status})` },
+      style: { width: 300, background: "#20314a", color: "#e7f0fb", border: plan.current_focus?.step_id === step.step_id ? "2px solid #63ccb6" : "1px solid #56729a" },
     }));
     const edges: Edge[] = [];
     const leadById = new Map(leads.map((lead) => [lead.id, lead]));
@@ -38,11 +38,26 @@ export function PlanGraph({ plan, leads }: Props) {
     return { nodes, edges };
   }, [plan, leads]);
 
-  if (!nodes.length) return <p className="empty">尚无计划步骤</p>;
-  return <div className="plan-graph" aria-label="计划步骤与关联线索的只读关系图">
+  return <>
+    {plan.current_focus && <div className="tool-detail" aria-label="当前行动焦点">
+      <strong>当前行动：{plan.current_focus.intent}</strong>
+      <p>理由：{plan.current_focus.reason}</p>
+      {plan.current_focus.return_to_step_id && <p>回到步骤：{plan.current_focus.return_to_step_id}</p>}
+    </div>}
+    {nodes.length ? <div className="plan-graph" aria-label="计划步骤与关联线索的只读关系图">
     <ReactFlow nodes={nodes} edges={edges} fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}>
       <Background color="#34465c" gap={20} />
       <Controls showInteractive={false} />
     </ReactFlow>
-  </div>;
+    </div> : <p className="empty">尚无计划步骤</p>}
+    {plan.steps.map(step => <details key={step.step_id} className="tool-section">
+      <summary>{step.step_id} · {step.description} · {step.status}</summary>
+      {step.rationale && <p>行动理由：{step.rationale}</p>}
+      {step.done_when && <p>完成条件：{step.done_when}</p>}
+      {step.resume_note && <p>恢复提示：{step.resume_note}</p>}
+      {(step.evidence_refs ?? []).map(ref => <p key={ref}>
+        <a href={`/api/artifacts/${encodeURIComponent(ref)}?limit=65536`} target="_blank" rel="noreferrer">查看来源 {ref}</a>
+      </p>)}
+    </details>)}
+  </>;
 }

@@ -8,6 +8,8 @@ const titles: Record<string, string> = {
   read_file: "读取文件", write_file: "写入文件", edit_file: "修改文件",
   get_job: "检查后台任务", read_job_output: "读取任务输出", search_memory: "检索记忆",
   update_plan: "更新计划", propose_finding: "记录候选发现", propose_completion: "检查阶段结果",
+  search_history: "检索历史", record_lead: "更新线索", record_observation: "记录观察",
+  propose_memory: "记录经验候选", record_memory_usage: "记录经验使用反馈",
 };
 const states: Record<string, string> = {
   preparing: "正在处理", accepted: "等待结果", received: "已受理", starting: "正在启动",
@@ -75,6 +77,11 @@ export function ToolActivity({ sessionId, item }: { sessionId: string; item: Too
       {loading && <p role="status">正在读取操作详情…</p>}
       {error && <p className="body-error">详情读取失败：{error}</p>}
       {detail && <>
+        {detail.execution_context && <p className="tool-note">
+          派发时关联：步骤 {String(detail.execution_context.step_id ?? "探索")} ·
+          线索 {String(detail.execution_context.lead_id ?? "未关联")} ·
+          计划版本 {String(detail.execution_context.plan_revision ?? "未知")}
+        </p>}
         <details className="tool-section"><summary>调用参数</summary><pre>{detail.request_text}</pre></details>
         <details className="tool-section"><summary>返回结果</summary><pre>{detail.result_text}</pre></details>
         <p className="tool-note">{detail.note}</p>

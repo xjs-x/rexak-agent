@@ -27,6 +27,7 @@ from agent_workbench.persistence.repositories import (
     compute_request_digest,
 )
 from agent_workbench.persistence.tables import ToolOperationRow
+from agent_workbench.tools.execution_context import execution_context
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +89,7 @@ class OperationRegistry:
             policy_revision=policy_revision,
             scope_revision=scope_revision,
             dispatch_control_version=dispatch_control_version,
+            execution_context=execution_context.get(),
             identity_id=identity_id,
         )
         return PreparedOperation(operation_id=row.operation_id, replayed=False, row=row)

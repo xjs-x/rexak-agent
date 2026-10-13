@@ -67,6 +67,7 @@ export interface LeadItem {
   hypothesis: string;
   status: string;
   priority: number;
+  merged_into_id?: string | null;
   blocked_reason: string | null;
   next_action?: string | null;
   evidence_refs?: string[];

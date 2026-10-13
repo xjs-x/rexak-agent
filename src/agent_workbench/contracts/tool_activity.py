@@ -1,6 +1,7 @@
 """聊天中的工具操作展示契约。"""
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -28,3 +29,4 @@ class ToolActivityDetail(BaseModel):
     request_text: str
     result_text: str
     note: str
+    execution_context: dict[str, Any] | None = None

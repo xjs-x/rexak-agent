@@ -118,11 +118,15 @@ class Toolbox:
     control_check: Any = None
     #: 最近一次上下文装配的 manifest（只读投影，供诊断导出与复盘）
     context_manifest: dict[str, Any] | None = None
+    working_context: dict[str, Any] | None = None
     _stats: dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
     def bump(self, name: str) -> int:
         self._stats[name] += 1
         return self._stats[name]
+
+    def reset_segment_work_units(self) -> None:
+        self._stats["segment_work_units"] = 0
 
     @property
     def stats(self) -> dict[str, int]:

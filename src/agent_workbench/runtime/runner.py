@@ -19,12 +19,14 @@ from typing import Any
 from uuid import UUID
 
 from langchain_core.messages import AIMessage
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from openai import APIConnectionError
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.factory import AgentRuntime, open_agent_runtime
+from agent_workbench.agent.middleware.segment import YIELD_REASON, SegmentSchedulingError
 from agent_workbench.agent.signals import (
     FinishGateRejected,
     GraphRunAborted,
@@ -54,6 +56,7 @@ from agent_workbench.execution.tunnel import SshTunnel
 from agent_workbench.observability.events import append_event
 from agent_workbench.observability.logging import get_logger
 from agent_workbench.observability.spans import SpanRecorder
+from agent_workbench.persistence.bootstrap import open_checkpointer_connection
 from agent_workbench.persistence.db import Database, get_database
 from agent_workbench.persistence.tables import RunRow, SessionRow
 from agent_workbench.tools.registry import default_selection
@@ -623,6 +626,7 @@ class AgentRunner:
             return RunOutcome(run_id=run.id, status=RunStatus.FAILED, detail=message)
 
         await self._set_status(run.id, RunStatus.RUNNING, reason="runner_acquired")
+        await self._capture_runtime_source(run, generation)
 
         try:
             await executor.start()
@@ -662,6 +666,8 @@ class AgentRunner:
         status = RunStatus.RUNNING
         detail = ""
         completion_reason: CompletionReason | None = None
+        last_yield_progress: tuple[int, str] | None = None
+        last_stale_version: int | None = None
 
         try:
             from agent_workbench.domain.prices import price_catalog_for_run
@@ -687,9 +693,24 @@ class AgentRunner:
                 segments += 1
                 try:
                     payload = await self._segment_input(runtime, run, session_row, segments)
+                    toolbox.reset_segment_work_units()
                     await self._stream_once(runtime, context, toolbox, session_row, run, payload)
-                    if segments == 1:
-                        await self._acknowledge_input_boundary(run)
+                    await self._acknowledge_input_boundary(run)
+                    yielded = await self._read_segment_yield(runtime, run, session_row)
+                    if yielded is not None:
+                        await self._assert_dispatch_allowed(run.id, self._owner, generation)
+                        progress = (
+                            yielded["completed_decision_rounds"],
+                            yielded["last_completed_model_message_id"],
+                        )
+                        if progress == last_yield_progress:
+                            await asyncio.sleep(0.1)
+                            raise SegmentSchedulingError(
+                                "连续让出未增加完成轮次或模型消息，已停止调度空转"
+                            )
+                        last_yield_progress = progress
+                        await self._emit(run, EventType.SEGMENT_YIELDED, yielded)
+                        continue
                     status_final, reason = await self._resolve_after_segment(
                         runtime, run, session_row, spans
                     )
@@ -730,6 +751,34 @@ class AgentRunner:
                     detail = str(exc)
                     log.info("segment_boundary", run_id=str(run.id), segments=segments)
                     continue
+                except StaleResponseError as exc:
+                    from langgraph.graph import END
+
+                    if last_stale_version == exc.current_version:
+                        await asyncio.sleep(0.1)
+                        status = RunStatus.RECOVERING
+                        detail = "相同控制版本连续阻断，已停止空转；保留 checkpoint 和操作台账"
+                        break
+                    last_stale_version = exc.current_version
+                    await self._assert_dispatch_allowed(run.id, self._owner, generation)
+                    from agent_workbench.agent.checkpoint_boundary import (
+                        finish_interrupted_checkpoint,
+                    )
+
+                    config = {"configurable": {"thread_id": session_row.thread_id}}
+                    _, closures = await finish_interrupted_checkpoint(runtime.graph, config)
+                    if closures:
+                        await runtime.graph.aupdate_state(
+                            config, {"messages": closures}, as_node=END
+                        )
+                    async with self._db.session() as db:
+                        latest = await db.get(RunRow, run.id)
+                    if latest is None:
+                        raise SegmentSchedulingError("控制版本变更后找不到原 run") from exc
+                    run.config_snapshot = dict(latest.config_snapshot)
+                    run.objective = latest.objective
+                    await asyncio.sleep(0.05)
+                    continue
                 except GraphRunAborted as exc:
                     status, completion_reason, detail = await self._handle_abort(run, exc)
                     break
@@ -767,7 +816,14 @@ class AgentRunner:
                 await self._shutdown(tunnel, executor)
 
         await self._finalize(run.id, status, detail=detail, completion_reason=completion_reason)
-        if status is RunStatus.COMPLETED:
+        if status in {
+            RunStatus.COMPLETED,
+            RunStatus.PAUSED,
+            RunStatus.CANCELLED,
+            RunStatus.FAILED,
+            RunStatus.WAITING_USER,
+            RunStatus.WAITING_TOOL,
+        }:
             try:
                 from agent_workbench.memory.extract import distill_completed_run
 
@@ -780,6 +836,30 @@ class AgentRunner:
                     run_id=str(run.id),
                     error=f"{type(exc).__name__}: {exc}",
                 )
+            try:
+                from agent_workbench.agent.middleware.stage_report import stage_metadata
+                from agent_workbench.domain.reports import create_report_snapshot
+                from agent_workbench.evidence.artifacts import ArtifactStore
+
+                async with open_checkpointer_connection(settings) as connection:
+                    saved = await AsyncPostgresSaver(connection).aget_tuple(
+                        {"configurable": {"thread_id": session_row.thread_id}}
+                    )
+                values = saved.checkpoint.get("channel_values", {}) if saved is not None else {}
+                checkpoint_id = saved.checkpoint["id"] if saved is not None else "unavailable"
+                metadata = stage_metadata(
+                    values, run_id=str(run.id), trigger=str(status), signature=str(checkpoint_id)
+                )
+                metadata["checkpoint_id"] = checkpoint_id
+                await create_report_snapshot(
+                    self._db, ArtifactStore(settings), run.session_id, stage_metadata=metadata
+                )
+            except Exception as exc:
+                log.warning(
+                    "terminal_stage_report_failed_retryable",
+                    run_id=str(run.id),
+                    error_type=type(exc).__name__,
+                )
         return RunOutcome(
             run_id=run.id,
             status=status,
@@ -787,6 +867,57 @@ class AgentRunner:
             completion_reason=completion_reason,
             segments=segments,
         )
+
+    async def _capture_runtime_source(self, run: RunRow, generation: int) -> None:
+        """在 Runner 接管时记录文件来源，不冒充 run 创建时或已加载字节码的指纹。"""
+        from datetime import UTC, datetime
+
+        from agent_workbench.config.settings import REPO_ROOT
+        from agent_workbench.maintenance.provenance import exporter_fingerprint
+
+        source = await asyncio.to_thread(exporter_fingerprint, REPO_ROOT)
+        captured = {
+            key: source.get(key)
+            for key in (
+                "status",
+                "source_commit",
+                "source_tree_hash",
+                "committed_tree_hash",
+                "lock_hash",
+                "dirty",
+                "hash_method",
+                "hash_scope",
+                "working_tree_consistency",
+                "error_code",
+            )
+        }
+        captured.update(
+            captured_at=datetime.now(UTC).isoformat(),
+            owner_generation=generation,
+            scope="source_files_at_runner_activation_not_creation_or_loaded_bytecode",
+            trial_id=self._settings.experiment_trial_id,
+            group=self._settings.experiment_group,
+            memory_read_branch=self._settings.memory_read_branch,
+            memory_write_branch=self._settings.memory_write_branch,
+        )
+        async with self._db.transaction() as db:
+            current = (
+                await db.execute(select(RunRow).where(RunRow.id == run.id).with_for_update())
+            ).scalar_one()
+            config = dict(current.config_snapshot or {})
+            snapshots = list(config.get("source_read_at_runner_activations") or [])
+            if not any(item.get("owner_generation") == generation for item in snapshots):
+                snapshots.append(captured)
+            config["source_read_at_runner_activations"] = snapshots
+            config.setdefault("runtime_source_fingerprint", captured)
+            current.config_snapshot = config
+            await append_event(
+                db,
+                session_id=run.session_id,
+                run_id=run.id,
+                event_type=EventType.SNAPSHOT_CAPTURED,
+                payload={"scope": captured["scope"], "source": captured},
+            )
 
     def _precheck_configuration(self, run: RunRow) -> tuple[ErrorCode, str] | None:
         """开跑前的必要条件预检。
@@ -859,13 +990,23 @@ class AgentRunner:
                 "checkpoint 读取失败，拒绝重复注入目标；请检查数据库连接与迁移版本"
             ) from exc
 
+        if (
+            values.get("state_schema_version") == 1
+            and type(values.get("state_schema_version")) is int
+        ) or values.get("state_migration"):
+            from agent_workbench.agent.state_migration import ensure_current_checkpoint
+
+            snapshot = await ensure_current_checkpoint(
+                runtime.graph, config, snapshot, self._db, run.session_id
+            )
+            values = snapshot.values
         assert_compatible_state(values)
 
         config_snapshot = getattr(run, "config_snapshot", None) or {}
         marker = config_snapshot.get("restart_checkpoint_on_input")
         replace_old_run = values.get("active_run_id") not in {None, str(run.id)}
         closures = []
-        if values.get("messages") and segment_index == 1 and (marker or replace_old_run):
+        if values.get("messages") and (marker or (segment_index == 1 and replace_old_run)):
             from agent_workbench.agent.checkpoint_boundary import (
                 finish_interrupted_checkpoint,
                 unresolved_tool_messages,
@@ -906,6 +1047,16 @@ class AgentRunner:
                 if values.get("active_run_id") not in {None, str(run.id)}:
                     raise RuntimeError("旧阶段的图仍有待执行节点，拒绝在新阶段重放旧工具")
                 return None
+            if (
+                values.get("active_run_id") == str(run.id)
+                and values.get("segment_yield_reason") == YIELD_REASON
+            ):
+                return {
+                    "messages": [],
+                    "segment_index": int(values.get("segment_index") or 0) + 1,
+                    "segment_completed_rounds": 0,
+                    "segment_yield_reason": None,
+                }
             # 图已到 END：None 不会重新进入模型节点。显式增量输入重新进入
             # 官方图；用户指令仍由 CommandGuard 消费，既保留历史也不重放工具。
             if values.get("active_run_id") == str(run.id):
@@ -955,6 +1106,7 @@ class AgentRunner:
                 updated = dict(row.config_snapshot)
                 updated.pop("restart_checkpoint_on_input", None)
                 row.config_snapshot = updated
+                run.config_snapshot = dict(updated)
 
     # ------------------------------------------------------------------ #
     # 流式执行
@@ -1157,6 +1309,10 @@ class AgentRunner:
                     run_id=str(run.id),
                     error_type=type(exc).__name__,
                 )
+        if decision.decision == "wait_user":
+            return RunStatus.WAITING_USER, None
+        if decision.decision == "wait_tool":
+            return RunStatus.WAITING_TOOL, None
         if not decision.allowed:
             return None, None
 
@@ -1175,6 +1331,36 @@ class AgentRunner:
         async with self._db.session() as session:
             pending = await CommandRepository(session).list_pending(run.session_id)
         return bool(pending)
+
+    async def _read_segment_yield(
+        self, runtime: AgentRuntime, run: RunRow, session_row: SessionRow
+    ) -> dict[str, Any] | None:
+        snapshot = await runtime.graph.aget_state(
+            {"configurable": {"thread_id": session_row.thread_id}}
+        )
+        if snapshot is None:
+            return None
+        values = snapshot.values or {}
+        if not values.get("segment_yield_reason"):
+            return None
+        if values["segment_yield_reason"] != YIELD_REASON or snapshot.next:
+            raise SegmentSchedulingError("片段让出缺少正常 END 边界，拒绝自动接续")
+        if values.get("active_run_id") != str(run.id) or not values.get(
+            "last_completed_model_message_id"
+        ):
+            raise SegmentSchedulingError("片段让出的运行身份或完成消息不一致")
+        if int(values.get("segment_completed_rounds") or 0) < 1:
+            raise SegmentSchedulingError("片段让出没有完成的决策轮次")
+        return {
+            "reason": YIELD_REASON,
+            "checkpoint_id": (getattr(snapshot, "config", None) or {})
+            .get("configurable", {})
+            .get("checkpoint_id"),
+            "segment_index": int(values.get("segment_index") or 0),
+            "completed_decision_rounds": int(values.get("completed_decision_rounds") or 0),
+            "last_completed_model_message_id": str(values["last_completed_model_message_id"]),
+            "scope": "committed_checkpoint",
+        }
 
     # ------------------------------------------------------------------ #
     # 中断与异常
@@ -1285,8 +1471,15 @@ class AgentRunner:
         message = str(exc)
         from agent_workbench.agent.middleware.compaction import CompactionFailed
         from agent_workbench.agent.middleware.model_observer import ModelRequestTimeout
+        from agent_workbench.models.context_budget import ContextBudgetExceeded
 
         if isinstance(exc, ModelRequestTimeout):
+            return RunStatus.RECOVERING, str(exc)
+        if isinstance(exc, ContextBudgetExceeded):
+            await self._fail(run_id, ErrorCode.CONTEXT_OVERFLOW, str(exc))
+            return RunStatus.RECOVERING, str(exc)
+        if isinstance(exc, SegmentSchedulingError):
+            await self._fail(run_id, ErrorCode.INTERNAL_ERROR, str(exc))
             return RunStatus.RECOVERING, str(exc)
         if isinstance(exc, APIConnectionError):
             return (

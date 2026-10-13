@@ -22,7 +22,7 @@ from uuid import UUID
 import typer
 
 from agent_workbench import __version__
-from agent_workbench.config.settings import get_settings
+from agent_workbench.config.settings import REPO_ROOT, get_settings
 from agent_workbench.platform_compat import (
     child_process_env,
     configure_event_loop_policy,
@@ -469,12 +469,23 @@ async def _probe_executor(
 def export_run(
     run_id: Annotated[str, typer.Argument(help="要导出的 run id")],
     output: Annotated[Path | None, typer.Option(help="输出目录")] = None,
+    bundle: Annotated[
+        bool, typer.Option(help="导出同会话的本机私有实验包，包含真实工具工件")
+    ] = False,
+    trial: Annotated[
+        Path | None, typer.Option(help="实验登记 JSON 文件，仅配合 --bundle 使用")
+    ] = None,
 ) -> None:
     """导出运行台账、保留事件、用量与工件完整性；按已知规则脱敏。"""
-    asyncio.run(_export_run(run_id=run_id, output=output))
+    if trial is not None and not bundle:
+        _echo("--trial 必须配合 --bundle 使用")
+        raise typer.Exit(code=2)
+    asyncio.run(_export_run(run_id=run_id, output=output, bundle=bundle, trial=trial))
 
 
-async def _export_run(*, run_id: str, output: Path | None) -> None:
+async def _export_run(
+    *, run_id: str, output: Path | None, bundle: bool = False, trial: Path | None = None
+) -> None:
     from agent_workbench.maintenance.diagnostics import (
         collect_run_diagnostic,
         write_run_diagnostic,
@@ -488,19 +499,87 @@ async def _export_run(*, run_id: str, output: Path | None) -> None:
         raise typer.Exit(code=2) from None
 
     settings = get_settings()
+    registration = None
+    if trial is not None:
+        from pydantic import ValidationError
+
+        from agent_workbench.contracts.experiments import TrialRegistration
+
+        try:
+            registration = TrialRegistration.model_validate_json(trial.read_bytes())
+        except (OSError, ValidationError) as exc:
+            # 校验异常可能包含操作者填入的私有原文，只展示异常类型。
+            _echo(f"实验登记无法读取或不符合协议：{type(exc).__name__}")
+            raise typer.Exit(code=2) from None
     db = get_database()
     await db.start()
     try:
         try:
+            if bundle:
+                from agent_workbench.maintenance.provenance import exporter_fingerprint
+                from agent_workbench.maintenance.run_bundle import export_run_bundle
+
+                target_dir = (
+                    (output or (settings.data_root / "diagnostics")) / str(parsed) / "bundle"
+                )
+                source = await asyncio.to_thread(exporter_fingerprint, REPO_ROOT)
+                out_dir = await export_run_bundle(
+                    db, parsed, target_dir, registration=registration, exporter_source=source
+                )
+                _echo(f"已导出本机私有实验包（包含工具原件）：{out_dir}")
+                return
             payload = await collect_run_diagnostic(db, parsed)
         except LookupError:
             _echo(f"run 不存在：{run_id}")
             raise typer.Exit(code=1) from None
+        except (ValueError, FileExistsError) as exc:
+            _echo(str(exc))
+            raise typer.Exit(code=2) from None
         target_dir = (output or (settings.data_root / "diagnostics")) / str(parsed)
         out_file = await asyncio.to_thread(write_run_diagnostic, target_dir, payload)
         _echo(f"已导出诊断包及 SHA-256 清单：{out_file}")
     finally:
         await db.close()
+
+
+@app.command("verify-bundle")
+def verify_bundle(directory: Annotated[Path, typer.Argument(help="实验包目录")]) -> None:
+    """离线核对实验包；哈希一致不代表目标测试成功。"""
+    from pydantic import ValidationError
+
+    from agent_workbench.maintenance.run_bundle import verify_run_bundle
+
+    try:
+        errors = verify_run_bundle(directory)
+    except (OSError, ValueError, ValidationError) as exc:
+        _echo(f"实验包无法读取：{type(exc).__name__}")
+        raise typer.Exit(code=2) from None
+    if errors:
+        for error in errors:
+            _echo(error)
+        raise typer.Exit(code=1)
+    _echo("实验包大小、SHA-256 与文件清单一致；未判定测试结论。")
+
+
+@app.command("sync-model-observations")
+def sync_model_observations_command() -> None:
+    """将本地待同步模型观察幂等回写台账，不重新调用模型。"""
+
+    async def sync() -> dict[str, Any]:
+        from agent_workbench.models.pending_observations import sync_model_observations
+        from agent_workbench.persistence.db import Database
+
+        database = Database(get_settings())
+        await database.start()
+        try:
+            return await sync_model_observations(database)
+        finally:
+            await database.close()
+
+    result = asyncio.run(sync())
+    _echo(json.dumps(result, ensure_ascii=False))
+    if result["failed"]:
+        raise typer.Exit(code=1)
 
 
 @app.command("backup")
@@ -681,6 +760,49 @@ async def _prune_events(*, days: int, limit: int, apply: bool, session_id: UUID 
 def version() -> None:
     """打印版本。"""
     _echo(f"agent-workbench {__version__}")
+
+
+@app.command("prepare-trial")
+def prepare_trial_command(
+    registration: Annotated[Path, typer.Argument(help="试验登记 JSON")],
+    source_root: Annotated[Path, typer.Option(help="冻结的 B0/V1 checkout")],
+    output: Annotated[Path, typer.Option(help="新的私有试验目录")],
+) -> None:
+    """生成独立数据库、数据根和记忆隔离配置；不自动访问目标。"""
+    from agent_workbench.contracts.experiments import TrialRegistration
+    from agent_workbench.maintenance.experiment_config import prepare_trial
+
+    try:
+        target = prepare_trial(
+            TrialRegistration.model_validate_json(registration.read_bytes()),
+            source_root,
+            output,
+            get_settings(),
+        )
+    except (ValueError, OSError) as exc:
+        _echo(f"试验准备失败：{exc}")
+        raise typer.Exit(code=1) from None
+    _echo(f"试验配置已生成：{target}；请阅读 setup.json 并在启动前加载 load-environment.ps1。")
+
+
+@app.command("analyze-bundle")
+def analyze_bundle_command(
+    paths: Annotated[list[Path], typer.Argument(help="一个或多个完整实验包")],
+    output: Annotated[Path, typer.Option(help="新的离线分析 JSON 文件")],
+) -> None:
+    """核对包并重建工程时间线；实际效果与结论准确性保持未知。"""
+    from agent_workbench.maintenance.experiment_analysis import compare_bundles
+
+    if output.exists():
+        raise typer.BadParameter("分析输出已存在，拒绝覆盖")
+    try:
+        result = compare_bundles(paths)
+    except (OSError, ValueError) as exc:
+        _echo(f"离线分析失败：{exc}")
+        raise typer.Exit(code=1) from None
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _echo(f"离线分析已保存：{output}；工程指标不代表真实测试效果。")
 
 
 def main(argv: list[str] | None = None) -> int:

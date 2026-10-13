@@ -18,10 +18,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 
 from agent_workbench.agent.context import RunContext
+from agent_workbench.agent.context_sources import persist_history
 from agent_workbench.agent.state import AgentGraphState
+from agent_workbench.config.catalog import ProviderProfile
+from agent_workbench.models.context_budget import ensure_fits, estimate_request, message_inventory
 
 
 class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
@@ -30,32 +33,109 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
     只做**只读投影**：不写第二份会话历史（§4.4）。
     """
 
+    def __init__(self, profile: ProviderProfile | None = None) -> None:
+        super().__init__()
+        self.profile = profile
+
     async def awrap_model_call(self, request, handler):  # type: ignore[no-untyped-def]
         state = request.state or {}
         context = _build_context_block(state)
         runtime: Any = request.runtime
         ctx: RunContext | None = getattr(runtime, "context", None)
+        working = getattr(getattr(ctx, "toolbox", None), "working_context", None)
+        if working is not None:
+            context += "\n\n### 当前只读黑板（领域与执行台账投影）\n" + json.dumps(
+                working, ensure_ascii=False
+            )
         scope = getattr(getattr(ctx, "toolbox", None), "scope", None)
         if scope is not None:
             snapshot = scope.snapshot
-            mode = "按指令运行，用户目标已自动应用" if snapshot.mode == "instruction" else "严格范围模式"
+            mode = (
+                "按指令运行，用户目标已自动应用"
+                if snapshot.mode == "instruction"
+                else "严格范围模式"
+            )
             context += f"\n\n### 当前运行模式\n{mode}\n当前目标规则：" + json.dumps(
                 [rule.model_dump() for rule in snapshot.rules], ensure_ascii=False
             )
-        manifest = _build_manifest(state, request.messages, context)
+        base_system = request.system_message
+        system_text = base_system.content if base_system is not None else ""
+        merged = SystemMessage(
+            content=[*system_text, {"type": "text", "text": context}]
+            if isinstance(system_text, list)
+            else f"{system_text}\n\n{context}"
+            if system_text
+            else context
+        )
+        selected = list(request.messages)
+        replacements = []
+        profile = self.profile
+        budget = None
+        if profile is not None:
+
+            def estimate():
+                return estimate_request(
+                    selected,
+                    merged,
+                    request.tools,
+                    profile,
+                    model=request.model,
+                    model_settings=request.model_settings,
+                    tool_choice=request.tool_choice,
+                )
+
+            budget = estimate()
+            if ctx is not None and budget.estimated_input_tokens > budget.allowed_input_tokens:
+                for index, message in enumerate(selected):
+                    if not isinstance(message, ToolMessage) or len(str(message.content)) < 512:
+                        continue
+                    source = await persist_history(ctx.toolbox, [message])
+                    selected[index] = message.model_copy(
+                        update={
+                            "content": f"工具正文已归档；通过 read_artifact 读取 artifact_id={source['artifact_id']}。该引用是正常可见脱敏来源，原始测试工件仍以操作台账为准。",
+                            "additional_kwargs": {
+                                **message.additional_kwargs,
+                                "source_artifact_id": source["artifact_id"],
+                            },
+                        }
+                    )
+                    replacements.append(
+                        {
+                            "message_id": message.id,
+                            "source_artifact_id": source["artifact_id"],
+                            "reason": "tool_content_archived_for_request_budget",
+                            "original_content_chars": len(str(message.content)),
+                        }
+                    )
+                    budget = estimate()
+                    if budget.estimated_input_tokens <= budget.allowed_input_tokens:
+                        break
+            ensure_fits(budget)
+        manifest = _build_manifest(state, selected, str(merged.content))
+        manifest.update(
+            manifest_version=2,
+            selected_messages=message_inventory(selected),
+            replacements=replacements,
+            context_projection=context,
+            system_message_chars=len(str(merged.content)),
+            working_context=working,
+        )
+        if budget is not None:
+            manifest["budget"] = budget.to_dict()
+            manifest.update(
+                estimated_tokens=budget.components,
+                total_estimated_tokens=budget.estimated_input_tokens,
+                token_estimation_method=budget.estimation_method,
+            )
         if scope is not None:
             manifest["source_versions"].update(
                 scope_revision=scope.revision, scope_mode=scope.snapshot.mode
             )
 
-        base_system = request.system_message
-        system_text = (base_system.content if base_system is not None else "") or ""
-        merged = SystemMessage(content=f"{system_text}\n\n{context}" if system_text else context)
-
         if ctx is not None:
             ctx.toolbox.context_manifest = manifest
 
-        updated = request.override(system_message=merged)
+        updated = request.override(system_message=merged, messages=selected)
         return await handler(updated)
 
 
@@ -76,7 +156,6 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
     active_leads = state.get("active_lead_ids") or []
     pending_jobs = state.get("pending_job_ids") or []
     pending_jobs_count = int(state.get("pending_job_count") or len(pending_jobs))
-    no_progress_streak = int(state.get("no_progress_streak") or 0)
 
     lines: list[str] = ["## 当前任务上下文"]
 
@@ -110,7 +189,9 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
 
     if plan:
         lines.append("### 当前计划")
-        for step in plan[:12]:
+        relevant = [step for step in plan if step.get("status") not in {"done", "dropped"}]
+        recent = [step for step in plan if step not in relevant][-3:]
+        for step in (relevant + recent)[:12]:
             lines.append(
                 f"- [{step.get('status')}] {step.get('step_id')}: {step.get('description')}"
                 + (f"（理由：{step['rationale']}）" if step.get("rationale") else "")
@@ -124,12 +205,8 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
             "用 get_job 查询结论。**不要**在等待期间空转重复询问状态。"
         )
 
-    if no_progress_streak >= 3:
-        lines.append(
-            f"### 探索调整提醒\n连续 {no_progress_streak} 轮未增加新的可用证据、入口、"
-            "线索状态或独立验证。请停止重复同一请求，改变测试条件或处理其他线索；"
-            "若已无可继续方向，提交带有覆盖限制的结束提议。工具失败不等于阴性结果。"
-        )
+    if state.get("progress_feedback"):
+        lines.append("### 探索调整提醒\n" + str(state["progress_feedback"]))
 
     lines.append(
         "### 边界提醒\n"
@@ -145,9 +222,7 @@ def _build_manifest(
 ) -> dict[str, Any]:
     parts = {
         "context_block": context_block,
-        "recent_messages": "\n".join(
-            str(getattr(item, "content", ""))[:2000] for item in messages[-20:]
-        ),
+        "selected_messages": "\n".join(str(getattr(item, "content", "")) for item in messages),
     }
     return {
         "manifest_version": 1,
@@ -163,11 +238,7 @@ def _build_manifest(
             "working_context_version": state.get("working_context_version"),
             "summary_version": (state.get("work_summary") or {}).get("summary_version"),
         },
-        "omitted": (
-            []
-            if len(messages) <= 20
-            else [f"更早的 {len(messages) - 20} 条消息未直接注入（由摘要与证据检索覆盖）"]
-        ),
+        "omitted": [],
         "note": (
             "manifest 用于复盘『当时给模型看了什么』；token 数为估算值，不得当作供应商计费口径。"
         ),

@@ -315,6 +315,11 @@ class LeadRow(TimestampMixin, Base):
         nullable=False,
     )
     hypothesis: Mapped[str] = mapped_column(Text, nullable=False)
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.leads.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     asset_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey(f"{APP_SCHEMA}.assets.id", ondelete="SET NULL"),
@@ -333,6 +338,7 @@ class LeadRow(TimestampMixin, Base):
 
     __table_args__ = (
         Index("ix_leads_session_status_priority", "session_id", "status", "priority"),
+        Index("ix_leads_alias", "merged_into_id"),
         CheckConstraint(
             "status NOT IN ('blocked','deferred') OR blocked_reason IS NOT NULL",
             name="lead_status_requires_reason",
@@ -455,6 +461,8 @@ class ToolOperationRow(TimestampMixin, Base):
     scope_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # NULL = 迁移前历史操作，不能推断它是否属于当前方向。
     dispatch_control_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    execution_context: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    result_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     identity_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     job_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="accepted")
@@ -668,6 +676,7 @@ class ReportVersionRow(TimestampMixin, Base):
     run_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     input_data_revision: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    captured_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     artifact_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     generated_by_model_call_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), nullable=True

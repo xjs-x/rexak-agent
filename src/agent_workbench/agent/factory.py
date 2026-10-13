@@ -29,6 +29,9 @@ from agent_workbench.agent.middleware import (
 )
 from agent_workbench.agent.middleware.command_guard import CommandGuardMiddleware
 from agent_workbench.agent.middleware.progress import ProgressMiddleware
+from agent_workbench.agent.middleware.segment import SegmentMiddleware
+from agent_workbench.agent.middleware.stage_report import StageReportMiddleware
+from agent_workbench.agent.middleware.working_context import WorkingContextMiddleware
 from agent_workbench.agent.prompts import PROMPT_VERSION, SYSTEM_PROMPT
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.config.catalog import PriceCatalog, default_price_catalog
@@ -81,6 +84,42 @@ def build_tool_manifest(selection: ToolSelection) -> dict[str, Any]:
     return manifest
 
 
+def build_agent_middleware(
+    model: Any,
+    binding: ModelBinding,
+    settings: Settings,
+    tools: list[Any],
+    price_catalog: PriceCatalog,
+) -> list[Any]:
+    """纯装配函数，捕获请求测试验证 wrap 顺序与最终视图。"""
+    return [
+        CommandGuardMiddleware(),
+        SegmentMiddleware(settings.segment_decision_rounds),
+        ProgressMiddleware(),
+        WorkingContextMiddleware(),
+        StageReportMiddleware(),
+        ContextBuilderMiddleware(binding.profile),
+        ModelObserverMiddleware(
+            price_catalog,
+            request_timeout_seconds=settings.model_request_max_seconds,
+            idle_timeout_seconds=binding.request_timeout_seconds,
+        ),
+        ToolDispatchMiddleware(),
+        build_compaction_middleware(
+            model,
+            max_input_tokens=binding.profile.input_budget_tokens,
+            trigger_fraction=settings.context_trigger_ratio,
+            profile=binding.profile,
+            system_prompt=SYSTEM_PROMPT,
+            tools=tools,
+            request_timeout_seconds=settings.model_request_max_seconds,
+            idle_timeout_seconds=binding.request_timeout_seconds,
+            price_catalog=price_catalog,
+        ),
+        FinishGateMiddleware(),
+    ]
+
+
 @contextlib.asynccontextmanager
 async def open_agent_runtime(
     *,
@@ -111,23 +150,9 @@ async def open_agent_runtime(
 
     model = build_chat_model(binding, secret_store=store_secrets, streaming=True)
     tools = build_tools(chosen)
-    middleware = [
-        CommandGuardMiddleware(),
-        ContextBuilderMiddleware(),
-        ModelObserverMiddleware(
-            price_catalog or default_price_catalog(),
-            request_timeout_seconds=cfg.model_request_max_seconds,
-            idle_timeout_seconds=binding.request_timeout_seconds,
-        ),
-        ToolDispatchMiddleware(),
-        ProgressMiddleware(),
-        build_compaction_middleware(
-            model,
-            max_input_tokens=binding.profile.input_budget_tokens,
-            trigger_fraction=cfg.context_trigger_ratio,
-        ),
-        FinishGateMiddleware(),
-    ]
+    middleware = build_agent_middleware(
+        model, binding, cfg, tools, price_catalog or default_price_catalog()
+    )
 
     async with contextlib.AsyncExitStack() as stack:
         checkpointer_conn = await stack.enter_async_context(open_checkpointer_connection(cfg))

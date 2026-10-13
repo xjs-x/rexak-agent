@@ -17,9 +17,9 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
 #: 状态 schema 版本。升级时必须提供迁移或**明确拒绝恢复**，不能加载不兼容状态（§16.3）。
-CURRENT_STATE_SCHEMA_VERSION = 1
+CURRENT_STATE_SCHEMA_VERSION = 2
 
-StateSchemaVersion = Literal[1]
+StateSchemaVersion = Literal[2]
 
 
 class StateSchemaIncompatibleError(RuntimeError):
@@ -53,6 +53,17 @@ class PlanStep(TypedDict):
     status: Literal["pending", "in_progress", "done", "dropped", "blocked"]
     rationale: str | None
     lead_id: str | None
+    done_when: NotRequired[str | None]
+    resume_note: NotRequired[str | None]
+    evidence_refs: NotRequired[list[str]]
+
+
+class CurrentFocus(TypedDict):
+    step_id: str | None
+    lead_id: str | None
+    intent: str
+    reason: str
+    return_to_step_id: str | None
 
 
 def coalesce_plan(_left: list[PlanStep], right: list[PlanStep]) -> list[PlanStep]:
@@ -80,6 +91,11 @@ class WorkSummary(TypedDict):
     source_message_ids: NotRequired[list[str]]
     summary_text: NotRequired[str]
     previous_summary_text: NotRequired[str]
+    structured_status: NotRequired[str]
+    source_archive_artifact_id: NotRequired[str]
+    summary_artifact_id: NotRequired[str]
+    previous_summary_artifact_id: NotRequired[str | None]
+    previous_summary_text_truncated: NotRequired[bool]
     summary_version: int
 
 
@@ -91,6 +107,7 @@ class CompletionProposal(TypedDict):
     verified_findings: list[str]
     coverage_summary: dict[str, Any]
     remaining_leads: list[str]
+    relevant_lead_ids: NotRequired[list[str]]
     stop_rationale: str
     follow_up_suggestions: list[str]
     missing_conditions: list[str]
@@ -124,10 +141,20 @@ class AgentGraphState(AgentState):
     work_summary: NotRequired[WorkSummary]
     plan: NotRequired[list[PlanStep]]
     plan_revision: NotRequired[int]
+    current_focus: NotRequired[CurrentFocus | None]
+    review_cursor: NotRequired[str | None]
+    last_review_turn: NotRequired[int]
+    last_review_source_signature: NotRequired[str]
+    last_progress_turn: NotRequired[int]
+    last_progress_reminder_turn: NotRequired[int]
+    progress_feedback: NotRequired[str | None]
+    state_migration: NotRequired[dict[str, Any]]
+    report_progress_signature: NotRequired[str]
+    report_retry_key: NotRequired[str | None]
 
     # --- 线索与任务 ---
-    active_lead_ids: NotRequired[Annotated[list[str], merge_unique]]
-    pending_job_ids: NotRequired[Annotated[list[str], merge_unique]]
+    active_lead_ids: NotRequired[list[str]]
+    pending_job_ids: NotRequired[list[str]]
 
     # --- 版本与上下文 ---
     coverage_revision: NotRequired[int]
@@ -145,6 +172,10 @@ class AgentGraphState(AgentState):
 
     # --- 运行边界 ---
     segment_work_units: NotRequired[int]
+    segment_completed_rounds: NotRequired[int]
+    completed_decision_rounds: NotRequired[int]
+    last_completed_model_message_id: NotRequired[str | None]
+    segment_yield_reason: NotRequired[str | None]
     state_schema_version: NotRequired[StateSchemaVersion]
 
 
@@ -178,6 +209,10 @@ def new_graph_state(
         no_progress_streak=0,
         last_progress_signature="",
         segment_work_units=0,
+        segment_completed_rounds=0,
+        completed_decision_rounds=0,
+        last_completed_model_message_id=None,
+        segment_yield_reason=None,
         state_schema_version=CURRENT_STATE_SCHEMA_VERSION,
     )
 
@@ -208,6 +243,8 @@ def next_input_state(
         "no_progress_streak": 0,
         "last_progress_signature": "",
         "segment_work_units": 0,
+        "segment_completed_rounds": 0,
+        "segment_yield_reason": None,
         "state_schema_version": CURRENT_STATE_SCHEMA_VERSION,
     }
 

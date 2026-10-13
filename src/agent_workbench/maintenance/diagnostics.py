@@ -14,6 +14,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select, text
+from sqlalchemy.orm import defer
 
 from agent_workbench import __version__
 from agent_workbench.evidence.artifacts import ArtifactError, ArtifactStore, redact_text
@@ -37,7 +38,7 @@ from agent_workbench.persistence.tables import (
 )
 
 _SECRET_FIELD = re.compile(
-    r"(?i)(password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|csrf|xsrf|private[_-]?key)"
+    r"(?i)(password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|csrf|xsrf|private[_-]?key|reasoning_content|thinking_content|chain_of_thought)"
 )
 _TOKEN_COUNTERS = frozenset(
     {
@@ -47,6 +48,15 @@ _TOKEN_COUNTERS = frozenset(
         "cache_read_tokens",
         "cache_write_tokens",
         "reasoning_tokens",
+        "max_tokens",
+        "max_output_tokens",
+        "max_completion_tokens",
+        "input_budget_tokens",
+        "context_window_tokens",
+        "estimated_input_tokens",
+        "allowed_input_tokens",
+        "total_estimated_tokens",
+        "estimation_error_tokens",
     }
 )
 
@@ -58,6 +68,7 @@ def _safe(value: Any) -> Any:
                 "<redacted>"
                 if _SECRET_FIELD.search(str(key))
                 and str(key) != "first_token_at"
+                and str(key) not in {"token_estimation_method", "token_estimate_is_exact"}
                 and not (str(key) in _TOKEN_COUNTERS and (item is None or type(item) is int))
                 else _safe(item)
             )
@@ -75,13 +86,56 @@ def _safe(value: Any) -> Any:
 
 
 def _record(row: Any, fields: str) -> dict[str, Any]:
-    return _safe({field: getattr(row, field) for field in fields.split()})
+    optional = {"merged_into_id", "execution_context", "result_snapshot", "captured_snapshot"}
+    return _safe(
+        {
+            field: row.__dict__.get(field) if field in optional else getattr(row, field)
+            for field in fields.split()
+        }
+    )
 
 
-async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, Any]:
-    """一致地读取业务台账，分页导出全部保留事件，仅引用本 run 的工件。"""
+async def collect_run_diagnostic(
+    database: Database, run_id: UUID, *, include_session_runs: bool = False
+) -> dict[str, Any]:
+    """一致读取业务台账；实验包可选择导出同会话全部续聊 run。"""
     async with database.session() as session:
         await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
+        database_read_at = (
+            await session.execute(text("SELECT transaction_timestamp()"))
+        ).scalar_one()
+        # B0 原始运行库可直接只读导出，不能为获取新字段先迁移基线数据库。
+        columns = set(
+            (
+                await session.execute(
+                    text(
+                        "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema=:schema"
+                    ),
+                    {"schema": database.settings.app_schema},
+                )
+            ).all()
+        )
+        optional_columns = {
+            ToolOperationRow: ("execution_context", "result_snapshot"),
+            ReportVersionRow: ("captured_snapshot",),
+            LeadRow: ("merged_into_id",),
+        }
+        missing_schema_fields = [
+            f"{model.__tablename__}.{field}"
+            for model, fields in optional_columns.items()
+            for field in fields
+            if (model.__tablename__, field) not in columns
+        ]
+
+        def projection(model: Any):
+            return select(model).options(
+                *[
+                    defer(getattr(model, field))
+                    for field in optional_columns.get(model, ())
+                    if (model.__tablename__, field) not in columns
+                ]
+            )
+
         run = (
             await session.execute(select(RunRow).where(RunRow.id == run_id))
         ).scalar_one_or_none()
@@ -90,12 +144,26 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
         task = (
             await session.execute(select(SessionRow).where(SessionRow.id == run.session_id))
         ).scalar_one()
+        runs = (
+            (
+                await session.execute(
+                    select(RunRow)
+                    .where(RunRow.session_id == run.session_id)
+                    .order_by(RunRow.created_at, RunRow.id)
+                )
+            )
+            .scalars()
+            .all()
+            if include_session_runs
+            else [run]
+        )
+        run_ids = [row.id for row in runs]
         calls = (
             (
                 await session.execute(
                     select(ModelCallRow)
-                    .where(ModelCallRow.run_id == run_id)
-                    .order_by(ModelCallRow.submitted_at)
+                    .where(ModelCallRow.run_id.in_(run_ids))
+                    .order_by(ModelCallRow.submitted_at, ModelCallRow.model_call_id)
                 )
             )
             .scalars()
@@ -104,8 +172,8 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
         operations = (
             (
                 await session.execute(
-                    select(ToolOperationRow)
-                    .where(ToolOperationRow.run_id == run_id)
+                    projection(ToolOperationRow)
+                    .where(ToolOperationRow.run_id.in_(run_ids))
                     .order_by(ToolOperationRow.created_at, ToolOperationRow.operation_id)
                 )
             )
@@ -117,7 +185,7 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
                 await session.execute(
                     select(ToolJobRow)
                     .join(ToolOperationRow, ToolJobRow.job_id == ToolOperationRow.job_id)
-                    .where(ToolOperationRow.run_id == run_id)
+                    .where(ToolOperationRow.run_id.in_(run_ids))
                     .order_by(ToolJobRow.created_at, ToolJobRow.job_id)
                 )
             )
@@ -128,7 +196,11 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
             (
                 await session.execute(
                     select(SpanRow)
-                    .where(SpanRow.run_id == run_id)
+                    .where(
+                        SpanRow.session_id == run.session_id
+                        if include_session_runs
+                        else SpanRow.run_id.in_(run_ids)
+                    )
                     .order_by(SpanRow.started_at, SpanRow.id)
                 )
             )
@@ -138,8 +210,12 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
         reports = (
             (
                 await session.execute(
-                    select(ReportVersionRow)
-                    .where(ReportVersionRow.run_id == run_id)
+                    projection(ReportVersionRow)
+                    .where(
+                        ReportVersionRow.session_id == run.session_id
+                        if include_session_runs
+                        else ReportVersionRow.run_id.in_(run_ids)
+                    )
                     .order_by(ReportVersionRow.version)
                 )
             )
@@ -150,7 +226,11 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
             (
                 await session.execute(
                     select(CommandRow)
-                    .where(CommandRow.run_id == run_id)
+                    .where(
+                        CommandRow.session_id == run.session_id
+                        if include_session_runs
+                        else CommandRow.run_id.in_(run_ids)
+                    )
                     .order_by(CommandRow.created_at, CommandRow.id)
                 )
             )
@@ -161,7 +241,11 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
             (
                 await session.execute(
                     select(ObservationRow)
-                    .where(ObservationRow.source_run_id == run_id)
+                    .where(
+                        ObservationRow.session_id == run.session_id
+                        if include_session_runs
+                        else ObservationRow.source_run_id.in_(run_ids)
+                    )
                     .order_by(ObservationRow.observed_at, ObservationRow.id)
                 )
             )
@@ -174,7 +258,7 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
             (
                 LeadRow,
                 "leads",
-                "id hypothesis status priority blocked_reason resume_condition evidence_refs revision created_at updated_at",
+                "id hypothesis status priority next_action blocked_reason resume_condition evidence_refs merged_into_id revision created_at updated_at",
             ),
             (
                 FindingRow,
@@ -190,7 +274,7 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
             rows = (
                 (
                     await session.execute(
-                        select(model)
+                        projection(model)
                         .where(model.session_id == run.session_id)
                         .order_by(model.created_at, model.id)
                     )
@@ -226,6 +310,17 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
             [reference for operation in operations for reference in operation.result_artifact_ids]
             + [reference for report in reports for reference in report.artifact_refs]
             + [reference for observation in observations for reference in observation.artifact_ids]
+            + (
+                [
+                    reference
+                    for rows in knowledge.values()
+                    for row in rows
+                    for field in ("evidence_refs", "input_evidence_refs", "recheck_evidence_refs")
+                    for reference in row.get(field, [])
+                ]
+                if include_session_runs
+                else []
+            )
         ):
             try:
                 artifact_ids.add(UUID(str(reference)))
@@ -237,23 +332,6 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
                 for identifier in (report.markdown_artifact_id, report.html_artifact_id)
                 if identifier is not None
             )
-        # 按操作归属补齐尚未回写到 result_artifact_ids 的工件元数据。
-        artifacts = (
-            (
-                await session.execute(
-                    select(ArtifactRow)
-                    .where(
-                        ArtifactRow.id.in_(artifact_ids)
-                        | ArtifactRow.source_operation_id.in_(
-                            [operation.operation_id for operation in operations]
-                        )
-                    )
-                    .order_by(ArtifactRow.captured_at, ArtifactRow.id)
-                )
-            )
-            .scalars()
-            .all()
-        )
         events: list[dict[str, Any]] = []
         cursor = 0
         while True:
@@ -261,7 +339,11 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
                 (
                     await session.execute(
                         select(EventRow)
-                        .where(EventRow.run_id == run_id, EventRow.session_seq > cursor)
+                        .where(
+                            EventRow.session_id == run.session_id,
+                            EventRow.session_seq > cursor,
+                            *([] if include_session_runs else [EventRow.run_id == run_id]),
+                        )
                         .order_by(EventRow.session_seq)
                         .limit(500)
                     )
@@ -284,6 +366,71 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
                 events.append(record)
             cursor = batch[-1].session_seq
 
+        request_manifests = []
+        for event in events:
+            if event["type"] == "context.selected" and event["payload"].get("manifest_artifact_id"):
+                reference = event["payload"]["manifest_artifact_id"]
+                try:
+                    artifact_ids.add(UUID(reference))
+                except ValueError:
+                    invalid_refs.append(reference)
+                    continue
+                request_manifests.append(
+                    {
+                        key: event["payload"].get(key)
+                        for key in (
+                            "manifest_artifact_id",
+                            "model_call_id",
+                            "logical_call_id",
+                            "phase",
+                            "status",
+                        )
+                    }
+                )
+        audit_artifacts = []
+        if include_session_runs:
+            audit_artifacts = (
+                (
+                    await session.execute(
+                        select(ArtifactRow).where(
+                            ArtifactRow.session_id == run.session_id,
+                            ArtifactRow.summary.in_(
+                                [
+                                    "最终请求 manifest（无供应商隐藏正文）",
+                                    "可检索对话来源（正常可见脱敏视图）",
+                                ]
+                            ),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            artifact_ids.update(row.id for row in audit_artifacts)
+        # 按操作归属补齐尚未回写到 result_artifact_ids 的工件元数据。
+        artifacts = (
+            (
+                await session.execute(
+                    select(ArtifactRow)
+                    .where(
+                        (
+                            ArtifactRow.id.in_(artifact_ids)
+                            | ArtifactRow.source_operation_id.in_(
+                                [operation.operation_id for operation in operations]
+                            )
+                        )
+                        & (
+                            (ArtifactRow.session_id == run.session_id)
+                            | ArtifactRow.session_id.is_(None)
+                        )
+                    )
+                    .order_by(ArtifactRow.captured_at, ArtifactRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
     store = ArtifactStore(database.settings)
     artifact_records = []
     for artifact in artifacts:
@@ -302,19 +449,40 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
             record["integrity_error"] = type(exc).__name__
         artifact_records.append(record)
 
+    from agent_workbench.models.pending_observations import read_pending_observations
+
+    pending_observations = await asyncio.to_thread(
+        read_pending_observations,
+        database.settings.data_root,
+        {str(identifier) for identifier in run_ids},
+    )
+
     return {
         "schema_version": 2,
         "exported_at": datetime.now(UTC).isoformat(),
         "service_version": __version__,
         "snapshot": {
             "database_consistency": "repeatable_read",
+            "database_read_at": database_read_at.isoformat(),
+            "session_revision": task.revision,
+            "session_event_seq": task.event_seq,
+            "run_scope": "session" if include_session_runs else "run",
             "event_history": "retained_only",
             "artifact_integrity_checked_after_database_snapshot": True,
+            "missing_schema_fields": missing_schema_fields,
+            "schema_compatibility": "read_only_missing_optional_fields_are_null",
         },
         "run": _record(
             run,
             "id session_id status completion_reason objective provider_id model_name code_version prompt_version config_snapshot stop_reason created_at updated_at",
         ),
+        "runs": [
+            _record(
+                row,
+                "id session_id status completion_reason objective provider_id model_name code_version prompt_version config_snapshot stop_reason resumed_from_run_id created_at updated_at",
+            )
+            for row in runs
+        ],
         "session": _record(task, "id project_id thread_id title scope_snapshot policy_snapshot"),
         "session_knowledge": {
             "scope": "current_session_at_export_not_historical_run_result",
@@ -330,14 +498,14 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
         "model_calls": [
             _record(
                 row,
-                "model_call_id logical_call_id retry_index phase provider_id model_name usage_status cost_status cost_amount cost_currency input_tokens output_tokens cache_read_tokens cache_write_tokens reasoning_tokens attempts_observable error_code submitted_at first_token_at completed_at pending_sync response_artifact_id price_snapshot",
+                "model_call_id logical_call_id run_id retry_index phase provider_id model_name usage_status cost_status cost_amount cost_currency input_tokens output_tokens cache_read_tokens cache_write_tokens reasoning_tokens attempts_observable error_code submitted_at first_token_at completed_at pending_sync response_artifact_id price_snapshot",
             )
             for row in calls
         ],
         "operations": [
             _record(
                 row,
-                "operation_id run_id tool_call_id tool_name request_digest effect_class policy_revision scope_revision dispatch_control_version identity_id job_id status result_artifact_ids created_at updated_at",
+                "operation_id run_id tool_call_id tool_name request_digest effect_class policy_revision scope_revision dispatch_control_version execution_context result_snapshot identity_id job_id status result_artifact_ids created_at updated_at",
             )
             for row in operations
         ],
@@ -358,7 +526,7 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
         "reports": [
             _record(
                 row,
-                "id version run_id generation_status markdown_artifact_id html_artifact_id artifact_refs is_historical created_at",
+                "id version run_id generation_status input_data_revision captured_snapshot markdown_artifact_id html_artifact_id artifact_refs is_historical created_at",
             )
             for row in reports
         ],
@@ -372,6 +540,14 @@ async def collect_run_diagnostic(database: Database, run_id: UUID) -> dict[str, 
         ),
         "invalid_artifact_references": _safe(invalid_refs),
         "events": events,
+        "request_manifests": request_manifests,
+        "pending_model_observations": _safe(pending_observations),
+        "audit_artifact_roles": {
+            str(row.id): "request_manifest"
+            if row.summary == "最终请求 manifest（无供应商隐藏正文）"
+            else "conversation_source"
+            for row in audit_artifacts
+        },
         "redaction": "本包按敏感字段与已知文本规则脱敏，不包含工件正文、完整模型请求或 checkpoint；自由文本中的未知凭据不能保证被识别。原件仍保存在本机工件库。已保留事件不代表从未发生历史清理。",
     }
 

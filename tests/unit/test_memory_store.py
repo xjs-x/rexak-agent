@@ -1,16 +1,18 @@
 """跨任务经验的项目隔离、候选状态和同主体冲突。"""
 
-from types import SimpleNamespace
-
 import pytest
 from langgraph.store.memory import InMemoryStore
 
+from agent_workbench.config.settings import Settings
 from agent_workbench.memory.store import MemoryStore
 
 
 @pytest.mark.asyncio
 async def test_conflicting_candidate_cannot_overwrite_verified_project_fact() -> None:
-    store = MemoryStore(InMemoryStore(), SimpleNamespace(owner_id="owner-a"))  # type: ignore[arg-type]
+    store = MemoryStore(
+        InMemoryStore(),
+        Settings(owner_id="owner-a", memory_read_branch=None, memory_write_branch=None),
+    )  # type: ignore[arg-type]
     first = await store.propose(
         project_id="project-a",
         memory_type="endpoint_behavior",

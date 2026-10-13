@@ -40,7 +40,7 @@ async def propose_completion(
         goal_answer: 对用户目标的直接回答。
         stop_rationale: 为什么现在可以结束。
         coverage_summary_json: 覆盖摘要的 JSON 对象字符串，例如
-            `{"checked": 12, "blocked": 3, "gaps": ["..."]}`。
+            `{"checked":12,"unresolved_items":[{"lead_id":"...","disposition":"deferred|outside_goal|not_required","reason":"具体搁置理由"}]}`。
         verified_findings_json: 已确认发现的 JSON 数组字符串（每项含 finding_id 与证据引用）。
         remaining_leads_json: 剩余线索的 JSON 数组字符串（说明为何可以搁置）。
         evidence_refs_json: 关键证据的工件 ID 的 JSON 数组字符串。
@@ -66,13 +66,14 @@ async def propose_completion(
         "coverage_summary": coerce_json_object(coverage_summary_json, "coverage_summary_json"),
         "verified_findings": coerce_str_list(verified_findings_json, "verified_findings_json"),
         "remaining_leads": coerce_str_list(remaining_leads_json, "remaining_leads_json"),
+        "relevant_lead_ids": [runtime.state["current_focus"]["lead_id"]]
+        if (runtime.state.get("current_focus") or {}).get("lead_id")
+        else [],
         "evidence_refs": coerce_str_list(evidence_refs_json, "evidence_refs_json"),
         "follow_up_suggestions": coerce_str_list(
             follow_up_suggestions_json, "follow_up_suggestions_json"
         ),
-        "missing_conditions": coerce_str_list(
-            missing_conditions_json, "missing_conditions_json"
-        ),
+        "missing_conditions": coerce_str_list(missing_conditions_json, "missing_conditions_json"),
         "proposed_at_turn": len(runtime.state.get("messages") or []),
     }
 

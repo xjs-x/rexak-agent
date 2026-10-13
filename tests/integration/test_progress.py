@@ -20,7 +20,7 @@ from agent_workbench.agent.middleware.progress import (
     next_progress_state,
     semantic_progress_signature,
 )
-from agent_workbench.agent.signals import NoProgressBlocked
+from agent_workbench.agent.middleware.segment import SegmentMiddleware
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.contracts.enums import CoverageStatus
 from agent_workbench.domain.findings import CoverageService, FindingService
@@ -70,7 +70,7 @@ async def test_signature_ignores_duplicate_evidence_and_unchanged_coverage(
         )
     async with database.session() as db:
         with_evidence = await semantic_progress_signature(db, session_id)
-    assert with_evidence != baseline
+    assert with_evidence == baseline, "仅工件文件变化不能证明测试知识变化"
 
     async with database.transaction() as db:
         await ArtifactRepository(db).create(
@@ -119,15 +119,14 @@ async def test_signature_ignores_duplicate_evidence_and_unchanged_coverage(
     assert duplicate_negative == negative
 
 
-async def test_streak_warns_then_pauses_at_clean_model_boundary() -> None:
+async def test_streak_does_not_pause_at_clean_model_boundary() -> None:
     first = next_progress_state("", 0, "same")
     assert first["no_progress_streak"] == 0
     repeated = next_progress_state("same", PAUSE_STREAK - 1, "same")
     assert repeated["no_progress_streak"] == PAUSE_STREAK
     changed = next_progress_state("same", PAUSE_STREAK, "new")
     assert changed["no_progress_streak"] == 0
-    with pytest.raises(NoProgressBlocked):
-        await ProgressMiddleware().abefore_model(repeated, None)  # type: ignore[arg-type]
+    assert await ProgressMiddleware().abefore_model(cast(Any, repeated), cast(Any, None)) is None
 
 
 async def test_progress_middleware_persists_in_langgraph_checkpoint(
@@ -156,7 +155,7 @@ async def test_progress_middleware_persists_in_langgraph_checkpoint(
         graph = create_agent(
             model=model,
             tools=[],
-            middleware=[ProgressMiddleware()],
+            middleware=[SegmentMiddleware(4), ProgressMiddleware()],
             state_schema=AgentGraphState,
             context_schema=RunContext,
             checkpointer=AsyncPostgresSaver(connection),
@@ -174,11 +173,9 @@ async def test_progress_middleware_persists_in_langgraph_checkpoint(
             "no_progress_streak": PAUSE_STREAK,
             "last_progress_signature": state2["last_progress_signature"],
         }
-        with pytest.raises(NoProgressBlocked):
-            await graph.ainvoke(
-                blocked,
-                config=RunnableConfig(
-                    configurable={"thread_id": f"progress-blocked-{uuid4().hex}"}
-                ),
-                context=context,
-            )
+        repeated_state = await graph.ainvoke(
+            blocked,
+            config=RunnableConfig(configurable={"thread_id": f"progress-blocked-{uuid4().hex}"}),
+            context=context,
+        )
+        assert repeated_state["messages"][-1].content == "继续分析"
