@@ -104,3 +104,35 @@ def test_manifest_does_not_claim_selected_old_messages_were_omitted():
     manifest = _build_manifest({}, messages, "完整系统视图")
     assert manifest["message_count"] == 30
     assert manifest["omitted"] == []
+
+
+def test_allowed_input_follows_effective_output_limit_and_recovery_limit():
+    base = profile(50000, 1000)
+    assert base.effective_output_limit == 1000
+    assert (
+        estimate_request([HumanMessage(content="x")], None, [], base).allowed_input_tokens
+        == int((50000 - 1000) * 0.9)
+    )
+    # request_output_limit 明确命名后优先于 output_reserve（向后兼容口径）。
+    explicit = base.model_copy(update={"request_output_limit": 2000})
+    assert explicit.effective_output_limit == 2000
+    assert explicit.input_budget_tokens == 48000
+    # 恢复尝试使用更大的输出额度时，输入预算按**实际生效额度**重算。
+    with_recovery = estimate_request(
+        [HumanMessage(content="x")], None, [], base, output_limit=16000
+    )
+    assert with_recovery.output_limit == 16000
+    assert with_recovery.allowed_input_tokens == int((50000 - 16000) * 0.9)
+    # 供应商另有独立最大输入限制时取其较小值。
+    capped = base.model_copy(update={"max_input_tokens": 100})
+    assert estimate_request([HumanMessage(content="x")], None, [], capped).allowed_input_tokens == 100
+
+
+def test_raising_output_limit_reports_budget_shortage_instead_of_truncating_silently():
+    tight = profile(20000, 1000)
+    estimate = estimate_request(
+        [HumanMessage(content="y" * 30000)], None, [], tight, output_limit=19000
+    )
+    assert estimate.allowed_input_tokens < 1000
+    with pytest.raises(ContextBudgetExceeded):
+        ensure_fits(estimate)

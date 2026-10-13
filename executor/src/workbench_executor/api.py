@@ -41,6 +41,12 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from workbench_executor import __version__
+from workbench_executor.http_encoding import (
+    BODY_MODES,
+    BodyConstructionError,
+    FormField,
+    MultipartPart,
+)
 from workbench_executor.ledger import JobRecord, Ledger, OperationConflict
 from workbench_executor.policy import (
     NetworkPolicy,
@@ -105,6 +111,9 @@ class HttpRequestPayload(_Base):
     params: dict[str, Any] | None = None
     body: str | None = None
     json_body: Any | None = None
+    #: 结构化请求体（与 body/json_body 互斥）。边界与编码由执行端统一产生。
+    form_fields: list[FormField] | None = None
+    multipart_parts: list[MultipartPart] | None = None
     identity_id: str = "anonymous"
     max_redirects: int = 10
     #: 是否把原始响应字节保存为工件（由控制端决定是否引用）
@@ -291,6 +300,8 @@ class CapabilitiesResponse(_Base):
     filesystem_available: bool
     network_isolation: str
     capabilities_version: str
+    #: 支持的请求体形态（结构化 form/multipart 需要执行端编码器）。
+    body_modes: list[str] = Field(default_factory=lambda: list(BODY_MODES))
     details: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -501,6 +512,7 @@ async def capabilities() -> CapabilitiesResponse:
         # 首版如实报告 unavailable：仅靠 Python URL 校验不构成隔离（§10）
         network_isolation="unavailable",
         capabilities_version=state.settings.capabilities_version,
+        body_modes=list(BODY_MODES),
         details={
             "platform": env["platform"],
             "pid_start_ticks_supported": env["pid_start_ticks_supported"],
@@ -511,6 +523,7 @@ async def capabilities() -> CapabilitiesResponse:
                 "通用命令模式的无人值守使用要求执行环境级出站约束；当前 network_isolation=unavailable "
                 "因此 command_unattended_allowed=false。",
                 "正则命令黑名单、工作目录与提示词均不构成网络隔离。",
+                "body_modes 声明结构化请求体能力；旧控制端不发送结构化体时行为不变。",
             ],
         },
     )
@@ -780,6 +793,8 @@ async def _run_http_job(
             params=payload.params,
             content=payload.body,
             json_body=payload.json_body,
+            form_fields=[item.model_dump() for item in (payload.form_fields or [])] or None,
+            multipart_parts=[item.model_dump() for item in (payload.multipart_parts or [])] or None,
             max_redirects=payload.max_redirects,
             policy=policy,
             csrf_source_url=payload.csrf_source_url,
@@ -788,6 +803,17 @@ async def _run_http_job(
             csrf_target_name=payload.csrf_target_name,
             verify_tls=payload.verify_tls,
         )
+    except BodyConstructionError as exc:
+        # 构造失败 = 请求**没有**发出；这是本地阶段，不是目标响应。
+        await state.ledger.update(
+            job_id,
+            state="failed",
+            finished_at=datetime.now(UTC).isoformat(),
+            error_code="request_construction_error",
+            error_message=str(exc),
+        )
+        state.emit("job.failed", {"job_id": job_id, "code": "request_construction_error"})
+        return
     except CsrfTokenUnavailable as exc:
         await state.ledger.update(
             job_id,
@@ -838,6 +864,14 @@ async def _run_http_job(
         "elapsed_ms": round(elapsed_ms, 1),
         "tls_verified": response.final_url.startswith("https://") and payload.verify_tls,
         "tls_verification_enabled": payload.verify_tls,
+        # 请求构造事实：request_encoded 只证明本地构造成立，
+        # **不**证明服务端解析成功或测试条件充分。
+        "request_encoding": response.request_encoding,
+        "request_body_bytes": response.request_body_bytes,
+        "request_body_sha256": response.request_body_sha256,
+        "request_body_note": (
+            "本地构造结果；multipart 的 boundary 随机生成，因此该 hash 不参与逻辑请求去重键。"
+        ),
     }
     (job_dir / "response.meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

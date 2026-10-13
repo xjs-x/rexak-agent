@@ -24,10 +24,26 @@ class CurrentFocusRead(BaseModel):
     intent: str
     reason: str
     return_to_step_id: str | None = None
+    #: 焦点来源：模型明确选择 / 由唯一进行中步骤承接。旧 checkpoint 可能缺失。
+    source: Literal["explicit", "plan_inferred"] | None = None
+
+
+class WorkAssessmentRead(BaseModel):
+    """最近一次明确判断的只读投影（解释，不是漏洞事实）。"""
+
+    step_id: str | None = None
+    lead_id: str | None = None
+    changed: str
+    next_action: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    uncertainty: str | None = None
+    source_tool_call_id: str
+    revision: int
 
 
 class PlanRead(BaseModel):
     revision: int
     steps: list[PlanStepRead]
     current_focus: CurrentFocusRead | None = None
+    work_assessment: WorkAssessmentRead | None = None
     source: Literal["langgraph_checkpoint"] = "langgraph_checkpoint"

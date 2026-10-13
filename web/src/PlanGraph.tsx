@@ -42,8 +42,15 @@ export function PlanGraph({ plan, leads }: Props) {
     {plan.current_focus && <div className="tool-detail" aria-label="当前行动焦点">
       <strong>当前行动：{plan.current_focus.intent}</strong>
       <p>理由：{plan.current_focus.reason}</p>
+      <p>焦点来源：{plan.current_focus.source === "plan_inferred" ? "由唯一进行中步骤承接（只说明执行上下文，不证明证据支持该假设）" : "模型明确选择"}</p>
       {plan.current_focus.return_to_step_id && <p>回到步骤：{plan.current_focus.return_to_step_id}</p>}
     </div>}
+    {plan.work_assessment ? <div className="tool-detail" aria-label="最近一次明确判断">
+      <strong>最近判断：{plan.work_assessment.changed}</strong>
+      <p>下一步：{plan.work_assessment.next_action}</p>
+      {plan.work_assessment.uncertainty && <p>不确定性：{plan.work_assessment.uncertainty}</p>}
+      <p>修订：v{plan.work_assessment.revision}（解释，不是漏洞事实）</p>
+    </div> : <p className="empty">尚未记录判断</p>}
     {nodes.length ? <div className="plan-graph" aria-label="计划步骤与关联线索的只读关系图">
     <ReactFlow nodes={nodes} edges={edges} fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}>
       <Background color="#34465c" gap={20} />

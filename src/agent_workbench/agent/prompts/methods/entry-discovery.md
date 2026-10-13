@@ -24,8 +24,19 @@
 - 资产记录写入资产表，附发现来源的证据引用。
 - 覆盖记录用 `not_checked` 起步，明确"资产 / 身份 / 检查类别"。
 
+## 登记入口时的方法归属
+
+- 资产去重键包含 **method 与身份集合**：同一路径的 `GET` 与 `POST` 是两条资产。
+- 登记线索/观察/发现时若带 `url`，系统会按**真实采集操作**的方法与该入口建档。
+  请优先引用工具返回的工件（系统会读取其来源操作），或显式给出 `method`；
+  **只写 URL 而不给方法时不会伪装成已验证的 GET 证据**。
+- 请求体形态四选一：raw(`body`) / json(`json_body_json`) / form(`form_fields_json`) /
+  multipart(`multipart_parts_json`)。form 与 multipart 由执行端统一编码
+  （boundary、CRLF、`Content-Disposition`），**不要**手工拼 multipart 或手写 `Content-Type`。
+
 ## 反模式
 
 - 把扫描器输出当成入口清单。
 - 只记录"发现了一个 URL"却不保存原始响应证据。
 - 在未知认证方式的情况下批量请求需要登录的路径，然后把 302 当阴性结论。
+- 手工拼接 `multipart/form-data` 请求体（换行/boundary 极易写错，用结构化字段）。

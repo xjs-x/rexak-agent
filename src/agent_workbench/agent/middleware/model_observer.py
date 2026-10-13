@@ -8,6 +8,7 @@ from uuid import UUID
 from langchain.agents.middleware import AgentMiddleware
 
 from agent_workbench.agent.context import RunContext
+from agent_workbench.agent.middleware.response_recovery import recovery_scope
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.config.catalog import PriceCatalog, default_price_catalog
 from agent_workbench.models.invocation import InvocationScope, ModelRequestTimeout, invoke_attempt
@@ -38,15 +39,21 @@ class ModelObserverMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         if context is None:
             return await handler(request)
         state = request.state or {}
-        digest = hashlib.sha256(
-            str(getattr(request.system_message, "content", "") or "").encode("utf-8")
-        ).hexdigest()[:16]
-        logical_id = logical_call_id_for(
-            run_id=context.toolbox.run_id,
-            segment_index=int(state.get("segment_index") or 0),
-            message_count=len(request.messages),
-            system_prompt_digest=digest,
-        )
+        # 恢复周期内复用同一 logical_call_id：同一待执行模型决策的多次网络尝试
+        # 共用逻辑身份，重试次数、用量、成本与截断原因分别记录（§3.4）。
+        scope = recovery_scope.get()
+        if scope is not None:
+            logical_id = scope.logical_call_id
+        else:
+            digest = hashlib.sha256(
+                str(getattr(request.system_message, "content", "") or "").encode("utf-8")
+            ).hexdigest()[:16]
+            logical_id = logical_call_id_for(
+                run_id=context.toolbox.run_id,
+                segment_index=int(state.get("segment_index") or 0),
+                message_count=len(request.messages),
+                system_prompt_digest=digest,
+            )
         return await invoke_attempt(
             lambda: handler(request),
             scope=InvocationScope(context.toolbox, context.model_stream),

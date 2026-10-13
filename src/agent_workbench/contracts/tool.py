@@ -188,6 +188,9 @@ class ExecutorCapabilities(_Base):
     filesystem_available: bool = True
     network_isolation: str = "unavailable"
     capabilities_version: str = "1"
+    #: 执行岛支持的请求体形态。旧端未声明时按"已有模式 raw/json"处理，
+    #: 控制端在调用前检查；不支持时明确返回能力不足，**不悄悄降级构造**（§6.2）。
+    body_modes: list[str] = Field(default_factory=lambda: ["raw", "json"])
 
 
 class ExecutorHealth(_Base):

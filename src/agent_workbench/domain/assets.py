@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_workbench.domain.scope import parse_target
@@ -37,35 +37,25 @@ async def record_asset(
 ) -> tuple[AssetRow, bool]:
     """登记一个入口。返回 `(row, created)`。
 
+    **原子 upsert**（§4.1）：使用 PostgreSQL `INSERT ... ON CONFLICT DO UPDATE`，
+    继续以 `uq_assets_endpoint_identity` 为去重键（仍包含 method 与身份集合）。
+
+    行为约束：
+    - 冲突时**只更新** `last_seen_at`（取较大值）与缺失的 `source_artifact_id`；
+      不覆盖已有 `first_seen_at`、来源、备注与其他领域内容；
+    - **不自行 rollback 外层事务**：业务函数不是事务拥有者，失败由事务拥有者处理；
+      因此并行工具同时登记同一入口时，一个失败不会撤销另一个已提交的观察；
+    - `created` 由"本次预生成 UUID 与返回 UUID 是否相等"判定，不依赖未约定的内部字段。
+
     `path` 使用**保留查询参数**的形态；重复参数与编码差异保留在原始工件里。
     """
     target = parse_target(url)
     key = identity_key(identity_ids or [])
     now = datetime.now(UTC)
-
-    existing = (
-        await session.execute(
-            select(AssetRow).where(
-                AssetRow.session_id == session_id,
-                AssetRow.scheme == target.scheme,
-                AssetRow.host == target.host,
-                AssetRow.port == target.port,
-                AssetRow.path == target.path,
-                AssetRow.method == method.upper(),
-                AssetRow.identity_key == key,
-            )
-        )
-    ).scalar_one_or_none()
-
-    if existing is not None:
-        existing.last_seen_at = now
-        if source_artifact_id is not None:
-            existing.source_artifact_id = existing.source_artifact_id or source_artifact_id
-        await session.flush()
-        return existing, False
-
-    row = AssetRow(
-        id=uuid4(),
+    new_id = uuid4()
+    table = cast(Any, AssetRow.__table__)
+    stmt = pg_insert(table).values(
+        id=new_id,
         session_id=session_id,
         scheme=target.scheme,
         host=target.host,
@@ -80,13 +70,21 @@ async def record_asset(
         identity_key=key,
         notes=notes,
     )
-    session.add(row)
-    try:
-        await session.flush()
-    except IntegrityError:
-        await session.rollback()
-        raise
-    return row, True
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_assets_endpoint_identity",
+        set_={
+            "last_seen_at": func.greatest(AssetRow.last_seen_at, stmt.excluded.last_seen_at),
+            "source_artifact_id": func.coalesce(
+                AssetRow.source_artifact_id, stmt.excluded.source_artifact_id
+            ),
+        },
+    ).returning(table.c.id)
+    returned_id = (await session.execute(stmt)).scalar_one()
+    # 刷新 identity map：冲突分支可能命中已加载对象，必须拿到数据库中的真实值。
+    row = await session.get(AssetRow, returned_id, populate_existing=True)
+    if row is None:  # pragma: no cover - upsert 后必然可见
+        raise RuntimeError("资产 upsert 后无法读回该行")
+    return row, str(returned_id) == str(new_id)
 
 
 def _query_keys(path: str) -> list[str]:

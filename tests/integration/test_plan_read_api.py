@@ -50,6 +50,7 @@ async def test_plan_endpoint_reads_authoritative_checkpoint(
         assert client.get(f"/api/sessions/{session_id}/plan").json() == {
             "revision": 0,
             "current_focus": None,
+            "work_assessment": None,
             "steps": [],
             "source": "langgraph_checkpoint",
         }

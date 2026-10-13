@@ -17,9 +17,14 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
 #: 状态 schema 版本。升级时必须提供迁移或**明确拒绝恢复**，不能加载不兼容状态（§16.3）。
-CURRENT_STATE_SCHEMA_VERSION = 2
+#: v3：增加 `current_focus.source`（explicit | plan_inferred）与 `work_assessment`
+#: （最近一次明确判断）。1→2→3 顺序兼容，不允许跳过迁移。
+CURRENT_STATE_SCHEMA_VERSION = 3
 
-StateSchemaVersion = Literal[2]
+StateSchemaVersion = Literal[3]
+
+#: 可迁移到当前版本的旧版本（由 `state_migration` 提供显式适配）。
+MIGRATABLE_STATE_SCHEMA_VERSIONS = (1, 2)
 
 
 class StateSchemaIncompatibleError(RuntimeError):
@@ -64,6 +69,31 @@ class CurrentFocus(TypedDict):
     intent: str
     reason: str
     return_to_step_id: str | None
+    #: 焦点来源：模型明确选择 / 由唯一进行中步骤承接。自动推导不伪造模型判断。
+    source: NotRequired[Literal["explicit", "plan_inferred"]]
+
+
+class WorkAssessment(TypedDict):
+    """**最近一次明确判断**（§5.1）。
+
+    历史由消息、领域来源与阶段报告保存，**不在** checkpoint 无限追加日志。
+    保存的是"解释"而不是漏洞事实；只读黑板和报告只做投影。
+    """
+
+    step_id: str | None
+    lead_id: str | None
+    #: 这次结果改变了什么
+    changed: str
+    #: 下一步准备消除哪个不确定性
+    next_action: str
+    #: 已有来源引用；纯计划调整可为空
+    evidence_refs: list[str]
+    #: 未测到、条件不成立、假设受反证等
+    uncertainty: str | None
+    #: 程序注入：产生这次判断的工具调用
+    source_tool_call_id: str
+    #: 程序维护的修订号
+    revision: int
 
 
 def coalesce_plan(_left: list[PlanStep], right: list[PlanStep]) -> list[PlanStep]:
@@ -142,12 +172,18 @@ class AgentGraphState(AgentState):
     plan: NotRequired[list[PlanStep]]
     plan_revision: NotRequired[int]
     current_focus: NotRequired[CurrentFocus | None]
+    #: 最近一次明确判断（解释，不是漏洞事实）。
+    work_assessment: NotRequired[WorkAssessment | None]
     review_cursor: NotRequired[str | None]
     last_review_turn: NotRequired[int]
     last_review_source_signature: NotRequired[str]
     last_progress_turn: NotRequired[int]
     last_progress_reminder_turn: NotRequired[int]
     progress_feedback: NotRequired[str | None]
+    #: 相似结果连续回合数（**不是**"已证实的无进展"），只影响提醒节奏。
+    similar_result_streak: NotRequired[int]
+    last_similar_signature: NotRequired[str]
+    last_similar_reminder_turn: NotRequired[int]
     state_migration: NotRequired[dict[str, Any]]
     report_progress_signature: NotRequired[str]
     report_retry_key: NotRequired[str | None]
@@ -199,6 +235,8 @@ def new_graph_state(
         user_constraints=list(user_constraints or []),
         plan=[],
         plan_revision=0,
+        current_focus=None,
+        work_assessment=None,
         active_lead_ids=[],
         pending_job_ids=[],
         coverage_revision=0,
@@ -208,6 +246,8 @@ def new_graph_state(
         finish_gate_attempts=0,
         no_progress_streak=0,
         last_progress_signature="",
+        similar_result_streak=0,
+        last_similar_signature="",
         segment_work_units=0,
         segment_completed_rounds=0,
         completed_decision_rounds=0,
@@ -242,6 +282,8 @@ def next_input_state(
         "pending_job_ids": [],
         "no_progress_streak": 0,
         "last_progress_signature": "",
+        "similar_result_streak": 0,
+        "last_similar_signature": "",
         "segment_work_units": 0,
         "segment_completed_rounds": 0,
         "segment_yield_reason": None,
@@ -251,11 +293,14 @@ def next_input_state(
 
 __all__ = [
     "CURRENT_STATE_SCHEMA_VERSION",
+    "MIGRATABLE_STATE_SCHEMA_VERSIONS",
     "AgentGraphState",
     "CompletionProposal",
+    "CurrentFocus",
     "PlanStep",
     "StateSchemaIncompatibleError",
     "StateSchemaVersion",
+    "WorkAssessment",
     "WorkSummary",
     "assert_compatible_state",
     "coalesce_plan",

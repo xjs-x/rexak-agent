@@ -268,6 +268,12 @@ class ReportService:
                 for row in observations
             ],
             "stage": stage_metadata,
+            "stage_coverage": _stage_coverage(
+                stage_metadata,
+                observations_last=str(observations[-1].id) if observations else None,
+                findings_last=str(findings[-1].id) if findings else None,
+                leads_last=str(leads[-1].id) if leads else None,
+            ),
         }
         latest_run = runs[-1] if runs else None
         report = ReportVersionRow(
@@ -613,6 +619,37 @@ def _safe_markdown(value: str) -> str:
     return _MARKDOWN_META.sub(r"\\\1", html.escape(value, quote=False))
 
 
+def _stage_coverage(
+    stage_metadata: dict[str, Any] | None,
+    *,
+    observations_last: str | None,
+    findings_last: str | None,
+    leads_last: str | None,
+) -> dict[str, Any]:
+    """区分"生成时间"与"覆盖到的位置"，并标示跨来源读取到的新记录（§8.2）。"""
+    covered = (stage_metadata or {}).get("covered_position") or {}
+    claimed = covered.get("latest_domain_records") or {}
+    newer: list[str] = []
+    if claimed:
+        if observations_last and str(claimed.get("observations")) != observations_last:
+            newer.append("observations")
+        if findings_last and str(claimed.get("findings")) != findings_last:
+            newer.append("findings")
+        if leads_last and str(claimed.get("leads")) != leads_last:
+            newer.append("leads")
+    return {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "covered_position": covered or None,
+        "atomic_with_domain": False,
+        "newer_domain_records_present": bool(newer),
+        "newer_domains": newer,
+        "note": (
+            "生成时间与覆盖位置不同：图与业务数据库不在同一事务，"
+            "本快照不是同一时刻的原子截图。跨来源读取出现较新领域记录时会在此标示。"
+        ),
+    }
+
+
 def render_markdown(snapshot: dict[str, Any]) -> str:
     lines = [
         f"# {_safe_markdown(snapshot['title'])} · 报告 v{snapshot['version']}",
@@ -625,15 +662,61 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
         "",
     ]
     lines.extend(f"- {_safe_markdown(item)}" for item in snapshot["objectives"])
-    if snapshot.get("stage"):
+    stage = snapshot.get("stage")
+    if stage:
+        lines.extend(["", "## 阶段进度与当前判断", ""])
+        focus = stage.get("current_focus_summary") or {}
+        lines.append(
+            f"- 当前处理：{_safe_markdown(str(focus.get('intent') or '未记录'))}"
+            + (f"（步骤 {focus.get('step_id')}，来源 {focus.get('source')}）" if focus.get("step_id") else "")
+        )
+        assessment = stage.get("work_assessment") or {}
+        if assessment:
+            lines.append(f"- 这次结果改变了什么：{_safe_markdown(str(assessment.get('changed')))}")
+            lines.append(f"- 下一步：{_safe_markdown(str(assessment.get('next_action')))}")
+            if assessment.get("uncertainty"):
+                lines.append(f"- 不确定性：{_safe_markdown(str(assessment['uncertainty']))}")
+            lines.append(
+                f"- 判断来源：工具调用 {assessment.get('source_tool_call_id')}"
+                f"（第 {assessment.get('revision')} 版）"
+            )
+        else:
+            # 不能由模板自动补成"环境无漏洞"或"已充分覆盖"。
+            lines.append("- 尚未记录判断：本阶段没有留下结构化判断，不能据此推断结论。")
+        raw_steps = [
+            step for step in (stage.get("goal_progress") or []) if isinstance(step, dict)
+        ]
+        steps = [step for step in raw_steps if step.get("status") not in {"done", "dropped"}]
+        if steps:
+            lines.append("- 当前计划（未完成）：")
+            lines.extend(
+                f"  - [{step.get('status')}] {step.get('step_id')}: {step.get('description')}"
+                for step in steps[:12]
+            )
+        open_steps = [step for step in raw_steps if step.get("status") == "blocked"]
+        if open_steps:
+            lines.append("- 未决问题（受阻步骤）：")
+            lines.extend(
+                f"  - {step.get('step_id')}: {step.get('rationale') or step.get('description')}"
+                for step in open_steps[:8]
+            )
+        lines.append(f"- 触发原因：{stage.get('trigger')}")
+        coverage = snapshot.get("stage_coverage") or {}
+        covered = coverage.get("covered_position") or {}
+        lines.append(f"- 快照生成时间：{coverage.get('generated_at')}")
+        lines.append(
+            "- 覆盖到的位置："
+            + _safe_markdown(json.dumps(covered, ensure_ascii=False))
+            + "。恢复点即该 checkpoint 位置；此后的事件不在本次快照内。"
+        )
+        if coverage.get("newer_domain_records_present"):
+            lines.append(
+                "- **注意**：捕获期间读取到比快照更新的领域记录："
+                + "、".join(coverage.get("newer_domains") or [])
+                + "。本快照不是同一时刻的原子截图。"
+            )
         lines.extend(
-            [
-                "",
-                "## 阶段进度与模型解释",
-                "",
-                _safe_markdown(json.dumps(snapshot["stage"], ensure_ascii=False)),
-                "",
-            ]
+            ["", "阶段原始元数据（脱敏）：", "", _safe_markdown(json.dumps(stage, ensure_ascii=False)), ""]
         )
     if snapshot.get("observations"):
         lines.extend(["", "## 关键观察与来源", ""])

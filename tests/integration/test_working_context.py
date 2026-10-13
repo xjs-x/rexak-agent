@@ -254,7 +254,7 @@ async def test_official_v1_migration_keeps_messages_plan_sources_and_pending_nod
         snapshot = await ensure_current_checkpoint(
             graph, config, old, database, context.toolbox.session_id
         )
-        assert snapshot.values["state_schema_version"] == 2
+        assert snapshot.values["state_schema_version"] == 3
         assert snapshot.next == old.next
         assert snapshot.values["plan"] == old.values["plan"]
         assert snapshot.values["work_summary"] == old.values["work_summary"]

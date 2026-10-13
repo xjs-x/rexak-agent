@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # ---------- 上下文与并发（可调资源初值）----------
     context_trigger_ratio: float = 0.6
     output_reserve_tokens: int = 8192
+    #: 恢复尝试时可用的更大输出额度。**默认不提高**（None 表示沿用请求额度）。
+    #: 8,192 -> 16,384 只是一个待实验的配置组合，不是任何供应商的默认或最佳值。
+    recovery_output_limit_tokens: int | None = None
+    #: 单次逻辑模型决策允许的自动恢复次数（初次请求之外），不是任务尝试总数限制。
+    max_response_recoveries: int = Field(default=2, ge=0, le=8)
     tool_max_concurrent: int = 4
     origin_max_concurrent: int = 2
     browser_write_max_concurrent: int = 1

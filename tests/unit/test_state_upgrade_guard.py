@@ -22,12 +22,14 @@ from agent_workbench.runtime.runner import AgentRunner
 
 def test_state_schema_requires_an_explicit_version() -> None:
     assert_compatible_state({})
-    assert_compatible_state({"state_schema_version": 2, "messages": ["已保存"]})
+    assert_compatible_state({"state_schema_version": 3, "messages": ["已保存"]})
     for state in (
         {"messages": ["旧状态"]},
         {"state_schema_version": 0, "messages": ["旧状态"]},
-        {"state_schema_version": 3, "messages": ["未来状态"]},
+        {"state_schema_version": 4, "messages": ["未来状态"]},
+        # v1/v2 必须先经过显式迁移，不能直接当当前版本加载。
         {"state_schema_version": 1, "messages": ["尚未适配"]},
+        {"state_schema_version": 2, "messages": ["尚未适配"]},
         {"state_schema_version": True, "messages": ["错误类型"]},
     ):
         with pytest.raises(StateSchemaIncompatibleError, match="拒绝恢复"):

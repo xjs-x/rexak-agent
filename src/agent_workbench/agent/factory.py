@@ -29,6 +29,7 @@ from agent_workbench.agent.middleware import (
 )
 from agent_workbench.agent.middleware.command_guard import CommandGuardMiddleware
 from agent_workbench.agent.middleware.progress import ProgressMiddleware
+from agent_workbench.agent.middleware.response_recovery import ResponseRecoveryMiddleware
 from agent_workbench.agent.middleware.segment import SegmentMiddleware
 from agent_workbench.agent.middleware.stage_report import StageReportMiddleware
 from agent_workbench.agent.middleware.working_context import WorkingContextMiddleware
@@ -91,13 +92,22 @@ def build_agent_middleware(
     tools: list[Any],
     price_catalog: PriceCatalog,
 ) -> list[Any]:
-    """纯装配函数，捕获请求测试验证 wrap 顺序与最终视图。"""
+    """纯装配函数，捕获请求测试验证 wrap 顺序与最终视图。
+
+    模型调用的包装顺序**必须**是：
+    `ResponseRecovery -> ContextBuilder -> ModelObserver -> 官方模型调用`。
+    这样每次恢复尝试都会重新构造发送视图，并由 ModelObserver 独立入账。
+    """
     return [
         CommandGuardMiddleware(),
         SegmentMiddleware(settings.segment_decision_rounds),
         ProgressMiddleware(),
         WorkingContextMiddleware(),
         StageReportMiddleware(),
+        ResponseRecoveryMiddleware(
+            max_recoveries=binding.profile.max_response_recoveries,
+            recovery_output_limit=binding.profile.recovery_output_limit,
+        ),
         ContextBuilderMiddleware(binding.profile),
         ModelObserverMiddleware(
             price_catalog,

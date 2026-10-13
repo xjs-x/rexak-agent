@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import json
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -23,6 +22,13 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import httpx
 
+from workbench_executor.http_encoding import (
+    BodyConstructionError,
+    FormField,
+    MultipartPart,
+    classify_body_mode,
+    encode_request_body,
+)
 from workbench_executor.policy import NetworkPolicy, PolicyDenied
 
 
@@ -58,6 +64,10 @@ class RawResponse:
     elapsed_ms: float
     redirect_chain: list[str] = field(default_factory=list)
     truncated: bool = False
+    #: 请求体的编码事实（本地构造结果，**不**证明服务端解析成功）。
+    request_encoding: str = "none"
+    request_body_bytes: int = 0
+    request_body_sha256: str = ""
 
     @property
     def content_type(self) -> str:
@@ -163,6 +173,8 @@ class HttpSessionRegistry:
         params: dict[str, Any] | None = None,
         content: bytes | str | None = None,
         json_body: Any | None = None,
+        form_fields: list[dict[str, Any]] | None = None,
+        multipart_parts: list[dict[str, Any]] | None = None,
         max_redirects: int = 10,
         max_body_bytes: int = 5 * 1024 * 1024,
         policy: NetworkPolicy | None = None,
@@ -172,12 +184,33 @@ class HttpSessionRegistry:
         csrf_target_name: str | None = None,
         verify_tls: bool = True,
     ) -> RawResponse:
-        """执行一次请求，**逐跳检查重定向范围**。"""
+        """执行一次请求，**逐跳检查重定向范围**。
+
+        请求体由执行端统一编码（§6.2）：form 与 multipart 不再由调用方手拼字符串，
+        因此 boundary、CRLF、`Content-Disposition` 与最终字节长度都是一致的。
+        """
         active_policy = policy or self._policy
         if active_policy is None:
             raise PolicyDenied("HTTP 请求缺少范围策略", target=url)
         if max_body_bytes < 0:
             raise ValueError("响应体上限不能为负数")
+
+        normalized_fields = [FormField.model_validate(item) for item in (form_fields or [])]
+        normalized_parts = [MultipartPart.model_validate(item) for item in (multipart_parts or [])]
+        try:
+            mode = classify_body_mode(
+                body=content if isinstance(content, str) else None,
+                json_body=json_body,
+                form_fields=normalized_fields,
+                multipart_parts=normalized_parts,
+            )
+        except BodyConstructionError:
+            raise
+        if isinstance(content, bytes) and (
+            normalized_fields or normalized_parts or json_body is not None
+        ):
+            raise BodyConstructionError("原始字节请求体不能与结构化请求体同时使用")
+
         # CSRF 刷新前先核对最终写目标，避免越界写请求附带一次不必要的来源 GET。
         active_policy.check(active_policy.resolve_mapping(url)[0])
         if csrf_source_url:
@@ -190,6 +223,8 @@ class HttpSessionRegistry:
                 raise CsrfTokenUnavailable("json 注入需要 JSON 对象请求体")
             if csrf_destination not in {"form", "json", "header"}:
                 raise CsrfTokenUnavailable("不支持的 CSRF 注入位置")
+            if csrf_destination == "form" and mode == "raw":
+                raise CsrfTokenUnavailable("CSRF form 注入不能用于原始字节请求体")
         lock = self._locks.setdefault(identity_id, asyncio.Lock())
         async with lock, self._request_client(identity_id, verify_tls) as client:
             csrf_sensitive_header = ""
@@ -203,6 +238,8 @@ class HttpSessionRegistry:
                     params=None,
                     content=None,
                     json_body=None,
+                    form_fields=None,
+                    multipart_parts=None,
                     max_redirects=max_redirects,
                     max_body_bytes=1_048_576,
                     policy=active_policy,
@@ -220,14 +257,31 @@ class HttpSessionRegistry:
                 target_name = csrf_target_name or csrf_input_name
                 headers = dict(headers or {})
                 if csrf_destination == "form":
-                    pairs = [
-                        (key, value)
-                        for key, value in parse_qsl(str(content or ""))
-                        if key != target_name
-                    ]
-                    content = urlencode([*pairs, (target_name, parser.value)])
-                    if not any(key.lower() == "content-type" for key in headers):
-                        headers["Content-Type"] = "application/x-www-form-urlencoded"
+                    if mode == "form":
+                        # 替换策略明确：同名 token 只保留一个（去掉旧值后追加新值）。
+                        pairs = [
+                            (item.name, item.value)
+                            for item in normalized_fields
+                            if item.name != target_name
+                        ]
+                        pairs.append((target_name, parser.value))
+                        normalized_fields = [FormField(name=name, value=value) for name, value in pairs]
+                    elif mode == "multipart":
+                        normalized_parts = [
+                            item for item in normalized_parts if item.name != target_name
+                        ]
+                        normalized_parts.append(
+                            MultipartPart(name=target_name, value=parser.value)
+                        )
+                    else:
+                        pairs = [
+                            (key, value)
+                            for key, value in parse_qsl(str(content or ""))
+                            if key != target_name
+                        ]
+                        content = urlencode([*pairs, (target_name, parser.value)])
+                        if not any(key.lower() == "content-type" for key in headers):
+                            headers["Content-Type"] = "application/x-www-form-urlencoded"
                 elif csrf_destination == "json":
                     assert isinstance(json_body, dict)
                     json_body = {**json_body, target_name: parser.value}
@@ -242,6 +296,8 @@ class HttpSessionRegistry:
                 params=params,
                 content=content,
                 json_body=json_body,
+                form_fields=normalized_fields or None,
+                multipart_parts=normalized_parts or None,
                 max_redirects=max_redirects,
                 max_body_bytes=max_body_bytes,
                 policy=active_policy,
@@ -263,6 +319,8 @@ class HttpSessionRegistry:
         max_redirects: int,
         max_body_bytes: int,
         policy: NetworkPolicy,
+        form_fields: list[FormField] | None = None,
+        multipart_parts: list[MultipartPart] | None = None,
         sensitive_header_name: str = "",
         forbid_cross_origin_redirect: bool = False,
         client: httpx.AsyncClient | None = None,
@@ -270,26 +328,45 @@ class HttpSessionRegistry:
         session = self.get(identity_id)
         request_headers = dict(headers or {})
 
-        body_bytes: bytes | None
-        if json_body is not None:
-            body_bytes = json.dumps(json_body, ensure_ascii=False).encode("utf-8")
-            request_headers.setdefault("Content-Type", "application/json")
-        elif isinstance(content, str):
-            body_bytes = content.encode("utf-8")
+        encoded = encode_request_body(
+            body=content if isinstance(content, str) else None,
+            json_body=json_body,
+            form_fields=form_fields,
+            multipart_parts=multipart_parts,
+            headers=request_headers,
+        )
+        if isinstance(content, bytes):
+            body_bytes: bytes | None = content
         else:
-            body_bytes = content
+            body_bytes = encoded.body or None
+        if encoded.content_type and not any(
+            key.lower() == "content-type" for key in request_headers
+        ):
+            request_headers["Content-Type"] = encoded.content_type
+        if not body_bytes and method.upper() in {"GET", "HEAD"}:
+            body_bytes = None
 
         chain: list[str] = []
         current_logical = url
         current_method = method.upper()
         current_params = params
         current_body = body_bytes
+        # 303/301/302 改 GET 后必须同时移除请求体与对应的实体头，
+        # 否则会把仍带 Content-Type/Length 的 GET 发给目标（§6.2）。
+        strip_entity_headers = False
 
         for _ in range(max_redirects + 1):
             # 每一跳重新映射并复核；跨 origin 不转发显式凭据和原始 Host。
             current, mapping_headers = policy.resolve_mapping(current_logical)
             policy.check(current)
             hop_headers = dict(request_headers)
+            if strip_entity_headers:
+                hop_headers = {
+                    key: value
+                    for key, value in hop_headers.items()
+                    if key.lower()
+                    not in {"content-type", "content-length", "content-encoding", "transfer-encoding"}
+                }
             if not same_origin(url, current_logical):
                 hop_headers = {
                     key: value
@@ -354,6 +431,9 @@ class HttpSessionRegistry:
                     elapsed_ms=(time.perf_counter() - request_started) * 1000,
                     redirect_chain=chain,
                     truncated=truncated,
+                    request_encoding=encoded.mode,
+                    request_body_bytes=encoded.byte_count,
+                    request_body_sha256=encoded.sha256,
                 )
 
         raise PolicyDenied("重定向次数超过上限", target=url)

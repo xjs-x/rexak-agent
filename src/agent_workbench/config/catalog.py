@@ -34,6 +34,15 @@ class ProviderProfile(BaseModel):
     secret_ref: str
     context_limit: int
     output_reserve: int = 8192
+    #: 每次请求实际生效的输出额度。未配置时沿用 `output_reserve`（向后兼容）。
+    #: 语义明确为"请求输出额度"，不再兼任输入预留的口径猜测。
+    request_output_limit: int | None = None
+    #: 恢复尝试时可用的更大输出额度。**未配置不擅自提高**（§3.3）。
+    recovery_output_limit: int | None = None
+    #: 单次逻辑模型决策允许的自动恢复次数（初次请求之外）。
+    max_response_recoveries: int = 2
+    #: 模型若另有独立最大输入限制，取它与预算的较小值（§3.3）。
+    max_input_tokens: int | None = None
     budget_safety_margin_ratio: float = Field(default=0.1, ge=0, lt=1)
     supports_tools: Capability = "unknown"
     supports_streaming: Capability = "unknown"
@@ -44,8 +53,15 @@ class ProviderProfile(BaseModel):
     profile_version: str = "1"
 
     @property
+    def effective_output_limit(self) -> int:
+        """本次请求实际生效的输出额度。"""
+        if self.request_output_limit:
+            return self.request_output_limit
+        return self.output_reserve
+
+    @property
     def input_budget_tokens(self) -> int:
-        return max(0, self.context_limit - self.output_reserve)
+        return max(0, self.context_limit - self.effective_output_limit)
 
 
 class ModelPrice(BaseModel):

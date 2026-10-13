@@ -192,10 +192,37 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
         relevant = [step for step in plan if step.get("status") not in {"done", "dropped"}]
         recent = [step for step in plan if step not in relevant][-3:]
         for step in (relevant + recent)[:12]:
+            note = f"（恢复备注：{step['resume_note']}）" if step.get("resume_note") else ""
             lines.append(
                 f"- [{step.get('status')}] {step.get('step_id')}: {step.get('description')}"
                 + (f"（理由：{step['rationale']}）" if step.get("rationale") else "")
+                + note
             )
+
+    focus = state.get("current_focus") or {}
+    if focus:
+        lines.append(
+            "### 当前焦点\n"
+            f"- 步骤 {focus.get('step_id') or '（无）'}：{focus.get('intent')}\n"
+            f"- 来源：{focus.get('source') or 'explicit'}；理由：{focus.get('reason')}"
+            + (f"；返回主线步骤：{focus['return_to_step_id']}" if focus.get("return_to_step_id") else "")
+        )
+
+    assessment = state.get("work_assessment") or {}
+    if assessment:
+        lines.append(
+            "### 最近一次明确判断（解释，不是漏洞事实）\n"
+            f"- 这次结果改变了什么：{assessment.get('changed')}\n"
+            f"- 下一步：{assessment.get('next_action')}"
+            + (
+                f"\n- 不确定性：{assessment['uncertainty']}"
+                if assessment.get("uncertainty")
+                else ""
+            )
+            + f"\n- 来源：工具调用 {assessment.get('source_tool_call_id')}（第 {assessment.get('revision')} 版）"
+        )
+    elif plan:
+        lines.append("### 最近一次明确判断\n- 尚未记录判断。请不要臆造此前的判断内容。")
 
     if active_leads:
         lines.append("### 活跃线索 ID\n" + ", ".join(str(item) for item in active_leads[:20]))

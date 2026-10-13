@@ -796,6 +796,8 @@ export interface components {
             reason: string;
             /** Return To Step Id */
             return_to_step_id?: string | null;
+            /** Source */
+            source?: ("explicit" | "plan_inferred") | null;
         };
         /**
          * EventEnvelope
@@ -846,7 +848,7 @@ export interface components {
          * EventType
          * @enum {string}
          */
-        EventType: "run.status" | "message.delta" | "message.completed" | "plan.updated" | "focus.updated" | "leads.recalled" | "context.selected" | "segment.yielded" | "snapshot.captured" | "tool.accepted" | "tool.output" | "tool.completed" | "lead.updated" | "finding.updated" | "coverage.updated" | "usage.updated" | "memory.compacted" | "input.required" | "report.ready" | "error" | "stream.resync_required" | "stream.heartbeat";
+        EventType: "run.status" | "message.delta" | "message.completed" | "plan.updated" | "focus.updated" | "leads.recalled" | "context.selected" | "segment.yielded" | "snapshot.captured" | "model.response_quality" | "tool.accepted" | "tool.output" | "tool.completed" | "lead.updated" | "finding.updated" | "coverage.updated" | "usage.updated" | "memory.compacted" | "input.required" | "report.ready" | "error" | "stream.resync_required" | "stream.heartbeat";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1023,6 +1025,7 @@ export interface components {
             /** Steps */
             steps: components["schemas"]["PlanStepRead"][];
             current_focus?: components["schemas"]["CurrentFocusRead"] | null;
+            work_assessment?: components["schemas"]["WorkAssessmentRead"] | null;
             /**
              * Source
              * @default langgraph_checkpoint
@@ -1333,6 +1336,28 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * WorkAssessmentRead
+         * @description 最近一次明确判断的只读投影（解释，不是漏洞事实）。
+         */
+        WorkAssessmentRead: {
+            /** Step Id */
+            step_id?: string | null;
+            /** Lead Id */
+            lead_id?: string | null;
+            /** Changed */
+            changed: string;
+            /** Next Action */
+            next_action: string;
+            /** Evidence Refs */
+            evidence_refs?: string[];
+            /** Uncertainty */
+            uncertainty?: string | null;
+            /** Source Tool Call Id */
+            source_tool_call_id: string;
+            /** Revision */
+            revision: number;
         };
     };
     responses: never;

@@ -24,6 +24,8 @@ class RequestBudgetEstimate:
     uncertain: bool = True
     safety_margin_ratio: float = 0.1
     payload_adapter: str = "provider"
+    #: 本次估算实际使用的输出额度（恢复尝试可能与之不同）。
+    output_limit: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -56,11 +58,19 @@ def estimate_request(
     model_settings: dict[str, Any] | None = None,
     tool_choice: Any = None,
     safety_margin_ratio: float | None = None,
+    output_limit: int | None = None,
 ) -> RequestBudgetEstimate:
     if safety_margin_ratio is None:
         safety_margin_ratio = provider_profile.budget_safety_margin_ratio
     if not 0 <= safety_margin_ratio < 1:
         raise ValueError("safety_margin_ratio 必须在 [0, 1) 内")
+    # 输入预算从**实际生效**的输出额度算起：allowed = (context - output) × (1 - margin)。
+    effective_output = (
+        int(output_limit) if output_limit is not None else provider_profile.effective_output_limit
+    )
+    allowed = int(max(0, provider_profile.context_limit - effective_output) * (1 - safety_margin_ratio))
+    if provider_profile.max_input_tokens is not None:
+        allowed = min(allowed, int(provider_profile.max_input_tokens))
     selected = [system_message, *messages] if system_message is not None else messages
     payload = request_payload(
         model,
@@ -98,10 +108,11 @@ def estimate_request(
     )
     return RequestBudgetEstimate(
         estimated_input_tokens=sum(components.values()),
-        allowed_input_tokens=int(provider_profile.input_budget_tokens * (1 - safety_margin_ratio)),
+        allowed_input_tokens=allowed,
         components=components,
         safety_margin_ratio=safety_margin_ratio,
         payload_adapter=type(model).__name__ if model is not None else "protocol_preview",
+        output_limit=effective_output,
     )
 
 

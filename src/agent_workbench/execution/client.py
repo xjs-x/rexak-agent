@@ -244,6 +244,7 @@ class HttpExecutorClient:
                 "filesystem_available": payload["filesystem_available"],
                 "network_isolation": payload.get("network_isolation", "unavailable"),
                 "capabilities_version": payload.get("capabilities_version", "1"),
+                "body_modes": list(payload.get("body_modes") or ["raw", "json"]),
             }
         )
         if caps.protocol_version != self._expected_protocol_version:

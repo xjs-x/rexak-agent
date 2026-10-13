@@ -47,7 +47,12 @@ from agent_workbench.contracts.identity import (
     ScopeUpdate,
     SessionCreate,
 )
-from agent_workbench.contracts.plan import CurrentFocusRead, PlanRead, PlanStepRead
+from agent_workbench.contracts.plan import (
+    CurrentFocusRead,
+    PlanRead,
+    PlanStepRead,
+    WorkAssessmentRead,
+)
 from agent_workbench.domain.instruction_scope import scope_from_instructions, sync_instruction_scope
 from agent_workbench.domain.prices import PriceUpdate
 from agent_workbench.domain.run_state import (
@@ -656,6 +661,11 @@ async def session_plan(session_id: UUID, request: Request) -> PlanRead:
         steps=[PlanStepRead.model_validate(_redact_api_value(step)) for step in raw_steps],
         current_focus=CurrentFocusRead.model_validate(_redact_api_value(values["current_focus"]))
         if values.get("current_focus")
+        else None,
+        work_assessment=WorkAssessmentRead.model_validate(
+            _redact_api_value(values["work_assessment"])
+        )
+        if values.get("work_assessment")
         else None,
     )
 

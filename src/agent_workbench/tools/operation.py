@@ -56,6 +56,7 @@ class OperationRegistry:
         scope_revision: int,
         dispatch_control_version: int | None = None,
         identity_id: UUID | None = None,
+        context_extra: dict[str, Any] | None = None,
     ) -> PreparedOperation:
         digest = compute_request_digest({"tool": tool_name, "arguments": _canonical(arguments)})
 
@@ -77,6 +78,12 @@ class OperationRegistry:
                 operation_id=existing.operation_id, replayed=True, row=existing
             )
 
+        # 派发时的（不是模型声明的）真实请求上下文：真实方法、入口与身份。
+        # 领域登记工具据此把证据关联到**真实采集操作**，而不是伪装成 GET。
+        context = dict(execution_context.get() or {})
+        if context_extra:
+            context.update({key: value for key, value in context_extra.items() if value is not None})
+
         operation_id = uuid.uuid4()
         row, _created = await self._repo.prepare(
             operation_id=operation_id,
@@ -89,7 +96,7 @@ class OperationRegistry:
             policy_revision=policy_revision,
             scope_revision=scope_revision,
             dispatch_control_version=dispatch_control_version,
-            execution_context=execution_context.get(),
+            execution_context=context or None,
             identity_id=identity_id,
         )
         return PreparedOperation(operation_id=row.operation_id, replayed=False, row=row)

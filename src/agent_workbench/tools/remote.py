@@ -47,8 +47,13 @@ async def prepare_operation(
     arguments: dict[str, Any],
     *,
     effect_class: ToolEffectClass,
+    context_extra: dict[str, Any] | None = None,
 ) -> tuple[UUID, bool]:
-    """在一个**短事务**内准备操作身份。禁止在事务里等待网络或模型。"""
+    """在一个**短事务**内准备操作身份。禁止在事务里等待网络或模型。
+
+    `context_extra` 记录派发时**真实**的请求上下文（方法、入口、身份），
+    供领域登记工具把证据关联到真实采集操作，而不是默认成 GET。
+    """
     async with toolbox.db.transaction() as db:
         prepared = await OperationRegistry(db).prepare(
             run_id=toolbox.run_id,
@@ -61,6 +66,7 @@ async def prepare_operation(
             scope_revision=toolbox.scope_revision,
             dispatch_control_version=toolbox.control_version,
             identity_id=toolbox.identity_id,
+            context_extra=context_extra,
         )
         return prepared.operation_id, prepared.replayed
 

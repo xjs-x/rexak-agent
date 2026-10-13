@@ -27,7 +27,11 @@ from agent_workbench.contracts.events import EventType
 from agent_workbench.domain.run_state import is_current_owner
 from agent_workbench.observability.events import append_event
 from agent_workbench.persistence.tables import RunRow, ToolOperationRow
-from agent_workbench.tools.execution_context import context_from_state, execution_context
+from agent_workbench.tools.execution_context import (
+    batch_tool_names,
+    context_from_state,
+    execution_context,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -61,7 +65,12 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 log.warning("tool_activity_event_failed", error_type=type(exc).__name__)
 
         await emit("started", "preparing")
-        token = execution_context.set(context_from_state(dict(request.state or {})))
+        state = dict(request.state or {})
+        token = execution_context.set(
+            context_from_state(
+                state, same_batch_plan_update="update_plan" in batch_tool_names(state)
+            )
+        )
         try:
             result = await self._dispatch_tool_call(request, handler)
         except asyncio.CancelledError:

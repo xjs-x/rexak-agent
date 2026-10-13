@@ -31,6 +31,9 @@ class EventType(StrEnum):
     CONTEXT_SELECTED = "context.selected"
     SEGMENT_YIELDED = "segment.yielded"
     SNAPSHOT_CAPTURED = "snapshot.captured"
+    #: 单次模型响应的完整性分类（截断/空/无效工具调用/拒绝/可用）。
+    #: 网络成功与语义可用是两个维度，本事件只记录可观察分类，不含推理正文。
+    MODEL_RESPONSE_QUALITY = "model.response_quality"
     TOOL_ACCEPTED = "tool.accepted"
     TOOL_OUTPUT = "tool.output"
     TOOL_COMPLETED = "tool.completed"

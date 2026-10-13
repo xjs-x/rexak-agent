@@ -837,6 +837,8 @@ class AgentRunner:
                     error=f"{type(exc).__name__}: {exc}",
                 )
             try:
+                from datetime import UTC, datetime
+
                 from agent_workbench.agent.middleware.stage_report import stage_metadata
                 from agent_workbench.domain.reports import create_report_snapshot
                 from agent_workbench.evidence.artifacts import ArtifactStore
@@ -847,10 +849,29 @@ class AgentRunner:
                     )
                 values = saved.checkpoint.get("channel_values", {}) if saved is not None else {}
                 checkpoint_id = saved.checkpoint["id"] if saved is not None else "unavailable"
+                graph_read_at = datetime.now(UTC).isoformat()
+                assessment = values.get("work_assessment") or {}
                 metadata = stage_metadata(
-                    values, run_id=str(run.id), trigger=str(status), signature=str(checkpoint_id)
+                    values,
+                    run_id=str(run.id),
+                    trigger=str(status),
+                    signature=str(checkpoint_id),
+                    covered_position={
+                        "checkpoint_id": checkpoint_id,
+                        "plan_revision": int(values.get("plan_revision") or 0),
+                        "completed_decision_rounds": int(
+                            values.get("completed_decision_rounds") or 0
+                        ),
+                        "work_assessment_revision": int(assessment.get("revision") or 0),
+                        "graph_read_at": graph_read_at,
+                        "domain_snapshot_at": None,
+                    },
                 )
                 metadata["checkpoint_id"] = checkpoint_id
+                if status is RunStatus.FAILED:
+                    # 故障报告不能冒充完成：明确标注这是故障快照。
+                    metadata["failed_snapshot"] = True
+                    metadata["not_a_completion"] = True
                 await create_report_snapshot(
                     self._db, ArtifactStore(settings), run.session_id, stage_metadata=metadata
                 )
@@ -990,10 +1011,9 @@ class AgentRunner:
                 "checkpoint 读取失败，拒绝重复注入目标；请检查数据库连接与迁移版本"
             ) from exc
 
-        if (
-            values.get("state_schema_version") == 1
-            and type(values.get("state_schema_version")) is int
-        ) or values.get("state_migration"):
+        from agent_workbench.agent.state_migration import needs_migration
+
+        if needs_migration(values) or values.get("state_migration"):
             from agent_workbench.agent.state_migration import ensure_current_checkpoint
 
             snapshot = await ensure_current_checkpoint(
@@ -1471,8 +1491,20 @@ class AgentRunner:
         message = str(exc)
         from agent_workbench.agent.middleware.compaction import CompactionFailed
         from agent_workbench.agent.middleware.model_observer import ModelRequestTimeout
+        from agent_workbench.agent.middleware.response_recovery import (
+            ModelResponseRefused,
+            ModelResponseUnavailable,
+        )
         from agent_workbench.models.context_budget import ContextBudgetExceeded
 
+        if isinstance(exc, ModelResponseUnavailable):
+            # 恢复耗尽：明确 failed，stop_reason 说明"模型响应不可用"，
+            # 保留 checkpoint 与领域成果；用户继续后可建立新恢复周期（§3.4）。
+            await self._fail(run_id, ErrorCode.PROVIDER_ERROR, message)
+            return RunStatus.FAILED, message
+        if isinstance(exc, ModelResponseRefused):
+            # 明确拒绝不自动重试绕过；把可见原因与现有进度交给用户。
+            return RunStatus.WAITING_USER, message
         if isinstance(exc, ModelRequestTimeout):
             return RunStatus.RECOVERING, str(exc)
         if isinstance(exc, ContextBudgetExceeded):

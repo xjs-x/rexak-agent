@@ -20,7 +20,8 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import Command
 
 from agent_workbench.agent.context import RunContext
-from agent_workbench.agent.state import CurrentFocus, PlanStep
+from agent_workbench.agent.focus import focus_signature, resolve_focus
+from agent_workbench.agent.state import PlanStep, WorkAssessment
 from agent_workbench.contracts.enums import (
     CoverageStatus,
     FindingCategory,
@@ -37,6 +38,9 @@ from agent_workbench.tools.runtime import Toolbox
 
 PLAN_STEP_STATUSES = {"pending", "in_progress", "done", "dropped", "blocked"}
 MAX_PLAN_STEPS = 20
+#: 轻量判断的负载初值：单字段最多 500 字、引用最多 8 个。
+MAX_ASSESSMENT_CHARS = 500
+MAX_ASSESSMENT_REFS = 8
 
 
 def _parse_json(raw: str, field: str) -> Any:
@@ -58,107 +62,137 @@ def _tool_message(tool_call_id: str, text: str) -> ToolMessage:
 @tool("update_plan")
 async def update_plan(
     runtime: ToolRuntime[RunContext],
-    steps_json: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
+    steps_json: str | None = None,
     rationale: str | None = None,
     focus_json: str | None = None,
+    assessment_json: str | None = None,
 ) -> Command:
-    """更新**当前计划**（有界、可修订，不是预先锁死的 DAG）。
+    """更新**当前计划**、焦点与最近判断（有界、可修订，不是预先锁死的 DAG）。
 
     Args:
         steps_json: 计划步骤的 JSON 数组字符串。每项：
             `{"step_id": "s1", "description": "...", "status": "pending|in_progress|done|dropped|blocked",
-              "rationale": "为什么做这一步", "lead_id": "可选关联线索"}`
+              "rationale": "为什么做这一步", "lead_id": "可选关联线索"}`。
+            **不传表示保留现有计划**；显式 `[]` 才是清空。
         rationale: 本次计划变更的原因（会被记录，便于复盘方向变化）。
         focus_json: 可选焦点对象，含 step_id、lead_id、intent、reason、return_to_step_id。
+            不传时系统按"唯一进行中步骤"自动承接；多主线时会给一次简短提示。
+        assessment_json: 可选**轻量判断**：
+            `{"changed": "这次结果改变了什么", "next_action": "下一步消除哪个不确定性",
+              "uncertainty": "未测到/条件不成立/假设受反证", "evidence_refs": ["工件 ID"]}`。
+            只在关键转折时补充，不必每轮都写；纯计划调整可以不写。
         tool_call_id: 由框架注入，不要自己填写。
 
     Returns:
-        更新确认（同时把计划写回图状态）。
+        更新确认（同时把计划、焦点与最近判断写回图状态）。
     """
     runtime.context.note_progress(f"plan:{rationale or ''}")
-    raw = _parse_json(steps_json, "steps_json")
-    if not isinstance(raw, list):
-        raise ValueError("steps_json 必须是 JSON 数组")
-    if len(raw) > MAX_PLAN_STEPS:
-        raise ValueError(f"计划最多 {MAX_PLAN_STEPS} 步；请合并或删除已完成步骤")
-
+    steps: list[PlanStep] | None = None
     seen: set[str] = set()
-    steps: list[PlanStep] = []
-    for index, item in enumerate(raw, start=1):
-        if not isinstance(item, dict):
-            raise ValueError(f"第 {index} 项不是对象")
-        step_id = str(item.get("step_id") or f"s{index}")
-        if step_id in seen:
-            raise ValueError(f"step_id 重复：{step_id}")
-        seen.add(step_id)
-        status = str(item.get("status", "pending"))
-        if status not in PLAN_STEP_STATUSES:
-            raise ValueError(f"第 {index} 项 status 非法：{status}")
-        description = str(item.get("description") or "").strip()
-        if not description:
-            raise ValueError(f"第 {index} 项缺少 description")
-        if status == "blocked" and not item.get("rationale"):
-            raise ValueError(f"第 {index} 项状态为 blocked，必须写 rationale（受阻原因）")
-        steps.append(
-            PlanStep(
-                step_id=step_id,
-                description=description,
-                status=status,  # type: ignore[typeddict-item]
-                rationale=item.get("rationale"),
-                lead_id=item.get("lead_id"),
-                done_when=item.get("done_when"),
-                resume_note=item.get("resume_note"),
-                evidence_refs=coerce_str_list(item.get("evidence_refs"), "evidence_refs"),
+    if steps_json is not None:
+        raw = _parse_json(steps_json, "steps_json")
+        if not isinstance(raw, list):
+            raise ValueError("steps_json 必须是 JSON 数组")
+        if len(raw) > MAX_PLAN_STEPS:
+            raise ValueError(f"计划最多 {MAX_PLAN_STEPS} 步；请合并或删除已完成步骤")
+        built: list[PlanStep] = []
+        for index, item in enumerate(raw, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f"第 {index} 项不是对象")
+            step_id = str(item.get("step_id") or f"s{index}")
+            if step_id in seen:
+                raise ValueError(f"step_id 重复：{step_id}")
+            seen.add(step_id)
+            status = str(item.get("status", "pending"))
+            if status not in PLAN_STEP_STATUSES:
+                raise ValueError(f"第 {index} 项 status 非法：{status}")
+            description = str(item.get("description") or "").strip()
+            if not description:
+                raise ValueError(f"第 {index} 项缺少 description")
+            if status == "blocked" and not item.get("rationale"):
+                raise ValueError(f"第 {index} 项状态为 blocked，必须写 rationale（受阻原因）")
+            built.append(
+                PlanStep(
+                    step_id=step_id,
+                    description=description,
+                    status=status,  # type: ignore[typeddict-item]
+                    rationale=item.get("rationale"),
+                    lead_id=item.get("lead_id"),
+                    done_when=item.get("done_when"),
+                    resume_note=item.get("resume_note"),
+                    evidence_refs=coerce_str_list(item.get("evidence_refs"), "evidence_refs"),
+                )
             )
-        )
+        steps = built
 
-    revision = int(runtime.state.get("plan_revision") or 0) + 1
-    focus = runtime.state.get("current_focus")
+    previous_plan = list(runtime.state.get("plan") or [])
+    effective_plan = steps if steps is not None else previous_plan
+    explicit_focus: dict[str, Any] | None = None
     if focus_json is not None:
-        parsed = _parse_json(focus_json, "focus_json")
-        if not isinstance(parsed, dict):
+        parsed_focus = _parse_json(focus_json, "focus_json")
+        if not isinstance(parsed_focus, dict):
             raise ValueError("focus_json 必须为对象")
-        for field in ("step_id", "return_to_step_id"):
-            if parsed.get(field) is not None and parsed[field] not in seen:
-                raise ValueError(f"焦点 {field} 不属于当前计划")
-        if (
-            not str(parsed.get("intent") or "").strip()
-            or not str(parsed.get("reason") or "").strip()
-        ):
-            raise ValueError("焦点必须说明行动目的与简短理由")
-        if parsed.get("lead_id"):
+        if parsed_focus.get("lead_id"):
             async with runtime.context.toolbox.db.session() as db:
-                lead = await LeadService(db).get(UUID(parsed["lead_id"]))
+                lead = await LeadService(db).get(UUID(parsed_focus["lead_id"]))
                 if lead is None or lead.session_id != runtime.context.toolbox.session_id:
                     raise ValueError("焦点线索不属于当前会话")
-        focus = CurrentFocus(
-            step_id=parsed.get("step_id"),
-            lead_id=parsed.get("lead_id"),
-            intent=str(parsed["intent"]),
-            reason=str(parsed["reason"]),
-            return_to_step_id=parsed.get("return_to_step_id"),
+        explicit_focus = parsed_focus
+
+    previous_focus = runtime.state.get("current_focus")
+    focus, hint = resolve_focus(effective_plan, previous_focus, explicit_focus)
+    focus_changed = focus_signature(focus) != focus_signature(previous_focus)
+
+    update: dict[str, Any] = {"current_focus": focus}
+    if steps is not None:
+        update["plan"] = steps
+        update["plan_revision"] = int(runtime.state.get("plan_revision") or 0) + 1
+    assessment = None
+    if assessment_json is not None:
+        parsed_assessment = _parse_json(assessment_json, "assessment_json")
+        if not isinstance(parsed_assessment, dict):
+            raise ValueError("assessment_json 必须为对象")
+        changed = str(parsed_assessment.get("changed") or "").strip()
+        next_action = str(parsed_assessment.get("next_action") or "").strip()
+        if not changed or not next_action:
+            raise ValueError("判断必须同时说明 changed（改变了什么）与 next_action（下一步）")
+        refs = coerce_str_list(parsed_assessment.get("evidence_refs"), "evidence_refs")[:MAX_ASSESSMENT_REFS]
+        if len(changed) > MAX_ASSESSMENT_CHARS or len(next_action) > MAX_ASSESSMENT_CHARS:
+            raise ValueError(f"判断字段最多 {MAX_ASSESSMENT_CHARS} 字")
+        previous_assessment = runtime.state.get("work_assessment") or {}
+        assessment = WorkAssessment(
+            step_id=(focus or {}).get("step_id"),
+            lead_id=(focus or {}).get("lead_id"),
+            changed=changed,
+            next_action=next_action,
+            evidence_refs=refs,
+            uncertainty=(str(parsed_assessment["uncertainty"]) if parsed_assessment.get("uncertainty") else None),
+            source_tool_call_id=tool_call_id,
+            revision=int(previous_assessment.get("revision") or 0) + 1,
         )
-    elif focus and focus.get("step_id") not in seen:
-        focus = None
+        update["work_assessment"] = assessment
+
     text = json.dumps(
         {
             "ok": True,
-            "plan_revision": revision,
+            "plan_revision": update.get("plan_revision", runtime.state.get("plan_revision") or 0),
+            "plan_changed": steps is not None,
             "current_focus": focus,
-            "steps": len(steps),
-            "note": "计划已写入图状态（LangGraph checkpoint 为权威）；前端只做只读投影。",
+            "focus_changed": focus_changed,
+            "focus_hint": hint,
+            "assessment_revision": assessment["revision"] if assessment else None,
+            "steps": len(effective_plan),
+            "note": (
+                "计划/焦点/最近判断已写入图状态（LangGraph checkpoint 为权威）；"
+                "前端只做只读投影。自动承接的焦点只说明执行时的工作上下文，"
+                "不证明证据支持某个假设。"
+            ),
         },
         ensure_ascii=False,
     )
-    return Command(
-        update={
-            "plan": steps,
-            "plan_revision": revision,
-            "current_focus": focus,
-            "messages": [_tool_message(tool_call_id, text)],
-        }
-    )
+    update["messages"] = [_tool_message(tool_call_id, text)]
+    return Command(update=update)
 
 
 # --------------------------------------------------------------------------- #
@@ -185,6 +219,8 @@ async def record_lead(
     resume_condition: str | None = None,
     merge_into_id: str | None = None,
     observation_summary: str | None = None,
+    source_operation_id: str | None = None,
+    method: str | None = None,
 ) -> str:
     """登记或更新一条**假设（线索）**。
 
@@ -195,7 +231,7 @@ async def record_lead(
         evidence_strength: 已有证据强度 0-5（仅凭猜测请填 0-1）。
         feasibility: 可执行性 0-5（当前条件下能否验证）。
         information_gain: 预期信息增益 0-5（验证后能排除多少不确定性）。
-        url: 关联的入口 URL（可选，会自动登记资产）。
+        url: 关联的入口 URL（可选，会按真实采集方法登记资产）。
         identity_refs_json: 关联身份标识的 JSON 数组字符串。
         next_action: 下一步具体动作。
         evidence_refs_json: 支持该线索的工件 ID 的 JSON 数组字符串。
@@ -206,6 +242,9 @@ async def record_lead(
         resume_condition: 恢复条件（什么条件下可以继续推进）。
         merge_into_id: 真正重复线索的目标 ID，同会话且禁止循环；原来源保留。
         observation_summary: 可选关键观察，与线索同一事务联记，必须引用真实工件。
+        source_operation_id: 可选；产生这些证据的真实操作 ID。系统据此读取真实
+            方法/入口/身份，而不是默认成 GET。
+        method: 可选；当无法从证据推导时显式声明采集方法。
 
     Returns:
         线索记录摘要（JSON）。
@@ -258,6 +297,8 @@ async def record_lead(
                 "resume_condition": resume_condition,
                 "merge_into_id": merge_into_id,
                 "observation_summary": observation_summary,
+                "source_operation_id": source_operation_id,
+                "method": method,
                 "impact": impact,
                 "evidence_strength": evidence_strength,
                 "feasibility": feasibility,
@@ -282,16 +323,20 @@ async def record_lead(
                 ):
                     raise ValueError("线索证据必须为当前会话真实工具工件")
         asset_id: UUID | None = None
+        asset_note: str | None = None
+        evidence_context = await _evidence_operation_context(
+            db, toolbox, [str(item) for item in evidence_refs], source_operation_id=source_operation_id
+        )
         if url:
-            asset, _created = await record_asset(
+            asset_id, asset_note = await _link_asset(
                 db,
-                session_id=toolbox.session_id,
+                toolbox,
                 url=url,
-                method="GET",
-                identity_ids=[r for r in identity_refs if _looks_like_uuid(r)],
+                explicit_method=method,
+                identity_refs=[str(item) for item in identity_refs],
+                evidence_context=evidence_context,
                 notes="由 record_lead 关联",
             )
-            asset_id = asset.id
 
         service = LeadService(db)
         row = await service.upsert(
@@ -334,6 +379,9 @@ async def record_lead(
             "lead": payload,
             "operation_id": str(operation.operation_id),
             "observation_id": str(observation_id) if observation_id else None,
+            "evidence_source_operation_ids": evidence_context["source_operation_ids"],
+            "evidence_source_ambiguous": evidence_context["ambiguous"],
+            "asset_note": asset_note,
         }
         operation.row.result_snapshot = result
         operation.row.status = "succeeded"
@@ -356,6 +404,8 @@ async def record_observation(
     url: str | None = None,
     category: str = "other",
     coverage_status: str = "checked_negative",
+    source_operation_id: str | None = None,
+    method: str | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """记录一次**观察**：索引已有工件，并更新覆盖状态。
@@ -369,6 +419,9 @@ async def record_observation(
             input_validation / configuration / transport / session_management / other。
         coverage_status: not_checked / checked_negative / checked_positive / blocked /
             not_applicable。
+        source_operation_id: 可选；产生这些证据的真实操作 ID。系统据此读取真实
+            方法/入口/身份，而不是默认成 GET。
+        method: 可选；当无法从证据推导时显式声明采集方法。
         tool_call_id: 框架注入，用于返回原重放回执。
 
     Returns:
@@ -401,20 +454,27 @@ async def record_observation(
                 "url": url,
                 "category": category,
                 "coverage_status": coverage_status,
+                "source_operation_id": source_operation_id,
+                "method": method,
             },
         )
         if receipt.row.result_snapshot is not None:
             return json.dumps(receipt.row.result_snapshot, ensure_ascii=False, sort_keys=True)
         asset_id: UUID | None = None
+        asset_note: str | None = None
+        evidence_context = await _evidence_operation_context(
+            db, toolbox, resolved, source_operation_id=source_operation_id
+        )
         if url:
-            asset, _created = await record_asset(
+            asset_id, asset_note = await _link_asset(
                 db,
-                session_id=toolbox.session_id,
+                toolbox,
                 url=url,
-                method="GET",
+                explicit_method=method,
+                identity_refs=[identity] if identity else [],
+                evidence_context=evidence_context,
                 notes="由 record_observation 关联",
             )
-            asset_id = asset.id
 
         ref = await record_observation_ref(
             db,
@@ -440,6 +500,9 @@ async def record_observation(
             "artifacts": resolved,
             "coverage_status": coverage_status,
             "category": category,
+            "evidence_source_operation_ids": evidence_context["source_operation_ids"],
+            "evidence_source_ambiguous": evidence_context["ambiguous"],
+            "asset_note": asset_note,
         }
         result = {"ok": True, "observation": payload}
         receipt.row.result_snapshot = result
@@ -463,6 +526,8 @@ async def propose_finding(
     url: str | None = None,
     evidence_refs_json: list[str] | str | None = None,
     impact: str | None = None,
+    source_operation_id: str | None = None,
+    method: str | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """提出一条**候选发现**（candidate）。
@@ -475,6 +540,9 @@ async def propose_finding(
         url: 关联入口。
         evidence_refs_json: 支持该发现的工件 ID 的 JSON 数组字符串。**必须**引用真实工件。
         impact: 影响说明。
+        source_operation_id: 可选；产生这些证据的真实操作 ID。系统据此读取真实
+            方法/入口/身份，而不是默认成 GET。
+        method: 可选；当无法从证据推导时显式声明采集方法。
         tool_call_id: 框架注入，用于返回原重放回执。
 
     Returns:
@@ -507,20 +575,27 @@ async def propose_finding(
                 "url": url,
                 "evidence_refs": resolved,
                 "impact": impact,
+                "source_operation_id": source_operation_id,
+                "method": method,
             },
         )
         if receipt.row.result_snapshot is not None:
             return json.dumps(receipt.row.result_snapshot, ensure_ascii=False, sort_keys=True)
         asset_id: UUID | None = None
+        asset_note: str | None = None
+        evidence_context = await _evidence_operation_context(
+            db, toolbox, resolved, source_operation_id=source_operation_id
+        )
         if url:
-            asset, _created = await record_asset(
+            asset_id, asset_note = await _link_asset(
                 db,
-                session_id=toolbox.session_id,
+                toolbox,
                 url=url,
-                method="GET",
+                explicit_method=method,
+                identity_refs=[],
+                evidence_context=evidence_context,
                 notes="由 propose_finding 关联",
             )
-            asset_id = asset.id
 
         row = await FindingService(db).propose(
             session_id=toolbox.session_id,
@@ -535,6 +610,9 @@ async def propose_finding(
             "finding_id": str(row.id),
             "status": row.status,
             "evidence_refs": resolved,
+            "evidence_source_operation_ids": evidence_context["source_operation_ids"],
+            "evidence_source_ambiguous": evidence_context["ambiguous"],
+            "asset_note": asset_note,
             "next_step": (
                 "该记录只是候选。需要确定性核验后由系统写入验证记录，才能成为 confirmed。"
                 "请在说明中写清验证方法与限制。"
@@ -633,6 +711,110 @@ def _looks_like_uuid(value: object) -> bool:
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+# --------------------------------------------------------------------------- #
+# 证据采集上下文（§4.2）
+# --------------------------------------------------------------------------- #
+
+
+async def _evidence_operation_context(
+    db: Any,
+    toolbox: Toolbox,
+    evidence_refs: list[str],
+    *,
+    source_operation_id: str | None,
+) -> dict[str, Any]:
+    """从**真实采集操作**推导方法、入口与身份。
+
+    规则：
+    - 显式提供 `source_operation_id` 时优先读取该操作的真实上下文；
+    - 否则从证据工件的 `source_operation_id` 推导，且**只在唯一时**采用；
+    - 存在多个来源/多个方法时保留证据引用集合，**不任意选最后一次操作**作为全部来源。
+    """
+    from agent_workbench.persistence.tables import ArtifactRow, ToolOperationRow
+
+    operation_ids: list[UUID] = []
+    if source_operation_id:
+        try:
+            operation_ids.append(UUID(str(source_operation_id)))
+        except ValueError as exc:
+            raise ValueError(f"source_operation_id 不是合法 UUID：{source_operation_id}") from exc
+    else:
+        seen: list[UUID] = []
+        for ref in evidence_refs:
+            try:
+                artifact = await db.get(ArtifactRow, UUID(ref))
+            except ValueError:
+                continue
+            if artifact is None or artifact.source_operation_id is None:
+                continue
+            if artifact.source_operation_id not in seen:
+                seen.append(artifact.source_operation_id)
+        operation_ids = seen
+
+    ambiguous = len(operation_ids) > 1
+    if len(operation_ids) != 1:
+        return {
+            "operation_id": None,
+            "method": None,
+            "entry_url": None,
+            "identity_refs": [],
+            "source_operation_ids": [str(item) for item in operation_ids],
+            "ambiguous": ambiguous,
+        }
+
+    row = await db.get(ToolOperationRow, operation_ids[0])
+    if row is None or row.session_id != toolbox.session_id:
+        raise ValueError("source_operation_id 不属于当前会话")
+    context = row.execution_context or {}
+    raw_method = context.get("method")
+    return {
+        "operation_id": row.operation_id,
+        "method": str(raw_method).upper() if raw_method else None,
+        "entry_url": context.get("url"),
+        "identity_refs": [str(context["identity"])] if context.get("identity") else [],
+        "source_operation_ids": [str(row.operation_id)],
+        "ambiguous": False,
+    }
+
+
+async def _link_asset(
+    db: Any,
+    toolbox: Toolbox,
+    *,
+    url: str | None,
+    explicit_method: str | None,
+    identity_refs: list[str],
+    evidence_context: dict[str, Any],
+    notes: str,
+) -> tuple[UUID | None, str | None]:
+    """按**真实采集上下文**关联端点资产；返回 `(asset_id, note)`。
+
+    只提供 URL 而缺少采集方法时**不伪装成已验证 GET 证据**：
+    不建立精确端点资产，改为让调用方只关联观察/线索，并给出明确说明。
+    """
+    if not url:
+        return None, None
+    asset_method = (explicit_method or "").strip().upper() or evidence_context.get("method")
+    if not asset_method:
+        return None, (
+            "仅提供 URL 而缺少采集方法，未建立精确端点资产。"
+            "请提供 method，或提供 source_operation_id / 引用工具返回的工件，"
+            "让系统读取真实采集操作；否则请只关联观察而不建立端点。"
+        )
+    identity_ids = [item for item in identity_refs if _looks_like_uuid(item)]
+    if not identity_ids:
+        identity_ids = list(evidence_context.get("identity_refs") or [])
+    asset, _created = await record_asset(
+        db,
+        session_id=toolbox.session_id,
+        url=url,
+        method=asset_method,
+        identity_ids=identity_ids,
+        notes=notes,
+    )
+    return asset.id, None
 
 
 TASK_TOOLS = [update_plan, record_lead, record_observation, propose_finding]

@@ -32,6 +32,12 @@ from agent_workbench.contracts.enums import (
     OperationStatus,
     ToolEffectClass,
 )
+from agent_workbench.contracts.http import (
+    FormField,
+    MultipartPart,
+    assert_structured_headers_ok,
+    classify_body_mode,
+)
 from agent_workbench.contracts.tool import ArtifactRef, ToolError, ToolResult
 from agent_workbench.domain.scope import ScopeViolation
 from agent_workbench.evidence.artifacts import redact_text
@@ -61,6 +67,8 @@ class HttpRequestArgs(BaseModel):
     params: dict[str, str] | None = None
     body: str | None = None
     json_body: Any | None = None
+    form_fields: list[FormField] | None = None
+    multipart_parts: list[MultipartPart] | None = None
     identity: str = "anonymous"
     follow_redirects: bool = True
     save_body_artifact: bool = True
@@ -252,11 +260,25 @@ def _scope_payload(toolbox: Toolbox) -> dict[str, Any]:
     }
 
 
-def _failed(operation_id: UUID, code: ErrorCode, message: str, **extra: Any) -> ToolResult:
+def _failed(
+    operation_id: UUID,
+    code: ErrorCode,
+    message: str,
+    *,
+    category: str = "construction",
+    delivery_state: str = "not_applied",
+    **extra: Any,
+) -> ToolResult:
+    """构造明确的失败结果。
+
+    `category` 区分**构造**（本地，请求未发出）、**传输**（可能已发出）、
+    **响应**（目标已答复）三个阶段（§6.2）。
+    """
     return ToolResult(
         operation_id=operation_id,
         status=OperationStatus.FAILED,
         summary=message,
+        data={"error_category": category, "delivery_state": delivery_state},
         error=ToolError(code=str(code), message=message, **extra),
         execution_certainty=ExecutionCertainty.NOT_APPLIED,
         started_at=datetime.now(UTC),
@@ -288,18 +310,60 @@ async def run_http_request(
             details={"target": exc.target},
         )
 
-    if args.body is not None and args.json_body is not None:
-        return _failed(UUID(int=0), ErrorCode.VALIDATION_FAILED, "body 与 json_body 不能同时提供")
+    # 2) 请求体形态：四选一，互斥；构造错误就是构造错误，不笼统说"请求失败"
+    try:
+        body_mode = classify_body_mode(
+            body=args.body,
+            json_body=args.json_body,
+            form_fields=args.form_fields,
+            multipart_parts=args.multipart_parts,
+        )
+        assert_structured_headers_ok(body_mode, args.headers)
+    except ValueError as exc:
+        return _failed(
+            UUID(int=0),
+            ErrorCode.VALIDATION_FAILED,
+            f"请求体构造失败：{exc}",
+            recovery_hint=(
+                "raw(body)、json(json_body_json)、form(form_fields_json)、"
+                "multipart(multipart_parts_json) 四选一。"
+            ),
+        )
 
     method = args.method.upper()
     effect_class = (
         ToolEffectClass.READ_ONLY if method in READ_ONLY_METHODS else ToolEffectClass.SIDE_EFFECTING
     )
 
-    # 2) 派发前检查控制版本：过期响应不得自动执行
+    # 3) 能力预检：执行岛未声明支持该体形态时明确返回能力不足，**不悄悄降级构造**。
+    if body_mode in {"form", "multipart"}:
+        try:
+            caps = await toolbox.executor.capabilities()
+        except (ExecutorConnectionError, ExecutorProtocolError) as exc:
+            return _failed(
+                UUID(int=0),
+                ErrorCode.EXECUTOR_UNAVAILABLE,
+                f"无法确认执行岛是否支持结构化请求体（{body_mode}）：{type(exc).__name__}",
+                category="transport",
+                delivery_state="unknown",
+                retryable=True,
+                recovery_hint="执行岛不可达时无法确认能力；请稍后重试或改用 raw/json 体。",
+            )
+        if body_mode not in set(caps.body_modes or []):
+            return _failed(
+                UUID(int=0),
+                ErrorCode.EXECUTOR_INCOMPATIBLE,
+                f"执行岛未声明支持 {body_mode} 请求体（支持：{sorted(set(caps.body_modes or []))}）",
+                recovery_hint=(
+                    "升级应先执行端、后控制端；在升级完成前请改用 raw 或 json 请求体，"
+                    "不要手工拼接 multipart。"
+                ),
+            )
+
+    # 4) 派发前检查控制版本：过期响应不得自动执行
     await toolbox.assert_control_current()
 
-    # 3) 资源锁：同 origin 有界并发；写操作叠加身份锁
+    # 5) 资源锁：同 origin 有界并发；写操作叠加身份锁
     keys = [origin_lock_key(args.url)]
     if effect_class is ToolEffectClass.SIDE_EFFECTING:
         keys.append(f"identity:{args.identity}")
@@ -315,6 +379,9 @@ async def run_http_request(
             "http_request",
             arguments,
             effect_class=effect_class,
+            # 记录派发时**真实**的方法/入口/身份：领域登记工具据此关联证据，
+            # 而不是把 URL 一律伪装成 GET（§4.2）。
+            context_extra={"method": method, "url": args.url, "identity": args.identity},
         )
 
         operation = {
@@ -331,6 +398,8 @@ async def run_http_request(
                 "params": args.params,
                 "body": args.body,
                 "json_body": args.json_body,
+                "form_fields": [item.model_dump() for item in (args.form_fields or [])] or None,
+                "multipart_parts": [item.model_dump() for item in (args.multipart_parts or [])] or None,
                 "identity_id": execution_identity(toolbox, args.identity),
                 "max_redirects": 10 if args.follow_redirects else 0,
                 "save_artifact": args.save_body_artifact,
@@ -359,6 +428,7 @@ async def run_http_request(
                 operation_id=operation_id,
                 status=OperationStatus.FAILED,
                 summary=f"执行岛明确拒绝了该操作，请求未发出：{exc}",
+                data={"error_category": "construction", "delivery_state": "not_applied"},
                 error=ToolError(
                     code=str(ErrorCode.VALIDATION_FAILED),
                     message=str(exc),
@@ -378,6 +448,7 @@ async def run_http_request(
                 operation_id=operation_id,
                 status=OperationStatus.UNKNOWN,
                 summary="无法确认远端是否已接收该操作；必须先查询再决定后续，不要直接重试",
+                data={"error_category": "transport", "delivery_state": "unknown"},
                 error=ToolError(
                     code=str(ErrorCode.EXECUTOR_UNAVAILABLE),
                     message=str(exc),
@@ -448,7 +519,23 @@ async def run_http_request(
                 "body_sha256": payload.get("body_sha256"),
                 "tls_verified": payload.get("tls_verified"),
                 "tls_verification_enabled": payload.get("tls_verification_enabled"),
+                # 请求构造事实（可复核）；**不**回显敏感请求体内容。
+                "request_encoding": payload.get("request_encoding"),
+                "request_body_bytes": payload.get("request_body_bytes"),
+                "request_body_sha256": payload.get("request_body_sha256"),
+                "request_body_digest": operation["request_digest"],
             }
+        )
+        # request_encoded=true 只证明本地构造成立，不证明服务端解析成功。
+        data["request_encoded"] = payload.get("request_encoding") not in (None, "none")
+        data["request_metadata_artifact_id"] = next(
+            (
+                str(ref.artifact_id)
+                for ref in refs
+                if str(ref.summary or "").startswith("response.meta.json")
+                and ref.availability == "available"
+            ),
+            None,
         )
         if status is OperationStatus.SUCCEEDED:
             raw = await _read_body_preview(toolbox, receipt.job_id, payload)
@@ -461,6 +548,9 @@ async def run_http_request(
                 data["body_preview"] = preview
         if payload.get("decode_error"):
             data["decode_error"] = payload["decode_error"]
+    if status is OperationStatus.FAILED:
+        data["error_category"] = "response"
+        data["delivery_state"] = "delivered"
 
     error = None
     if status is OperationStatus.FAILED and snapshot.error is not None:
@@ -527,6 +617,8 @@ async def http_request(
     params_json: str | None = None,
     body: str | None = None,
     json_body_json: str | None = None,
+    form_fields_json: str | None = None,
+    multipart_parts_json: str | None = None,
     follow_redirects: bool = True,
     save_body_artifact: bool = True,
     verify_tls: bool = True,
@@ -544,8 +636,15 @@ async def http_request(
             不同身份使用独立 Cookie jar，不会互相污染。
         headers_json: 附加请求头的 JSON 对象字符串，例如 `{"X-Test":"1"}`。
         params_json: 查询参数的 JSON 对象字符串，例如 `{"id":"1"}`。
-        body: 原始请求体字符串。与 json_body_json 互斥。
+        body: 原始请求体字符串。与其它三种请求体形态互斥。
         json_body_json: JSON 请求体的 JSON 字符串。与 body 互斥。
+        form_fields_json: `application/x-www-form-urlencoded` 表单字段的 JSON 数组字符串，
+            形如 `[{"name":"user","value":"a"},{"name":"role","value":"x"}]`。
+            **支持重复字段名与原顺序**；编码由执行端统一完成。与其它体形态互斥。
+        multipart_parts_json: `multipart/form-data` part 的 JSON 数组字符串，形如
+            `[{"name":"file","value":"内容","filename":"a.txt","content_type":"text/plain"}]`。
+            boundary、CRLF 与 `Content-Disposition` 由执行端生成，**不要**手工提供
+            `Content-Type` 头。与其它体形态互斥。
         follow_redirects: 是否跟随重定向（每一跳仍会做范围检查）。
         save_body_artifact: 是否把原始响应体保存为不可变工件（建议保持开启，
             否则后续无法引用原始证据）。
@@ -574,6 +673,10 @@ async def http_request(
         params=_parse_json_object(params_json, "params_json"),
         body=body,
         json_body=_parse_json_value(json_body_json, "json_body_json"),
+        form_fields=_parse_model_list(form_fields_json, "form_fields_json", FormField),
+        multipart_parts=_parse_model_list(
+            multipart_parts_json, "multipart_parts_json", MultipartPart
+        ),
         follow_redirects=follow_redirects,
         save_body_artifact=save_body_artifact,
         verify_tls=verify_tls,
@@ -639,6 +742,19 @@ def _parse_json_value(raw: str | None, field: str) -> Any:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ValueError(f"{field} 不是合法 JSON：{exc}") from exc
+
+
+def _parse_model_list(raw: str | None, field: str, model: type[Any]) -> list[Any] | None:
+    """解析结构化请求体数组；空值返回 None（表示"未使用该形态"）。"""
+    parsed = _parse_json_value(raw, field)
+    if parsed is None:
+        return None
+    if not isinstance(parsed, list):
+        raise ValueError(f"{field} 必须是 JSON 数组")
+    try:
+        return [model.model_validate(item) for item in parsed]
+    except Exception as exc:
+        raise ValueError(f"{field} 的字段不合法：{exc}") from exc
 
 
 HTTP_TOOLS = [http_request, session_info]

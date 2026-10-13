@@ -16,7 +16,7 @@ from pathlib import Path
 METHODS_DIR = Path(__file__).resolve().parent / "methods"
 
 #: 资料集版本。新增/修改 md 文件时必须同步递增，并写入 run 的 prompt_version 快照。
-METHODS_BUNDLE_VERSION = "1"
+METHODS_BUNDLE_VERSION = "2"
 
 
 @dataclass(frozen=True, slots=True)

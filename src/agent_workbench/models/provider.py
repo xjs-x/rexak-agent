@@ -47,6 +47,9 @@ class ModelBinding:
             "base_url": self.profile.base_url,
             "context_limit": self.profile.context_limit,
             "output_reserve": self.profile.output_reserve,
+            "request_output_limit": self.profile.effective_output_limit,
+            "recovery_output_limit": self.profile.recovery_output_limit,
+            "max_response_recoveries": self.profile.max_response_recoveries,
             "input_budget_tokens": self.profile.input_budget_tokens,
             "budget_safety_margin_ratio": self.profile.budget_safety_margin_ratio,
             "profile_version": self.profile.profile_version,
@@ -86,6 +89,9 @@ def resolve_provider_profile(
             secret_ref="env:XIAOMI_API_KEY",
             context_limit=profile.context_limit,
             output_reserve=cfg.output_reserve_tokens,
+            request_output_limit=cfg.output_reserve_tokens,
+            recovery_output_limit=cfg.recovery_output_limit_tokens,
+            max_response_recoveries=cfg.max_response_recoveries,
             budget_safety_margin_ratio=profile.budget_safety_margin_ratio,
             supports_tools=profile.supports_tools,
             supports_streaming=profile.supports_streaming,
@@ -124,12 +130,12 @@ def build_chat_model(
     extra = dict(binding.extra or {})
     if binding.max_retries != 0:
         raise ProviderConfigurationError("SDK 隐藏重试必须关闭，实际尝试由公共调用层观测")
-    extra.setdefault("max_tokens", binding.profile.output_reserve)
+    extra.setdefault("max_tokens", binding.profile.effective_output_limit)
     if (
         int(extra.get("max_completion_tokens", extra["max_tokens"]))
-        > binding.profile.output_reserve
+        > binding.profile.effective_output_limit
     ):
-        raise ProviderConfigurationError("输出上限不能超过用于请求预算的输出预留")
+        raise ProviderConfigurationError("输出上限不能超过用于请求预算的输出额度")
     if binding.profile.provider_id == "xiaomi":
         extra.setdefault("use_responses_api", False)
     return model_class(
