@@ -956,6 +956,8 @@ async def page_conversation(
     from agent_workbench.persistence.db import get_database
 
     source = _conversation_sources(session_id)
+    from agent_workbench.persistence.tables import EventRow
+
     stmt = select(source)
     if cursor is not None:
         timestamp, rank, entry_id = _parse_conversation_cursor(cursor)
@@ -997,6 +999,22 @@ async def page_conversation(
             else {}
         )
 
+        model_ids = [str(row["id"]) for row in rows[:limit] if row["source"] == "assistant"]
+        qualities = {}
+        if model_ids:
+            for event in (
+                await db.execute(
+                    select(EventRow)
+                    .where(
+                        EventRow.session_id == session_id,
+                        EventRow.type == "model.response_quality",
+                        EventRow.payload["model_call_id"].astext.in_(model_ids),
+                    )
+                    .order_by(EventRow.session_seq)
+                )
+            ).scalars():
+                qualities[event.payload["model_call_id"]] = event.payload.get("outcome")
+
     store = build_artifact_store()
     entries: list[dict[str, Any]] = []
     for row in rows[:limit]:
@@ -1021,6 +1039,7 @@ async def page_conversation(
                 "preview": body[:1200] if available else "[正文工件不可用]",
                 "has_more": len(body) > 1200 if available else False,
                 "available": available,
+                "response_outcome": qualities.get(str(row["id"])),
             }
         )
     return {

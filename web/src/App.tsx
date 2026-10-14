@@ -35,6 +35,12 @@ const eventTypes = [
   "message.delta",
   "message.completed",
   "plan.updated",
+  "focus.updated",
+  "leads.recalled",
+  "context.selected",
+  "segment.yielded",
+  "snapshot.captured",
+  "model.response_quality",
   "tool.accepted",
   "tool.output",
   "tool.completed",
@@ -77,6 +83,7 @@ const statusLabels: Record<string, string> = {
   "message.delta": "助手输出",
   "message.completed": "消息已接收",
   "plan.updated": "计划更新",
+  "model.response_quality": "模型响应检查",
   "tool.accepted": "工具已受理",
   "tool.output": "工具输出",
   "tool.completed": "工具已结束",
@@ -136,6 +143,7 @@ function text(value: unknown, max = 280): string {
 function eventSummary(event: AgentEvent): string {
   const payload = event.payload as Record<string, unknown>;
   if (event.type === "message.delta") return text(payload.delta ?? "", 160);
+  if (event.type === "model.response_quality") return payload.outcome === "usable" ? "已得到完整响应" : `响应${responseOutcomeLabels[String(payload.outcome)] ?? "不可用"}；正在处理恢复或故障`;
   if (event.type === "run.status" && payload.scope === "model_request") return modelPhaseLabels[String(payload.phase)] ?? "模型请求状态更新";
   if (event.type === "run.status") return `运行状态：${label(String(payload.status ?? ""))}`;
   if (event.type === "input.required") return "测试需要你补充条件";
@@ -148,6 +156,10 @@ const modelPhaseLabels: Record<string, string> = {
   thinking: "模型正在思考",
   responding: "模型正在生成回复或工具调用",
   finished: "模型请求已结束",
+};
+
+const responseOutcomeLabels: Record<string, string> = {
+  truncated: "不完整（达到输出限制）", empty: "为空", invalid_tool_call: "工具调用不完整", refused: "被供应商拒绝",
 };
 
 function latestRun(snapshot: Snapshot | null): RunItem | null {
@@ -252,6 +264,7 @@ function ChatMessage({ sessionId, entry }: { sessionId: string; entry: Conversat
   };
   if (!body && !error) return null;
   return <article className={`chat-message ${entry.role === "user" ? "user" : "assistant"}`} data-role={entry.role}>
+    {entry.response_outcome && entry.response_outcome !== "usable" && <small className="body-error">响应{responseOutcomeLabels[entry.response_outcome] ?? "不可用"}；以下仅为收到的片段。</small>}
     <div className="message-body">{entry.role === "user" ? <p>{body}</p> : <div className="markdown-text">{body}</div>}</div>
     {error && <small className="body-error">正文加载失败：{error}</small>}
     {nextOffset !== null && <button disabled={loading} onClick={() => void loadMore()}>{loading ? "加载中…" : "展开剩余正文"}</button>}

@@ -157,17 +157,24 @@ async def update_plan(
         next_action = str(parsed_assessment.get("next_action") or "").strip()
         if not changed or not next_action:
             raise ValueError("判断必须同时说明 changed（改变了什么）与 next_action（下一步）")
-        refs = coerce_str_list(parsed_assessment.get("evidence_refs"), "evidence_refs")[:MAX_ASSESSMENT_REFS]
+        refs = coerce_str_list(parsed_assessment.get("evidence_refs"), "evidence_refs")
+        if len(refs) > MAX_ASSESSMENT_REFS:
+            raise ValueError(f"判断最多引用 {MAX_ASSESSMENT_REFS} 个工件")
+        if refs:
+            refs = await _verify_artifacts_exist(runtime.context.toolbox, refs)
         if len(changed) > MAX_ASSESSMENT_CHARS or len(next_action) > MAX_ASSESSMENT_CHARS:
             raise ValueError(f"判断字段最多 {MAX_ASSESSMENT_CHARS} 字")
         previous_assessment = runtime.state.get("work_assessment") or {}
+        uncertainty = str(parsed_assessment.get("uncertainty") or "").strip() or None
+        if uncertainty and len(uncertainty) > MAX_ASSESSMENT_CHARS:
+            raise ValueError(f"判断字段最多 {MAX_ASSESSMENT_CHARS} 字")
         assessment = WorkAssessment(
             step_id=(focus or {}).get("step_id"),
             lead_id=(focus or {}).get("lead_id"),
             changed=changed,
             next_action=next_action,
             evidence_refs=refs,
-            uncertainty=(str(parsed_assessment["uncertainty"]) if parsed_assessment.get("uncertainty") else None),
+            uncertainty=uncertainty,
             source_tool_call_id=tool_call_id,
             revision=int(previous_assessment.get("revision") or 0) + 1,
         )
@@ -325,7 +332,10 @@ async def record_lead(
         asset_id: UUID | None = None
         asset_note: str | None = None
         evidence_context = await _evidence_operation_context(
-            db, toolbox, [str(item) for item in evidence_refs], source_operation_id=source_operation_id
+            db,
+            toolbox,
+            [str(item) for item in evidence_refs],
+            source_operation_id=source_operation_id,
         )
         if url:
             asset_id, asset_note = await _link_asset(
@@ -735,26 +745,27 @@ async def _evidence_operation_context(
     from agent_workbench.persistence.tables import ArtifactRow, ToolOperationRow
 
     operation_ids: list[UUID] = []
+    for ref in evidence_refs:
+        artifact = await db.get(ArtifactRow, UUID(ref))
+        if (
+            artifact is not None
+            and artifact.source_operation_id is not None
+            and artifact.source_operation_id not in operation_ids
+        ):
+            operation_ids.append(artifact.source_operation_id)
+    selected_id: UUID | None = None
     if source_operation_id:
         try:
-            operation_ids.append(UUID(str(source_operation_id)))
+            selected_id = UUID(str(source_operation_id))
         except ValueError as exc:
             raise ValueError(f"source_operation_id 不是合法 UUID：{source_operation_id}") from exc
-    else:
-        seen: list[UUID] = []
-        for ref in evidence_refs:
-            try:
-                artifact = await db.get(ArtifactRow, UUID(ref))
-            except ValueError:
-                continue
-            if artifact is None or artifact.source_operation_id is None:
-                continue
-            if artifact.source_operation_id not in seen:
-                seen.append(artifact.source_operation_id)
-        operation_ids = seen
+        if operation_ids and selected_id not in operation_ids:
+            raise ValueError("source_operation_id 不是所引用证据的采集来源")
+        if selected_id not in operation_ids:
+            operation_ids.append(selected_id)
 
     ambiguous = len(operation_ids) > 1
-    if len(operation_ids) != 1:
+    if selected_id is None and len(operation_ids) != 1:
         return {
             "operation_id": None,
             "method": None,
@@ -764,7 +775,7 @@ async def _evidence_operation_context(
             "ambiguous": ambiguous,
         }
 
-    row = await db.get(ToolOperationRow, operation_ids[0])
+    row = await db.get(ToolOperationRow, selected_id or operation_ids[0])
     if row is None or row.session_id != toolbox.session_id:
         raise ValueError("source_operation_id 不属于当前会话")
     context = row.execution_context or {}
@@ -773,9 +784,13 @@ async def _evidence_operation_context(
         "operation_id": row.operation_id,
         "method": str(raw_method).upper() if raw_method else None,
         "entry_url": context.get("url"),
-        "identity_refs": [str(context["identity"])] if context.get("identity") else [],
-        "source_operation_ids": [str(row.operation_id)],
-        "ambiguous": False,
+        "identity_refs": [str(row.identity_id)]
+        if row.identity_id is not None
+        else [str(context["identity"])]
+        if context.get("identity")
+        else [],
+        "source_operation_ids": [str(item) for item in operation_ids],
+        "ambiguous": ambiguous,
     }
 
 
@@ -796,7 +811,13 @@ async def _link_asset(
     """
     if not url:
         return None, None
-    asset_method = (explicit_method or "").strip().upper() or evidence_context.get("method")
+    provided_method = (explicit_method or "").strip().upper()
+    captured_method = evidence_context.get("method")
+    if captured_method and provided_method and captured_method != provided_method:
+        raise ValueError("method 与真实采集操作不一致，请按来源操作关联")
+    if evidence_context.get("entry_url") and evidence_context["entry_url"] != url:
+        return None, "URL 与采集操作入口不同；保留证据引用，不把该操作的方法套用于另一个入口。"
+    asset_method = captured_method or provided_method
     if not asset_method:
         return None, (
             "仅提供 URL 而缺少采集方法，未建立精确端点资产。"

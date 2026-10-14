@@ -776,6 +776,8 @@ export interface components {
             has_more: boolean;
             /** Available */
             available: boolean;
+            /** Response Outcome */
+            response_outcome?: string | null;
         };
         /** ConversationPage */
         ConversationPage: {

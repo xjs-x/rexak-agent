@@ -16,6 +16,7 @@ from langchain.agents.middleware import AgentMiddleware
 from sqlalchemy import func, select
 
 from agent_workbench.agent.context import RunContext
+from agent_workbench.agent.focus import assessment_applies
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.domain.reports import create_report_snapshot
 from agent_workbench.evidence.artifacts import ArtifactStore
@@ -63,7 +64,8 @@ def stage_metadata(
                 "intent": (state.get("current_focus") or {}).get("intent"),
                 "source": (state.get("current_focus") or {}).get("source"),
             },
-            "next_action": assessment.get("next_action"),
+            "assessment_applies_to_focus": assessment_applies(state),
+            "next_action": assessment.get("next_action") if assessment_applies(state) else None,
             "model_explanation": {
                 key: (state.get("work_summary") or {}).get(key)
                 for key in (
@@ -131,6 +133,11 @@ async def _domain_signals(toolbox: Any) -> tuple[dict[str, Any], dict[str, Any]]
         ).scalar_one()
     signals = {"observations": observations, "findings": findings, "leads": leads}
     covered = {
+        "domain_versions": {
+            "observations": dict.fromkeys(observations, 1),
+            "findings": dict(findings),
+            "leads": dict(leads),
+        },
         "latest_domain_records": {
             "observations": observations[-1] if observations else None,
             "findings": findings[-1][0] if findings else None,

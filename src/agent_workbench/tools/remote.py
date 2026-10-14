@@ -94,6 +94,7 @@ async def record_result(
     refs: list[ArtifactRef] | None = None,
     failure: str | None = None,
     snapshot: JobSnapshot | None = None,
+    result_summary: dict[str, Any] | None = None,
 ) -> None:
     from agent_workbench.contracts.events import EventType
     from agent_workbench.observability.events import append_event
@@ -102,6 +103,12 @@ async def record_result(
         await ToolOperationRepository(db).mark_result(
             operation_id, status=status, artifact_ids=[str(r.artifact_id) for r in (refs or [])]
         )
+        if result_summary is not None:
+            from agent_workbench.persistence.tables import ToolOperationRow
+
+            row = await db.get(ToolOperationRow, operation_id)
+            if row is not None:
+                row.result_snapshot = result_summary
         if snapshot is not None and (job_id is None or snapshot.job_id != job_id):
             raise ValueError("远端快照与当前 job_id 不一致")
         if job_id is not None:

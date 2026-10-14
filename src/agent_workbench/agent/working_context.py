@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -62,7 +63,10 @@ async def assemble_working_context(
             selected.append({**lead_summary(row), "recall_reason": reason})
             ids.add(row.id)
 
-    for raw in [focus.get("lead_id"), *(state.get("active_lead_ids") or [])[:limit]]:
+    retained_limit = max(1, limit - 2)
+    for raw in [focus.get("lead_id"), *(state.get("active_lead_ids") or [])[:retained_limit]]:
+        if len(selected) >= retained_limit:
+            break
         if not raw:
             continue
         try:
@@ -79,7 +83,7 @@ async def assemble_working_context(
         if step.get("lead_id") and step.get("status") not in {"done", "dropped"}
     ]
     for raw in plan_lead_ids:
-        if len(selected) >= limit:
+        if len(selected) >= limit - 1:
             break
         try:
             row = (await db.execute(base.where(LeadRow.id == UUID(raw)))).scalar_one_or_none()
@@ -90,26 +94,39 @@ async def assemble_working_context(
 
     # 身份关系检索：与已选线索共享身份集合的未完成线索。
     identity_values: list[str] = []
+    asset_values: list[UUID] = []
     if selected:
         try:
             rows = (
                 await db.execute(
-                    select(LeadRow.identity_refs).where(
+                    select(LeadRow.identity_refs, LeadRow.asset_id).where(
                         LeadRow.id.in_([UUID(item["lead_id"]) for item in selected])
                     )
                 )
             ).all()
         except ValueError:
             rows = []
-        identity_values = sorted({ref for (refs,) in rows for ref in (refs or []) if ref})
-    if identity_values and len(selected) < limit:
-        related = base.where(LeadRow.identity_refs.op("?|")(identity_values))
+        identity_values = sorted({ref for refs, _asset in rows for ref in (refs or []) if ref})
+        asset_values = list({asset for _refs, asset in rows if asset is not None})
+    if state.get("active_identity_id"):
+        identity_values = sorted({*identity_values, str(state["active_identity_id"])})
+    relationships = []
+    if identity_values:
+        relationships.append(
+            or_(*(LeadRow.identity_refs.contains([identity]) for identity in identity_values))
+        )
+    if asset_values:
+        relationships.append(LeadRow.asset_id.in_(asset_values))
+    if relationships and len(selected) < limit - 1:
+        related = base.where(or_(*relationships))
         if ids:
             related = related.where(LeadRow.id.not_in(ids))
         for candidate in (
             await db.execute(related.order_by(LeadRow.created_at, LeadRow.id).limit(limit))
         ).scalars():
-            add(candidate, "identity_related")
+            if len(selected) >= limit - 1:
+                break
+            add(candidate, "asset_or_identity_related")
 
     count = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one())
     latest_change = (
@@ -125,6 +142,8 @@ async def assemble_working_context(
                 "count": count,
                 "latest_change": str(latest_change),
                 "assessment_revision": int(assessment.get("revision") or 0),
+                "active_identity_id": state.get("active_identity_id"),
+                "plan_revision": int(state.get("plan_revision") or 0),
             },
             sort_keys=True,
         ).encode()
@@ -170,7 +189,12 @@ async def assemble_working_context(
             next_cursor = cursor_for(row)
         # 关键词兜底：只在关系检索不足时才使用，且不依赖整句精确包含。
         query = str(focus.get("intent") or state.get("objective") or "").strip()[:128]
-        related = base.where(LeadRow.hypothesis.contains(query, autoescape=True)) if query else base
+        words = re.findall(r"[\w-]{2,}", query.casefold())[:6]
+        related = (
+            base.where(or_(*(LeadRow.hypothesis.ilike(f"%{word}%") for word in words)))
+            if words
+            else base
+        )
         for candidate in (
             await db.execute(related.order_by(LeadRow.created_at, LeadRow.id).limit(limit))
         ).scalars():

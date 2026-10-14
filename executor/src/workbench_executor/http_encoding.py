@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urlencode
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 BodyMode = Literal["none", "raw", "json", "form", "multipart"]
 
@@ -58,6 +58,27 @@ class MultipartPart(BaseModel):
     value: str = Field(default="", max_length=MAX_PART_BYTES)
     filename: str | None = Field(default=None, max_length=256)
     content_type: str | None = Field(default=None, max_length=128)
+
+    @field_validator("filename", "content_type", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: Any) -> Any:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("value")
+    @classmethod
+    def _utf8_byte_limit(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > MAX_PART_BYTES:
+            raise ValueError(f"multipart part 最多 {MAX_PART_BYTES} UTF-8 字节")
+        return value
+
+    @field_validator("name", "filename", "content_type")
+    @classmethod
+    def _safe_metadata(cls, value: str | None) -> str | None:
+        if value is not None and any(char in value for char in ("\r", "\n", "\x00")):
+            raise ValueError("multipart 元数据不能包含 CR/LF/NUL")
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,11 +127,12 @@ def classify_body_mode(
 
 
 def _sanitize_token(value: str) -> str:
-    """part 名称/文件名不许包含 CR/LF 或引号，避免头部注入与畸形编码。"""
-    cleaned = value.replace("\r", "").replace("\n", "").replace('"', "'")
-    if not cleaned:
+    """转义 quoted-string，保持字段名与文件名的含义。"""
+    if any(char in value for char in ("\r", "\n", "\x00")):
+        raise BodyConstructionError("multipart 元数据不能包含 CR/LF/NUL")
+    if not value:
         raise BodyConstructionError("multipart part 的名称/文件名不能为空")
-    return cleaned
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def encode_request_body(

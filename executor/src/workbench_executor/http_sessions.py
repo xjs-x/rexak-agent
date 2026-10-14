@@ -24,6 +24,7 @@ import httpx
 
 from workbench_executor.http_encoding import (
     BodyConstructionError,
+    EncodedBody,
     FormField,
     MultipartPart,
     classify_body_mode,
@@ -223,7 +224,7 @@ class HttpSessionRegistry:
                 raise CsrfTokenUnavailable("json 注入需要 JSON 对象请求体")
             if csrf_destination not in {"form", "json", "header"}:
                 raise CsrfTokenUnavailable("不支持的 CSRF 注入位置")
-            if csrf_destination == "form" and mode == "raw":
+            if csrf_destination == "form" and isinstance(content, bytes):
                 raise CsrfTokenUnavailable("CSRF form 注入不能用于原始字节请求体")
         lock = self._locks.setdefault(identity_id, asyncio.Lock())
         async with lock, self._request_client(identity_id, verify_tls) as client:
@@ -265,14 +266,14 @@ class HttpSessionRegistry:
                             if item.name != target_name
                         ]
                         pairs.append((target_name, parser.value))
-                        normalized_fields = [FormField(name=name, value=value) for name, value in pairs]
+                        normalized_fields = [
+                            FormField(name=name, value=value) for name, value in pairs
+                        ]
                     elif mode == "multipart":
                         normalized_parts = [
                             item for item in normalized_parts if item.name != target_name
                         ]
-                        normalized_parts.append(
-                            MultipartPart(name=target_name, value=parser.value)
-                        )
+                        normalized_parts.append(MultipartPart(name=target_name, value=parser.value))
                     else:
                         pairs = [
                             (key, value)
@@ -337,6 +338,7 @@ class HttpSessionRegistry:
         )
         if isinstance(content, bytes):
             body_bytes: bytes | None = content
+            encoded = EncodedBody("raw", content, None)
         else:
             body_bytes = encoded.body or None
         if encoded.content_type and not any(
@@ -365,7 +367,12 @@ class HttpSessionRegistry:
                     key: value
                     for key, value in hop_headers.items()
                     if key.lower()
-                    not in {"content-type", "content-length", "content-encoding", "transfer-encoding"}
+                    not in {
+                        "content-type",
+                        "content-length",
+                        "content-encoding",
+                        "transfer-encoding",
+                    }
                 }
             if not same_origin(url, current_logical):
                 hop_headers = {
@@ -406,6 +413,7 @@ class HttpSessionRegistry:
                     }:
                         current_method = "GET"
                         current_body = None
+                        strip_entity_headers = True
                     current_logical = next_url
                     current_params = None
                     continue

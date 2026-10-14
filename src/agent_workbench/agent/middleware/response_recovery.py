@@ -31,6 +31,7 @@ from agent_workbench.models.response_quality import (
     ResponseQuality,
     batch_rejection,
     classify_response,
+    last_ai_message,
     recovery_feedback,
 )
 from agent_workbench.observability.events import append_event
@@ -87,11 +88,8 @@ def logical_decision_id(request: object, context: RunContext) -> UUID:
     return UUID(bytes=hashlib.sha256(raw.encode("utf-8")).digest()[:16])
 
 
-async def _recoveries_used(context: RunContext, logical_id: UUID) -> int:
-    """读取同一逻辑调用的**已完成尝试数**，用于自动重启后不重新获得无限恢复额度。
-
-    查询失败时按 0 处理（不阻断模型调用），但这只影响上限，不影响正确性。
-    """
+async def _attempts_used(context: RunContext, logical_id: UUID) -> int:
+    """已登记尝试（包括结果未知的 pending）均消耗额度；读失败不发送请求。"""
     try:
         async with context.toolbox.db.session() as db:
             count = int(
@@ -102,21 +100,23 @@ async def _recoveries_used(context: RunContext, logical_id: UUID) -> int:
                         .where(
                             ModelCallRow.logical_call_id == logical_id,
                             ModelCallRow.run_id == context.toolbox.run_id,
+                            ModelCallRow.phase == "agent",
                         )
                     )
                 ).scalar_one()
             )
-    except Exception as exc:  # 观测降级，不改变模型调用的正确性
+    except Exception as exc:
         log.warning("recovery_quota_read_failed", error_type=type(exc).__name__)
-        return 0
-    return max(0, count - 1)
+        raise
+    return count
 
 
 async def _record_quality(
-    context: RunContext, logical_id: UUID, attempt: int, quality: ResponseQuality
+    context: RunContext, logical_id: UUID, attempt: int, quality: ResponseQuality, response: object
 ) -> None:
     """把响应质量写进事件流，便于复盘"当时到底收到了什么"。"""
     try:
+        message = last_ai_message(response)
         async with context.toolbox.db.transaction() as db:
             await append_event(
                 db,
@@ -126,6 +126,10 @@ async def _record_quality(
                 payload={
                     "logical_call_id": str(logical_id),
                     "attempt_index": attempt,
+                    "model_call_id": message.response_metadata.get("workbench_model_call_id")
+                    if message
+                    else None,
+                    "response_id": message.id if message else None,
                     **quality.to_payload(),
                     "note": (
                         "网络成功与语义可用是两个维度；本事件只记录可观察的分类结果，"
@@ -140,7 +144,9 @@ async def _record_quality(
 class ResponseRecoveryMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
     """把不完整响应拦在工具节点之前，并做有限恢复。"""
 
-    def __init__(self, *, max_recoveries: int = 2, recovery_output_limit: int | None = None) -> None:
+    def __init__(
+        self, *, max_recoveries: int = 2, recovery_output_limit: int | None = None
+    ) -> None:
         super().__init__()
         self._max_recoveries = max(0, int(max_recoveries))
         self._recovery_output_limit = recovery_output_limit
@@ -152,16 +158,22 @@ class ResponseRecoveryMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             return await handler(request)
 
         logical_id = logical_decision_id(request, context)
-        used = await _recoveries_used(context, logical_id)
-        budget = max(0, self._max_recoveries - used)
+        used = await _attempts_used(context, logical_id)
+        remaining = max(0, 1 + self._max_recoveries - used)
+        if not remaining:
+            raise ModelResponseUnavailable(
+                "本次逻辑决策的响应恢复额度已用尽；保留 checkpoint，等待明确继续指令。"
+            )
         scope = RecoveryScope(
-            logical_call_id=logical_id, max_recoveries=budget, attempt_index=0
+            logical_call_id=logical_id, max_recoveries=self._max_recoveries, attempt_index=used
         )
         token = recovery_scope.set(scope)
-        feedback: str | None = None
+        feedback: str | None = (
+            "上一尝试未得到已接受的完整决策，请给出完整下一步或简短结论。" if used else None
+        )
         history: list[str] = []
         try:
-            for attempt in range(budget + 1):
+            for attempt in range(used, used + remaining):
                 scope.attempt_index = attempt
                 scope.reason = feedback
                 check = getattr(context.toolbox, "assert_control_current", None)
@@ -189,7 +201,7 @@ class ResponseRecoveryMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                             invalid_tool_count=quality.invalid_tool_count + 1,
                         )
                 scope.last_quality = quality
-                await _record_quality(context, logical_id, attempt, quality)
+                await _record_quality(context, logical_id, attempt, quality, response)
 
                 if quality.accepted:
                     return response

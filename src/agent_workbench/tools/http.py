@@ -399,7 +399,8 @@ async def run_http_request(
                 "body": args.body,
                 "json_body": args.json_body,
                 "form_fields": [item.model_dump() for item in (args.form_fields or [])] or None,
-                "multipart_parts": [item.model_dump() for item in (args.multipart_parts or [])] or None,
+                "multipart_parts": [item.model_dump() for item in (args.multipart_parts or [])]
+                or None,
                 "identity_id": execution_identity(toolbox, args.identity),
                 "max_redirects": 10 if args.follow_redirects else 0,
                 "save_artifact": args.save_body_artifact,
@@ -549,8 +550,20 @@ async def run_http_request(
         if payload.get("decode_error"):
             data["decode_error"] = payload["decode_error"]
     if status is OperationStatus.FAILED:
-        data["error_category"] = "response"
-        data["delivery_state"] = "delivered"
+        failure_code = snapshot.error.code if snapshot.error else None
+        if failure_code in {"request_construction_error", "csrf_unavailable"}:
+            data.update(error_category="construction", delivery_state="not_applied")
+        elif failure_code in {
+            "tls_certificate_error",
+            "http_connection_error",
+            "http_timeout",
+            "http_transport_error",
+        }:
+            data.update(error_category="transport", delivery_state="unknown")
+        else:
+            data.update(error_category="unknown", delivery_state="unknown")
+    elif status is OperationStatus.SUCCEEDED:
+        data.update(error_category="response", delivery_state="delivered")
 
     error = None
     if status is OperationStatus.FAILED and snapshot.error is not None:
@@ -583,8 +596,10 @@ async def run_http_request(
         error=error,
         truncated=truncated,
         execution_certainty=(
-            ExecutionCertainty.CONFIRMED
-            if status in {OperationStatus.SUCCEEDED, OperationStatus.FAILED}
+            ExecutionCertainty.NOT_APPLIED
+            if data.get("delivery_state") == "not_applied"
+            else ExecutionCertainty.CONFIRMED
+            if status is OperationStatus.SUCCEEDED
             else ExecutionCertainty.UNCERTAIN
         ),
         started_at=started_at,
@@ -598,6 +613,13 @@ async def run_http_request(
         status=str(snapshot.state),
         refs=refs,
         snapshot=snapshot,
+        result_summary={
+            "data": {
+                key: data.get(key)
+                for key in ("status_code", "content_type", "error_category", "delivery_state")
+            },
+            "error": {"code": error.code if error else None},
+        },
     )
     return result
 

@@ -138,6 +138,10 @@ async def ensure_current_checkpoint(
         version = values.get("state_schema_version")
 
     if version == 2:
+        if any(getattr(task, "result", None) is not None for task in (snapshot.tasks or ())):
+            raise StateSchemaIncompatibleError(
+                "v2 checkpoint 含未提交的并行结果，拒绝迁移；需先核对操作台账"
+            )
         source_id = str(snapshot.config["configurable"]["checkpoint_id"])
         migrated = await _apply_update(
             graph,
@@ -163,4 +167,3 @@ __all__ = [
     "ensure_current_checkpoint",
     "needs_migration",
 ]
-

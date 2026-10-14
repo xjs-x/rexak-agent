@@ -66,6 +66,20 @@ class MultipartPart(BaseModel):
             return None
         return value
 
+    @field_validator("value")
+    @classmethod
+    def _utf8_byte_limit(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > MAX_PART_BYTES:
+            raise ValueError(f"multipart part 最多 {MAX_PART_BYTES} UTF-8 字节")
+        return value
+
+    @field_validator("name", "filename", "content_type")
+    @classmethod
+    def _safe_metadata(cls, value: str | None) -> str | None:
+        if value is not None and any(char in value for char in ("\r", "\n", "\x00")):
+            raise ValueError("multipart 元数据不能包含 CR/LF/NUL")
+        return value
+
 
 def classify_body_mode(
     *,

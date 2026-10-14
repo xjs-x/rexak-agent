@@ -21,6 +21,11 @@ from langchain_core.messages import AIMessage
 
 ResponseOutcome = Literal["usable", "truncated", "empty", "invalid_tool_call", "refused"]
 
+
+class ModelResponseIncomplete(RuntimeError):
+    """辅助模型响应不可用；禁止提交不完整摘要或经验。"""
+
+
 #: 供应商终止原因里表示"输出被截断"的取值（不同适配器命名不同，这里统一归一化）。
 TRUNCATION_FINISH_REASONS = frozenset(
     {"length", "max_tokens", "max_output_tokens", "max_completion_tokens", "token_limit"}
@@ -155,7 +160,7 @@ def classify_response(response: Any) -> ResponseQuality:
         return ResponseQuality(
             "invalid_tool_call", finish_reason, len(text), len(tool_calls), len(invalid)
         )
-    if not text and not tool_calls:
+    if not text.strip() and not tool_calls:
         return ResponseQuality("empty", finish_reason, 0, 0, 0)
     return ResponseQuality("usable", finish_reason, len(text), len(tool_calls), 0)
 
@@ -176,9 +181,13 @@ def batch_rejection(response: Any) -> str | None:
                 f"同一批里出现了 {names.count(name)} 次 {name}；"
                 "多个同类更新会互相竞争同一份状态。请只保留一个，把其余改动放到下一轮。"
             )
+    seen_ids: set[str] = set()
     for index, call in enumerate(tool_calls):
         if not str(call.get("id") or "").strip():
             return f"第 {index + 1} 个工具调用缺少稳定 id，已拒绝执行该批。"
+        if call["id"] in seen_ids:
+            return "同批工具调用 ID 重复，已拒绝整批；请使用彼此独立的调用 ID。"
+        seen_ids.add(call["id"])
         if not str(call.get("name") or "").strip():
             return f"第 {index + 1} 个工具调用缺少工具名，已拒绝执行该批。"
         args = call.get("args")

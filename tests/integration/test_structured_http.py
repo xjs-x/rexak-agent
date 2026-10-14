@@ -357,6 +357,7 @@ async def test_303_drops_body_and_307_resends_same_encoded_bytes(echo):
     target_hits = [item for item in echo.records if item["path"] == "/target"]
     assert len(target_hits) == 2
     assert target_hits[0]["method"] == "GET" and target_hits[0]["body"] == b""
+    assert target_hits[0]["content_type"] is None
     assert target_hits[1]["method"] == "POST"
     assert target_hits[1]["body"] == json.dumps({"a": 1}, ensure_ascii=False).encode("utf-8")
 
@@ -379,9 +380,7 @@ async def test_concurrent_requests_keep_their_own_bodies(echo):
         )
     finally:
         await registry.close()
-    seen = {
-        urlsplit(item["path"]).path: parse_qsl(item["body"].decode()) for item in echo.records
-    }
+    seen = {urlsplit(item["path"]).path: parse_qsl(item["body"].decode()) for item in echo.records}
     for index in range(4):
         assert seen[f"/concurrent-{index}"] == [("n", str(index))]
 

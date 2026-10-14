@@ -22,6 +22,7 @@ from langchain_core.messages import SystemMessage, ToolMessage
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.context_sources import persist_history
+from agent_workbench.agent.focus import assessment_applies
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.config.catalog import ProviderProfile
 from agent_workbench.models.context_budget import ensure_fits, estimate_request, message_inventory
@@ -165,14 +166,14 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
         lines.append("### 用户约束（始终有效）\n" + "\n".join(f"- {item}" for item in constraints))
 
     if summary:
-        lines.append("### 工作摘要")
+        lines.append("### 历史工作摘要（以来源范围为准，当前焦点及判断优先）")
         if summary.get("current_focus"):
-            lines.append(f"- 当前焦点：{summary['current_focus']}")
+            lines.append(f"- 摘要时的焦点：{summary['current_focus']}")
         for key, label in (
             ("key_findings", "关键发现"),
             ("failed_approaches", "已排除方向"),
             ("unverified_hypotheses", "未验证假设"),
-            ("next_steps", "下一步"),
+            ("next_steps", "摘要时的下一步"),
         ):
             values = summary.get(key) or []
             if values:
@@ -205,14 +206,23 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
             "### 当前焦点\n"
             f"- 步骤 {focus.get('step_id') or '（无）'}：{focus.get('intent')}\n"
             f"- 来源：{focus.get('source') or 'explicit'}；理由：{focus.get('reason')}"
-            + (f"；返回主线步骤：{focus['return_to_step_id']}" if focus.get("return_to_step_id") else "")
+            + (
+                f"；返回主线步骤：{focus['return_to_step_id']}"
+                if focus.get("return_to_step_id")
+                else ""
+            )
         )
 
     assessment = state.get("work_assessment") or {}
     if assessment:
+        applicable = assessment_applies(state)
         lines.append(
-            "### 最近一次明确判断（解释，不是漏洞事实）\n"
-            f"- 这次结果改变了什么：{assessment.get('changed')}\n"
+            (
+                "### 当前明确判断（解释，不是漏洞事实）\n"
+                if applicable
+                else "### 历史判断（属于此前焦点，不能直接作为当前下一步）\n"
+            )
+            + f"- 这次结果改变了什么：{assessment.get('changed')}\n"
             f"- 下一步：{assessment.get('next_action')}"
             + (
                 f"\n- 不确定性：{assessment['uncertainty']}"
@@ -220,6 +230,7 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
                 else ""
             )
             + f"\n- 来源：工具调用 {assessment.get('source_tool_call_id')}（第 {assessment.get('revision')} 版）"
+            + f"；步骤 {assessment.get('step_id')}，线索 {assessment.get('lead_id')}"
         )
     elif plan:
         lines.append("### 最近一次明确判断\n- 尚未记录判断。请不要臆造此前的判断内容。")

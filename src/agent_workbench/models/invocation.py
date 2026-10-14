@@ -51,6 +51,7 @@ async def invoke_attempt(
     request_timeout_seconds: float | None = None,
     idle_timeout_seconds: float | None = None,
     manifest: dict[str, Any] | None = None,
+    require_recorded: bool = False,
 ) -> Any:
     """唯一网络尝试所有者；不透明重试，已交付流片段不拼接新输出。"""
     toolbox = scope.toolbox
@@ -123,6 +124,9 @@ async def invoke_attempt(
             phase=phase,
             error_code=type(exc).__name__,
         )
+        if require_recorded:
+            # 有限恢复依赖持久台账；未登记就发送会在重启后重新获得额度。
+            raise
 
     error_code: str | None = None
     response: Any = None
@@ -138,6 +142,11 @@ async def invoke_attempt(
             async with total_timeout, idle_timeout:
                 with scope.model_stream.track_call(str(model_call_id), note_activity):
                     response = await call()
+                    for message in response_messages(response) or []:
+                        if isinstance(message, AIMessage):
+                            message.response_metadata["workbench_model_call_id"] = str(
+                                model_call_id
+                            )
                     if total_timeout.expired() or idle_timeout.expired():
                         raise TimeoutError("调用在取消后迟到")
                     current_task = asyncio.current_task()
@@ -456,7 +465,7 @@ async def invoke_chat_model(
             },
         )
 
-    return await invoke_attempt(
+    response = await invoke_attempt(
         call,
         scope=scope,
         logical_id=logical_id,
@@ -466,6 +475,14 @@ async def invoke_chat_model(
         request_timeout_seconds=request_timeout_seconds,
         idle_timeout_seconds=idle_timeout_seconds,
     )
+    from agent_workbench.models.response_quality import ModelResponseIncomplete, classify_response
+
+    quality = classify_response(response)
+    if not quality.accepted or quality.valid_tool_count:
+        raise ModelResponseIncomplete(
+            f"辅助模型响应不可用：phase={phase}，outcome={quality.outcome}"
+        )
+    return response
 
 
 async def persist_manifest(

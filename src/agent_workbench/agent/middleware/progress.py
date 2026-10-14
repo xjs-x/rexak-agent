@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
@@ -131,15 +132,12 @@ async def semantic_progress_signature(db: AsyncSession, session_id: Any) -> str:
 async def activity_signature(db: AsyncSession, session_id: Any) -> str:
     """执行活动签名：**只反映"在做事"**，不计入知识增量。"""
     operations = (
-        (
-            await db.execute(
-                select(ToolOperationRow.tool_name, ToolOperationRow.status).where(
-                    ToolOperationRow.session_id == session_id
-                )
+        await db.execute(
+            select(ToolOperationRow.tool_name, ToolOperationRow.status).where(
+                ToolOperationRow.session_id == session_id
             )
         )
-        .all()
-    )
+    ).all()
     canonical = "\n".join(sorted(f"{name}:{status}" for name, status in operations)).encode()
     return hashlib.sha256(canonical).hexdigest()
 
@@ -155,24 +153,37 @@ async def similar_result_signature(
     rows = (
         (
             await db.execute(
-                select(ToolOperationRow.tool_name, ToolOperationRow.status).where(
+                select(ToolOperationRow)
+                .where(
                     ToolOperationRow.session_id == session_id,
                     ToolOperationRow.tool_name.in_(INTERACTION_TOOLS),
                     ToolOperationRow.status.in_(("succeeded", "failed", "cancelled", "unknown")),
                 )
+                .order_by(ToolOperationRow.created_at.desc(), ToolOperationRow.operation_id.desc())
+                .limit(1)
             )
         )
+        .scalars()
         .all()
     )
-    counters: dict[str, int] = {}
-    for name, status in rows:
-        counters[f"{name}:{status}"] = counters.get(f"{name}:{status}", 0) + 1
+    if not rows:
+        return ""  # 没有已完成结果，不能累计“相似”
+    row = rows[0]
+    result = row.result_snapshot or {}
+    data = result.get("data") or {}
     payload = {
         "focus_step_id": focus_step_id,
-        "classes": sorted(counters.items()),
+        "class": [
+            row.tool_name,
+            row.status,
+            data.get("status_code"),
+            data.get("content_type"),
+            data.get("error_category"),
+        ],
+        "error_code": (result.get("error") or {}).get("code"),
         "confidence": RESULT_SIMILARITY_CONFIDENCE,
     }
-    return hashlib.sha256(str(payload).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def next_progress_state(
@@ -219,6 +230,20 @@ class ProgressMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             similar = await similar_result_signature(
                 db, context.toolbox.session_id, focus.get("step_id")
             )
+        assessment = state.get("work_assessment") or {}
+        current = hashlib.sha256(
+            json.dumps(
+                {
+                    "domain": current,
+                    "assessment": {
+                        key: assessment.get(key)
+                        for key in ("changed", "next_action", "evidence_refs", "uncertainty")
+                    },
+                    "focus": [focus.get("step_id"), focus.get("lead_id")],
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
         update = next_progress_state(
             str(state.get("last_progress_signature") or ""),
             int(state.get("no_progress_streak") or 0),
@@ -233,6 +258,8 @@ class ProgressMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 similar,
             )
         )
+        if state.get("last_progress_signature") and state.get("last_progress_signature") != current:
+            update["similar_result_streak"] = 0
         if (
             update["no_progress_streak"] >= STRATEGY_FEEDBACK_STREAK
             and turn - int(state.get("last_progress_reminder_turn") or -8)

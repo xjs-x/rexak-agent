@@ -51,6 +51,7 @@ class ModelBinding:
             "recovery_output_limit": self.profile.recovery_output_limit,
             "max_response_recoveries": self.profile.max_response_recoveries,
             "input_budget_tokens": self.profile.input_budget_tokens,
+            "max_input_tokens": self.profile.max_input_tokens,
             "budget_safety_margin_ratio": self.profile.budget_safety_margin_ratio,
             "profile_version": self.profile.profile_version,
             "token_estimation_method": self.profile.token_estimation_method,

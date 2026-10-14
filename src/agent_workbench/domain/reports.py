@@ -273,6 +273,11 @@ class ReportService:
                 observations_last=str(observations[-1].id) if observations else None,
                 findings_last=str(findings[-1].id) if findings else None,
                 leads_last=str(leads[-1].id) if leads else None,
+                domain_versions={
+                    "observations": {str(row.id): 1 for row in observations},
+                    "findings": {str(row.id): row.revision for row in findings},
+                    "leads": {str(row.id): row.revision for row in leads},
+                },
             ),
         }
         latest_run = runs[-1] if runs else None
@@ -625,12 +630,19 @@ def _stage_coverage(
     observations_last: str | None,
     findings_last: str | None,
     leads_last: str | None,
+    domain_versions: dict[str, dict[str, int]] | None = None,
 ) -> dict[str, Any]:
     """区分"生成时间"与"覆盖到的位置"，并标示跨来源读取到的新记录（§8.2）。"""
     covered = (stage_metadata or {}).get("covered_position") or {}
     claimed = covered.get("latest_domain_records") or {}
     newer: list[str] = []
-    if claimed:
+    versions = covered.get("domain_versions")
+    if versions is not None and domain_versions is not None:
+        for kind, actual in domain_versions.items():
+            old = versions.get(kind) or {}
+            if any(key not in old or revision > old[key] for key, revision in actual.items()):
+                newer.append(kind)
+    elif claimed:
         if observations_last and str(claimed.get("observations")) != observations_last:
             newer.append("observations")
         if findings_last and str(claimed.get("findings")) != findings_last:
@@ -668,12 +680,20 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
         focus = stage.get("current_focus_summary") or {}
         lines.append(
             f"- 当前处理：{_safe_markdown(str(focus.get('intent') or '未记录'))}"
-            + (f"（步骤 {focus.get('step_id')}，来源 {focus.get('source')}）" if focus.get("step_id") else "")
+            + (
+                f"（步骤 {focus.get('step_id')}，来源 {focus.get('source')}）"
+                if focus.get("step_id")
+                else ""
+            )
         )
         assessment = stage.get("work_assessment") or {}
         if assessment:
+            applicable = stage.get("assessment_applies_to_focus", True)
+            if not applicable:
+                lines.append("- 以下是此前焦点的历史判断，当前焦点尚未记录新判断。")
             lines.append(f"- 这次结果改变了什么：{_safe_markdown(str(assessment.get('changed')))}")
-            lines.append(f"- 下一步：{_safe_markdown(str(assessment.get('next_action')))}")
+            label = "下一步" if applicable else "此前拟定的下一步"
+            lines.append(f"- {label}：{_safe_markdown(str(assessment.get('next_action')))}")
             if assessment.get("uncertainty"):
                 lines.append(f"- 不确定性：{_safe_markdown(str(assessment['uncertainty']))}")
             lines.append(
@@ -683,9 +703,7 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
         else:
             # 不能由模板自动补成"环境无漏洞"或"已充分覆盖"。
             lines.append("- 尚未记录判断：本阶段没有留下结构化判断，不能据此推断结论。")
-        raw_steps = [
-            step for step in (stage.get("goal_progress") or []) if isinstance(step, dict)
-        ]
+        raw_steps = [step for step in (stage.get("goal_progress") or []) if isinstance(step, dict)]
         steps = [step for step in raw_steps if step.get("status") not in {"done", "dropped"}]
         if steps:
             lines.append("- 当前计划（未完成）：")
@@ -716,7 +734,13 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
                 + "。本快照不是同一时刻的原子截图。"
             )
         lines.extend(
-            ["", "阶段原始元数据（脱敏）：", "", _safe_markdown(json.dumps(stage, ensure_ascii=False)), ""]
+            [
+                "",
+                "阶段原始元数据（脱敏）：",
+                "",
+                _safe_markdown(json.dumps(stage, ensure_ascii=False)),
+                "",
+            ]
         )
     if snapshot.get("observations"):
         lines.extend(["", "## 关键观察与来源", ""])

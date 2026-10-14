@@ -17,6 +17,7 @@ class ConversationEntry(BaseModel):
     preview: str
     has_more: bool
     available: bool
+    response_outcome: str | None = None
 
 
 class ConversationPage(BaseModel):

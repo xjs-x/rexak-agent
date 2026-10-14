@@ -63,6 +63,7 @@ class ModelObserverMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             request_timeout_seconds=self._request_timeout_seconds,
             idle_timeout_seconds=self._idle_timeout_seconds,
             manifest=getattr(context.toolbox, "context_manifest", None),
+            require_recorded=scope is not None,
         )
 
 

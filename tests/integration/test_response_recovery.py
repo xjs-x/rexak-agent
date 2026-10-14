@@ -177,7 +177,8 @@ async def test_refusal_is_not_retried_to_bypass_it(database, unique_name):
     )
     with pytest.raises(ModelResponseRefused):
         await graph.ainvoke(
-            cast(Any, {"messages": [HumanMessage(content="被拒绝的请求", id="u1")]}), context=context
+            cast(Any, {"messages": [HumanMessage(content="被拒绝的请求", id="u1")]}),
+            context=context,
         )
     calls = await _calls(database, context.toolbox.run_id)
     assert len(calls) == 1, "明确拒绝不得自动重试"
@@ -239,11 +240,12 @@ async def test_restart_does_not_regain_unlimited_recovery_quota(database, unique
     assert len(first_batch) == 3
 
     # 自动重启：同样的逻辑决策（run + 片段 + 稳定消息 ID 范围）不得重新获得无限额度。
-    with pytest.raises(ModelResponseUnavailable):
-        await _reject_all_chain(middleware, request_for())
+    for _ in range(3):
+        with pytest.raises(ModelResponseUnavailable):
+            await _reject_all_chain(middleware, request_for())
     second_batch = await _calls(database, context.toolbox.run_id)
-    assert len(second_batch) == 4, "重启后只剩 0 次恢复额度"
-    assert second_batch[-1].retry_index == 3
+    assert len(second_batch) == 3, "额度耗尽后反复重启也不得新增网络请求"
+    assert second_batch[-1].retry_index == 2
     assert len({call.logical_call_id for call in second_batch}) == 1
 
 

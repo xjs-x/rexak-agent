@@ -26,7 +26,7 @@ INFERRED_REASON = "由唯一进行中步骤承接"
 
 FOCUS_SOURCES = ("explicit", "plan_inferred")
 
-_ACTIVE_STATUSES = frozenset({"pending", "in_progress", "blocked"})
+_ACTIVE_STATUSES = frozenset({"pending", "in_progress"})
 
 
 def _step_id(step: Mapping[str, Any]) -> str:
@@ -64,6 +64,11 @@ def resolve_focus(
         step_id = explicit_focus.get("step_id")
         if step_id is not None and str(step_id) not in by_id:
             raise ValueError("焦点 step_id 不属于当前计划")
+        if step_id is not None and by_id[str(step_id)].get("status") not in _ACTIVE_STATUSES:
+            raise ValueError("焦点步骤已完成、已放弃或受阻，请先调整步骤状态")
+        return_id = explicit_focus.get("return_to_step_id")
+        if return_id is not None and str(return_id) not in by_id:
+            raise ValueError("焦点 return_to_step_id 不属于当前计划")
         intent = str(explicit_focus.get("intent") or "").strip()
         reason = str(explicit_focus.get("reason") or "").strip()
         if not intent or not reason:
@@ -79,6 +84,17 @@ def resolve_focus(
             ),
             None,
         )
+
+    if previous_focus and previous_focus.get("source", "explicit") == "explicit":
+        previous_id = previous_focus.get("step_id")
+        if previous_id is None or (
+            previous_id in by_id and by_id[previous_id].get("status") in _ACTIVE_STATUSES
+        ):
+            kept = dict(previous_focus)
+            kept.setdefault("source", "explicit")
+            if kept.get("return_to_step_id") not in by_id:
+                kept["return_to_step_id"] = None
+            return CurrentFocus(**kept), None  # type: ignore[typeddict-item]
 
     in_progress = [step for step in steps if step.get("status") == "in_progress"]
     if len(in_progress) == 1:
@@ -112,6 +128,15 @@ def resolve_focus(
 
 def active_step_ids(plan: Sequence[Mapping[str, Any]] | None) -> set[str]:
     return {_step_id(step) for step in (plan or []) if step.get("status") in _ACTIVE_STATUSES}
+
+
+def assessment_applies(state: Mapping[str, Any]) -> bool:
+    """最近判断只作为其绑定的当前焦点的下一步；历史判断仍保留。"""
+    assessment = state.get("work_assessment") or {}
+    focus = state.get("current_focus") or {}
+    if not assessment:
+        return False
+    return all(assessment.get(key) == focus.get(key) for key in ("step_id", "lead_id"))
 
 
 __all__ = [

@@ -232,6 +232,10 @@ async def test_similar_result_signature_ignores_parameters_but_tracks_focus(
     await _operation(database, context, digest="c" * 64, tool_call_id="call-3", status="succeeded")
     async with database.session() as db:
         first = await similar_result_signature(db, context.toolbox.session_id, "s1")
+    await _operation(
+        database, context, digest="e" * 64, tool_call_id="call-new", status="succeeded"
+    )
+    async with database.session() as db:
         same = await similar_result_signature(db, context.toolbox.session_id, "s1")
         other_focus = await similar_result_signature(db, context.toolbox.session_id, "s2")
     assert first == same, "同一焦点下参数变化不改变相似签名"

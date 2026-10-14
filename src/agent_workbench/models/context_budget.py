@@ -64,13 +64,6 @@ def estimate_request(
         safety_margin_ratio = provider_profile.budget_safety_margin_ratio
     if not 0 <= safety_margin_ratio < 1:
         raise ValueError("safety_margin_ratio 必须在 [0, 1) 内")
-    # 输入预算从**实际生效**的输出额度算起：allowed = (context - output) × (1 - margin)。
-    effective_output = (
-        int(output_limit) if output_limit is not None else provider_profile.effective_output_limit
-    )
-    allowed = int(max(0, provider_profile.context_limit - effective_output) * (1 - safety_margin_ratio))
-    if provider_profile.max_input_tokens is not None:
-        allowed = min(allowed, int(provider_profile.max_input_tokens))
     selected = [system_message, *messages] if system_message is not None else messages
     payload = request_payload(
         model,
@@ -80,6 +73,24 @@ def estimate_request(
         tool_choice=tool_choice,
         profile=provider_profile,
     )
+    # 使用适配器的最终 wire 设置，覆盖恢复尝试及模型绑定的输出额度。
+    effective_output = (
+        int(output_limit)
+        if output_limit is not None
+        else int(
+            payload.get("max_completion_tokens")
+            or payload.get("max_output_tokens")
+            or payload.get("max_tokens")
+            or provider_profile.effective_output_limit
+        )
+    )
+    if effective_output <= 0:
+        raise ValueError("请求输出额度必须大于零")
+    allowed = int(
+        max(0, provider_profile.context_limit - effective_output) * (1 - safety_margin_ratio)
+    )
+    if provider_profile.max_input_tokens is not None:
+        allowed = min(allowed, int(provider_profile.max_input_tokens))
     components = {
         "system": 0,
         "messages": 0,

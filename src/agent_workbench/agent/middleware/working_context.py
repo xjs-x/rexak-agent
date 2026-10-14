@@ -26,6 +26,8 @@ class WorkingContextMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         )
         changed = focus_signature(focus) != focus_signature(values.get("current_focus"))
         values["current_focus"] = focus
+        identity = getattr(context.toolbox, "identity_id", None)
+        values["active_identity_id"] = str(identity) if identity is not None else None
         async with context.toolbox.db.session() as db:
             view = await assemble_working_context(db, context.toolbox.session_id, values)
         context.toolbox.working_context = view

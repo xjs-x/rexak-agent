@@ -38,6 +38,8 @@ export function PlanGraph({ plan, leads }: Props) {
     return { nodes, edges };
   }, [plan, leads]);
 
+  const assessmentApplies = (plan.work_assessment?.step_id ?? null) === (plan.current_focus?.step_id ?? null)
+    && (plan.work_assessment?.lead_id ?? null) === (plan.current_focus?.lead_id ?? null);
   return <>
     {plan.current_focus && <div className="tool-detail" aria-label="当前行动焦点">
       <strong>当前行动：{plan.current_focus.intent}</strong>
@@ -46,8 +48,8 @@ export function PlanGraph({ plan, leads }: Props) {
       {plan.current_focus.return_to_step_id && <p>回到步骤：{plan.current_focus.return_to_step_id}</p>}
     </div>}
     {plan.work_assessment ? <div className="tool-detail" aria-label="最近一次明确判断">
-      <strong>最近判断：{plan.work_assessment.changed}</strong>
-      <p>下一步：{plan.work_assessment.next_action}</p>
+      <strong>{assessmentApplies ? "最近判断" : "此前焦点的判断"}：{plan.work_assessment.changed}</strong>
+      <p>{assessmentApplies ? "下一步" : "此前拟定的下一步"}：{plan.work_assessment.next_action}</p>
       {plan.work_assessment.uncertainty && <p>不确定性：{plan.work_assessment.uncertainty}</p>}
       <p>修订：v{plan.work_assessment.revision}（解释，不是漏洞事实）</p>
     </div> : <p className="empty">尚未记录判断</p>}
