@@ -1,0 +1,55 @@
+{
+  "evidence_version": 1,
+  "captured_at_utc": "2026-10-14T02:30:41.845143+00:00",
+  "repository_commit_at_deployment": "0716ef2ccbdaeb7d4275e76a8d258fcb915c2b7b",
+  "implementation_commit": "ae8b66d8c0e9d0e3d48b1bbf13e5ddb1df74c4a5",
+  "remote_release": "20261014T022452921353Z",
+  "executor": {
+    "installed_files_verified": 11,
+    "installed_source_sha256": {
+      "api.py": "f1c7b7d0d4238f5fc3eb172f8c1131ed58235c3ae3fba5186888738cec72fd3d",
+      "browser.py": "a776670155580f3389b9cf0f8d251b53edd0c4871d87335714106f8f548235ef",
+      "filesystem.py": "2da5b7f2a540ab3c70a1ab2efa7d30149c10185892aeb1526d3b8677a943f056",
+      "http_encoding.py": "f0819f656df6a6d58464fe0c862c5ceb092b03103a539364f65f74eb93835554",
+      "http_sessions.py": "a19512a9f9c49c942d46dd747ca598b104a6bf95f4e60c67e8fc3fe50d1bf3a4",
+      "ledger.py": "c00d6c8aa57e9eb81d3e9aac4930719593ac32dd6dceacee061c8b27f626fc76",
+      "policy.py": "4f291d5118e4b5bceec17f251b8a90702b8d2d2963a8832df7ba8f3eb0eddcf6",
+      "processes.py": "8715cf469f59ca33fede16cf99c7ea268683a99966689bc955e38da099725cf0",
+      "settings.py": "ff2248e37b2ad363d3360f7525a9669a57a063a536c7ead9ebe5d8d94dbebcf7",
+      "__init__.py": "66e58bcd51af3a4fc566a365fb8e2ac27ce611d8304add3f0a53c2d4c7dbe814",
+      "__main__.py": "e9ffc5647c7a7fecb9630764e381ca62d065ac6ce48a708c3a91ad7cd85547f1"
+    },
+    "wheel_sha256": "99b6d0530f3d9a66dccc6a268dce78d282b9adfe51c4fcb088ab4a0620dcd305",
+    "pid": 1771563,
+    "boot_id": "1771563-436e7db3c4bc",
+    "body_modes": [
+      "raw",
+      "json",
+      "form",
+      "multipart"
+    ],
+    "identity_matches": true,
+    "pip_check": "passed"
+  },
+  "local_echo_checks": {
+    "form": "passed",
+    "multipart": "passed",
+    "independent_body_parsing": "passed",
+    "request_bytes_and_sha256": "passed",
+    "replay_same_job": "passed",
+    "requests_observed": 2,
+    "target": "temporary loopback fixture on Kali"
+  },
+  "launcher": {
+    "desktop_target": "C:/xjs/rexak-agent/start-workbench.cmd",
+    "target_verified": true,
+    "api_only_smoke": "passed",
+    "console_http_status": 200,
+    "bundle_http_status": 200,
+    "new_response_quality_ui_present": true,
+    "runner_started_for_check": false
+  },
+  "real_target_testing_performed": false,
+  "real_model_call_performed": false,
+  "note": "Metadata-only deployment evidence; no credentials, cookies, request bodies, or hidden reasoning."
+}
