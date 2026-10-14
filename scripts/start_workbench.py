@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import contextlib
 import getpass
-import os
 import shlex
 import signal
 import socket
@@ -24,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from agent_workbench.config.settings import Settings, get_settings  # noqa: E402
+from agent_workbench.models.provider import resolve_provider_profile  # noqa: E402
 from agent_workbench.platform_compat import (  # noqa: E402
     child_process_env,
     configure_local_loopback,
@@ -185,14 +185,54 @@ def wait_api(child: subprocess.Popen[bytes], url: str) -> None:
     raise RuntimeError("API 就绪超时，请检查 data/logs/launcher/api.log")
 
 
+MODEL_KEYS = {"xiaomi": "XIAOMI_API_KEY", "bailian": "DASHSCOPE_API_KEY"}
+
+
+def model_environment(settings: Settings, env: dict[str, str]) -> dict[str, str]:
+    """空环境值覆盖 .env，防止 API/检查进程重新读入模型密钥。"""
+    return {
+        **env,
+        **dict.fromkeys(MODEL_KEYS.values(), ""),
+        "WORKBENCH_DEFAULT_PROVIDER": settings.default_provider,
+        "XIAOMI_MODEL": settings.xiaomi_model,
+        "XIAOMI_BASE_URL": settings.xiaomi_base_url,
+        "DASHSCOPE_MODEL": settings.dashscope_model,
+        "DASHSCOPE_BASE_URL": settings.dashscope_base_url,
+        "DASHSCOPE_CONTEXT_LIMIT": str(settings.dashscope_context_limit),
+        "WORKBENCH_LAUNCHER_MODEL_KEY_CONFIGURED": "false",
+    }
+
+
+def select_model(settings: Settings) -> tuple[str, str]:
+    print(
+        "选择本次启动使用的模型：\n"
+        f"  1. 小米（{settings.xiaomi_model}）\n"
+        f"  2. 阿里云百炼（{settings.dashscope_model}）",
+        flush=True,
+    )
+    default = "2" if settings.default_provider == "bailian" else "1"
+    while True:
+        choice = input(f"请输入 1 或 2（回车默认 {default}）：").strip() or default
+        if choice in {"1", "2"}:
+            break
+        print("请选择 1 或 2。", flush=True)
+    provider = "xiaomi" if choice == "1" else "bailian"
+    # 先检查地址，避免收取 Key 后才发现必需配置缺失。
+    resolve_provider_profile(provider, settings=settings)
+    label = "小米" if provider == "xiaomi" else "阿里云百炼"
+    key = getpass.getpass(f"请输入{label} API Key（输入不显示，仅本次使用）：").strip()
+    if not key:
+        raise RuntimeError("未输入模型 Key，未启动 API 和 Runner")
+    return provider, key
+
+
 def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds: float) -> None:
     settings = get_settings()
     settings.ensure_directories()
     log_root = settings.log_root / "launcher"
     log_root.mkdir(parents=True, exist_ok=True)
     url = base_url(settings)
-    env = child_process_env()
-    env.pop("XIAOMI_API_KEY", None)
+    env = model_environment(settings, child_process_env())
     cli = [sys.executable, str(ROOT / "scripts/workbench_child.py")]
     with launcher_lock(log_root / "launcher.lock"):
         if port_busy(settings):
@@ -200,6 +240,12 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
         check_existing_runner()
         if not (ROOT / "web/dist/index.html").is_file():
             raise RuntimeError("控制台尚未构建，请先构建 web 前端")
+        key = None
+        provider = settings.default_provider
+        if not api_only and not check_only:
+            provider, key = select_model(settings)
+            env["WORKBENCH_DEFAULT_PROVIDER"] = provider
+            print(f"本次模型：{provider} / {settings.model_for_provider(provider)}", flush=True)
         print("检查数据库和 Kali 执行端……", flush=True)
         run_check(
             ["docker", "compose", "up", "-d", "--wait", "postgres"],
@@ -213,11 +259,8 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
         print("数据库、SSH、Executor 检查通过。", flush=True)
         if check_only:
             return
-        key = settings.xiaomi_api_key or os.environ.get("XIAOMI_API_KEY")
-        if not api_only and not key:
-            key = getpass.getpass("请输入小米 API Key（输入不显示，仅本次使用）：").strip()
-            if not key:
-                raise RuntimeError("未输入模型 Key，未启动 API 和 Runner")
+        if not api_only:
+            env["WORKBENCH_LAUNCHER_MODEL_KEY_CONFIGURED"] = "true"
         children: list[subprocess.Popen[bytes]] = []
         try:
             with contextlib.ExitStack() as stack:
@@ -241,9 +284,9 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
                 api = spawn("api", env)
                 wait_api(api, url)
                 if not api_only:
-                    runner_env = {**env, "XIAOMI_API_KEY": str(key)}
+                    runner_env = {**env, MODEL_KEYS[provider]: str(key)}
                     runner = spawn("runner", runner_env)
-                    runner_env.pop("XIAOMI_API_KEY")
+                    runner_env.pop(MODEL_KEYS[provider])
                     key = None
                     deadline = time.monotonic() + 60
                     while time.monotonic() < deadline:
@@ -288,6 +331,9 @@ def main() -> int:
         launch(**vars(args))
     except KeyboardInterrupt:
         return 0
+    except EOFError:
+        print("输入已结束，未完成启动。", file=sys.stderr)
+        return 1
     except (
         RuntimeError,
         OSError,

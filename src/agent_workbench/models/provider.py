@@ -1,6 +1,6 @@
 """供应商适配。
 
-小米走 OpenAI 兼容协议，但**必须单独验证**：完整工具参数、分片工具调用、空响应、
+小米与百炼走 OpenAI 兼容协议，但**必须单独验证**：完整工具参数、分片工具调用、空响应、
 超时、取消、流结束 usage、错误码与图片支持（§11.1）。
 
 控制隐藏 SDK 重试：优先关闭 SDK 内置重试，由单一层做可观测重试；否则明确标记
@@ -12,17 +12,19 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from langchain_core.messages import BaseMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import _convert_message_to_dict
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from agent_workbench.config.catalog import ProviderProfile, default_provider_profiles
 from agent_workbench.config.secrets import SecretStore, build_secret_store
 from agent_workbench.config.settings import Settings, get_settings
+from agent_workbench.models.bailian import BailianChatOpenAI
 from agent_workbench.models.xiaomi import XiaomiChatOpenAI
 
 
@@ -62,7 +64,21 @@ class ModelBinding:
             "temperature": self.temperature,
             "max_retries": self.max_retries,
             "secret_ref": self.profile.secret_ref,
+            "provider_extra": self.profile.provider_extra,
+            "request_timeout_seconds": self.request_timeout_seconds,
         }
+
+    @classmethod
+    def from_snapshot(cls, snapshot: dict[str, Any]) -> ModelBinding:
+        try:
+            return cls(
+                profile=ProviderProfile.model_validate(snapshot),
+                temperature=snapshot.get("temperature", 0.0),
+                max_retries=snapshot.get("max_retries", 0),
+                request_timeout_seconds=snapshot["request_timeout_seconds"],
+            )
+        except (ValidationError, KeyError, TypeError) as exc:
+            raise ProviderConfigurationError("任务的模型绑定快照无效") from exc
 
 
 def resolve_provider_profile(
@@ -70,9 +86,9 @@ def resolve_provider_profile(
     model_name: str | None = None,
     settings: Settings | None = None,
 ) -> ProviderProfile:
-    """解析供应商档案。默认小米。
+    """解析供应商档案。默认小米，启动器可选择百炼。
 
-    base_url / model 允许被环境变量覆盖（`XIAOMI_BASE_URL` / `XIAOMI_MODEL`），
+    base_url / model 允许被各供应商的环境变量覆盖，
     以便无代码改动切换端点。
     """
     cfg = settings or get_settings()
@@ -103,6 +119,38 @@ def resolve_provider_profile(
             profile_version=profile.profile_version,
         )
 
+    if pid == "bailian":
+        candidate = model_name or cfg.dashscope_model
+        profile = profiles.get((pid, candidate))
+        if profile is None:
+            raise ProviderConfigurationError("百炼模型尚未配置，请使用 deepseek-v4.1-flash")
+        endpoint = cfg.dashscope_base_url.strip().rstrip("/")
+        url = urlsplit(endpoint)
+        if (
+            url.scheme != "https"
+            or not url.hostname
+            or url.username
+            or url.password
+            or url.query
+            or url.fragment
+            or not url.path.endswith("/compatible-mode/v1")
+            or "{" in endpoint
+            or "}" in endpoint
+        ):
+            raise ProviderConfigurationError(
+                "请配置百炼控制台的 HTTPS OpenAI 兼容 Base URL（DASHSCOPE_BASE_URL）"
+            )
+        return profile.model_copy(
+            update={
+                "base_url": endpoint,
+                "context_limit": cfg.dashscope_context_limit,
+                "output_reserve": cfg.output_reserve_tokens,
+                "request_output_limit": cfg.output_reserve_tokens,
+                "recovery_output_limit": cfg.recovery_output_limit_tokens,
+                "max_response_recoveries": cfg.max_response_recoveries,
+            }
+        )
+
     if model_name is not None:
         profile = profiles.get((pid, model_name))
         if profile is not None:
@@ -127,7 +175,13 @@ def build_chat_model(
     store = secret_store or build_secret_store()
     api_key = store.resolve(binding.profile.secret_ref)
 
-    model_class = XiaomiChatOpenAI if binding.profile.provider_id == "xiaomi" else ChatOpenAI
+    model_class = (
+        XiaomiChatOpenAI
+        if binding.profile.provider_id == "xiaomi"
+        else BailianChatOpenAI
+        if binding.profile.provider_id == "bailian"
+        else ChatOpenAI
+    )
     extra = dict(binding.extra or {})
     if binding.max_retries != 0:
         raise ProviderConfigurationError("SDK 隐藏重试必须关闭，实际尝试由公共调用层观测")
@@ -137,8 +191,10 @@ def build_chat_model(
         > binding.profile.effective_output_limit
     ):
         raise ProviderConfigurationError("输出上限不能超过用于请求预算的输出额度")
-    if binding.profile.provider_id == "xiaomi":
+    if binding.profile.provider_id in {"xiaomi", "bailian"}:
         extra.setdefault("use_responses_api", False)
+    if binding.profile.provider_id == "bailian":
+        extra.setdefault("stream_usage", True)
     return model_class(
         model=binding.profile.model_name,
         base_url=binding.profile.base_url,
@@ -171,8 +227,8 @@ def request_payload(
     if isinstance(model, ChatOpenAI):
         return model._get_request_payload(messages, **settings)
     wire = [_convert_message_to_dict(message) for message in messages]
-    if profile is not None and profile.provider_id == "xiaomi":
-        from agent_workbench.models.xiaomi import add_return_fields
+    if profile is not None and profile.provider_id in {"xiaomi", "bailian"}:
+        from agent_workbench.models.openai_compatible import add_return_fields
 
         add_return_fields(list(messages), wire)
     return {"messages": wire, **settings}

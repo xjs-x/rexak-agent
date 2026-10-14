@@ -47,6 +47,7 @@ from agent_workbench.contracts.identity import (
     ScopeUpdate,
     SessionCreate,
 )
+from agent_workbench.contracts.models import ModelSettingsRead
 from agent_workbench.contracts.plan import (
     CurrentFocusRead,
     PlanRead,
@@ -269,7 +270,7 @@ async def create_session(
             scope_snapshot=initial_scope.model_dump(),
             policy_snapshot=payload.policy.model_dump(),
             provider_id=payload.provider_id or settings.default_provider,
-            model_name=payload.model_name or settings.xiaomi_model,
+            model_name=payload.model_name or settings.model_for_provider(payload.provider_id),
         )
 
         created_identities: dict[str, IdentityRow] = {}
@@ -299,7 +300,8 @@ async def create_session(
             session_id=session_row.id,
             objective=payload.initial_objective,
             provider_id=session_row.provider_id or settings.default_provider,
-            model_name=session_row.model_name or settings.xiaomi_model,
+            model_name=session_row.model_name
+            or settings.model_for_provider(session_row.provider_id),
             config_snapshot={
                 "scope_revision": payload.scope.revision,
                 "policy_revision": payload.policy.revision,
@@ -439,7 +441,7 @@ async def post_message(
             content=content,
             idempotency_key=idempotency_key,
             provider_id=settings.default_provider,
-            model_name=settings.xiaomi_model,
+            model_name=settings.model_for_provider(),
             config_snapshot={"created_from": "message"},
         )
         if receipt.created and receipt.run_id:
@@ -1765,21 +1767,28 @@ def _report_metadata(row: ReportVersionRow) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-@router.get("/settings/models", tags=["settings"])
+@router.get("/settings/models", response_model=ModelSettingsRead, tags=["settings"])
 async def get_model_settings(request: Request) -> dict[str, Any]:
     get_auth().require_session(request)
     from agent_workbench.config.catalog import default_provider_profiles
     from agent_workbench.config.secrets import build_secret_store
     from agent_workbench.domain.prices import current_price_catalog
+    from agent_workbench.models.provider import resolve_provider_profile
     from agent_workbench.persistence.db import get_database
 
     settings = get_settings()
     store = build_secret_store()
-    profiles = default_provider_profiles()
+    profiles = {
+        key: resolve_provider_profile(key[0], settings=settings)
+        if key[0] == "xiaomi" or settings.dashscope_base_url
+        else profile
+        for key, profile in default_provider_profiles().items()
+    }
     async with get_database().session() as db:
         catalog = await current_price_catalog(db)
     return {
         "default_provider": settings.default_provider,
+        "default_model": settings.model_for_provider(),
         "profiles": [
             {
                 "provider_id": profile.provider_id,
@@ -1787,7 +1796,11 @@ async def get_model_settings(request: Request) -> dict[str, Any]:
                 "base_url": profile.base_url,
                 "secret_ref": profile.secret_ref,
                 # 只暴露"是否已配置"，绝不返回密钥本身
-                "secret_configured": store.exists(profile.secret_ref),
+                "secret_configured": store.exists(profile.secret_ref)
+                or (
+                    settings.launcher_model_key_configured
+                    and profile.provider_id == settings.default_provider
+                ),
                 "context_limit": profile.context_limit,
                 "output_reserve": profile.output_reserve,
                 "supports_tools": profile.supports_tools,

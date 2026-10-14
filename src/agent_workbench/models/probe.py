@@ -122,8 +122,7 @@ async def run_probe(
     store = secret_store or build_secret_store()
     if not store.exists(profile.secret_ref):
         raise RuntimeError(
-            f"缺少凭据：{profile.secret_ref} 无法解析；请在环境中设置 XIAOMI_API_KEY "
-            "或写入 WORKBENCH_SECRET_STORE_PATH 指向的文件"
+            f"缺少凭据：{profile.secret_ref} 无法解析；请为当前供应商设置对应的环境变量"
         )
 
     binding = ModelBinding(profile=profile, request_timeout_seconds=timeout_seconds)

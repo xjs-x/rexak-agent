@@ -149,11 +149,7 @@ async def open_agent_runtime(
     chosen = selection or default_selection(cfg)
 
     if binding is None:
-        profile = resolve_provider_profile(
-            cfg.default_provider,
-            cfg.xiaomi_model if cfg.default_provider == "xiaomi" else None,
-            cfg,
-        )
+        profile = resolve_provider_profile(settings=cfg)
         binding = ModelBinding(
             profile=profile, request_timeout_seconds=cfg.model_request_timeout_seconds
         )

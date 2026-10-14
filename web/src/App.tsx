@@ -1194,7 +1194,8 @@ export default function App() {
                 </article>) : <p className="empty">还没有报告版本</p>}
               </section>}
               {tab === "settings" && <div className="stack"><section className="panel"><div className="panel-head"><h2>模型配置</h2></div><p className="fineprint">{modelSettings?.effective_scope.replaceAll("**", "") ?? "读取配置中…"}</p>
-                {modelSettings?.profiles.map((item) => <div className="settings-row" key={`${item.provider_id}/${item.model_name}`}><div><strong>{item.provider_id} / {item.model_name}</strong><small>上下文 {item.context_limit.toLocaleString()} · 配置版本 {item.profile_version}</small></div><span className={`pill ${item.secret_configured ? "status-confirmed" : "status-blocked"}`}>{item.secret_configured ? "密钥已配置" : "缺少密钥"}</span></div>)}
+                {modelSettings && <p>本次启动的新任务模型：{modelSettings.default_provider} / {modelSettings.default_model}</p>}
+                {modelSettings?.profiles.map((item) => <div className="settings-row" key={`${item.provider_id}/${item.model_name}`}><div><strong>{item.provider_id} / {item.model_name}</strong><small>请求上下文预算 {item.context_limit.toLocaleString()} · 配置版本 {item.profile_version}</small></div><span className={`pill ${item.secret_configured ? "status-confirmed" : "status-blocked"}`}>{item.secret_configured ? "密钥已配置" : "缺少密钥"}</span></div>)}
                 <p className="fineprint">价格目录版本：{modelSettings?.price_catalog_version ?? "未知"}。活动阶段继续使用启动时的配置快照。</p>
               </section><section className="panel"><div className="panel-head"><div><h2>模型价格</h2><p>填写供应商实际价格；未配置时费用保持“未定价”。</p></div><button disabled={busy} onClick={() => void api.priceCatalog().then(setPriceCatalog).catch((cause) => setNotice(String(cause)))}>刷新版本</button></div>
                 <div className="price-grid">

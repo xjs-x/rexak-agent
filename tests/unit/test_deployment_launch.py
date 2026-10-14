@@ -13,6 +13,7 @@ from scripts.deploy_executor import upload_files
 
 from agent_workbench.config.settings import Settings
 from agent_workbench.platform_compat import _bounded_socketpair
+from tests.support.settings import isolated_settings
 
 
 def test_upload_allowlist_excludes_credentials_and_runtime(tmp_path: Path) -> None:
@@ -41,6 +42,133 @@ def test_launcher_lock_blocks_second_instance(tmp_path: Path) -> None:
 def test_non_loopback_api_is_rejected() -> None:
     with pytest.raises(RuntimeError, match="回环"):
         start_workbench.base_url(Settings(api_host="0.0.0.0"))
+
+
+@pytest.mark.parametrize(
+    "choice,provider,key_name",
+    [
+        ("1", "xiaomi", "XIAOMI_API_KEY"),
+        ("2", "bailian", "DASHSCOPE_API_KEY"),
+    ],
+)
+def test_launcher_selects_provider_without_reusing_or_exposing_other_key(
+    monkeypatch,
+    capsys,
+    choice,
+    provider,
+    key_name,
+):
+    settings = isolated_settings(
+        DASHSCOPE_BASE_URL="https://fixture.invalid/compatible-mode/v1",
+        XIAOMI_API_KEY="fixture-old-xiaomi",
+        DASHSCOPE_API_KEY="fixture-old-bailian",
+    )
+    choices = iter(["invalid", choice])
+    monkeypatch.setattr("builtins.input", lambda _: next(choices))
+    prompts = []
+
+    def enter_key(prompt):
+        prompts.append(prompt)
+        return "fixture-selected-key"
+
+    monkeypatch.setattr(start_workbench.getpass, "getpass", enter_key)
+    selected, key = start_workbench.select_model(settings)
+    assert selected == provider and key == "fixture-selected-key"
+    assert ("小米" if provider == "xiaomi" else "阿里云百炼") in prompts[0]
+    env = start_workbench.model_environment(
+        settings,
+        {
+            "XIAOMI_API_KEY": "fixture-inherited",
+            "DASHSCOPE_API_KEY": "fixture-inherited",
+        },
+    )
+    assert env["XIAOMI_API_KEY"] == env["DASHSCOPE_API_KEY"] == ""
+    assert key_name in env
+    assert "fixture-" not in capsys.readouterr().out
+    assert "fixture-old" not in repr(settings)
+
+
+def test_empty_key_aborts_startup(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _: "1")
+    monkeypatch.setattr(start_workbench.getpass, "getpass", lambda _: "  ")
+    with pytest.raises(RuntimeError, match="未输入模型 Key"):
+        start_workbench.select_model(isolated_settings())
+
+
+@pytest.mark.parametrize(
+    "choice,provider,key_name",
+    [
+        ("1", "xiaomi", "XIAOMI_API_KEY"),
+        ("2", "bailian", "DASHSCOPE_API_KEY"),
+    ],
+)
+def test_complete_launcher_passes_choice_to_api_and_only_selected_key_to_runner(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    choice,
+    provider,
+    key_name,
+):
+    root = tmp_path / "checkout"
+    (root / "web/dist").mkdir(parents=True)
+    (root / "web/dist/index.html").write_text("fixture", encoding="utf-8")
+    cfg = isolated_settings(
+        data_root=tmp_path / "data",
+        DASHSCOPE_BASE_URL="https://fixture.invalid/compatible-mode/v1",
+    )
+    monkeypatch.setattr(start_workbench, "ROOT", root)
+    monkeypatch.setattr(start_workbench, "get_settings", lambda: cfg)
+    monkeypatch.setattr(start_workbench, "port_busy", lambda _: False)
+    monkeypatch.setattr(start_workbench, "check_existing_runner", lambda: None)
+
+    async def executor(_settings):
+        pass
+
+    checks = []
+    spawned = []
+    stopped = []
+
+    def check(argv, env, *_args):
+        checks.append((list(argv), dict(env)))
+
+    class FakeChild:
+        def poll(self):
+            return None
+
+    def spawn(argv, **kwargs):
+        spawned.append((list(argv), dict(kwargs["env"])))
+        if argv[-1] == "runner":
+            kwargs["stdout"].write("Runner 已启动\n".encode())
+            kwargs["stdout"].flush()
+        return FakeChild()
+
+    monkeypatch.setattr(start_workbench, "ensure_executor", executor)
+    monkeypatch.setattr(start_workbench, "run_check", check)
+    monkeypatch.setattr(start_workbench.subprocess, "Popen", spawn)
+    monkeypatch.setattr(start_workbench, "wait_api", lambda *_a: None)
+    monkeypatch.setattr(start_workbench, "stop_child", lambda child: stopped.append(child))
+    monkeypatch.setattr("builtins.input", lambda _: choice)
+    monkeypatch.setattr(start_workbench.getpass, "getpass", lambda _: "fixture-selected-key")
+    start_workbench.launch(api_only=False, check_only=False, no_browser=True, smoke_seconds=0.01)
+    assert len(spawned) == len(stopped) == 2
+    api_env, runner_env = spawned[0][1], spawned[1][1]
+    assert (
+        api_env["WORKBENCH_DEFAULT_PROVIDER"]
+        == runner_env["WORKBENCH_DEFAULT_PROVIDER"]
+        == provider
+    )
+    assert runner_env[key_name] == "fixture-selected-key"
+    assert api_env["XIAOMI_API_KEY"] == api_env["DASHSCOPE_API_KEY"] == ""
+    other_key = "DASHSCOPE_API_KEY" if provider == "xiaomi" else "XIAOMI_API_KEY"
+    assert runner_env[other_key] == ""
+    assert all(env["XIAOMI_API_KEY"] == env["DASHSCOPE_API_KEY"] == "" for _, env in checks)
+    assert "fixture-selected-key" not in repr([argv for argv, _ in spawned])
+    assert "fixture-selected-key" not in capsys.readouterr().out
+    assert all(
+        "fixture-selected-key" not in p.read_text(encoding="utf-8")
+        for p in (cfg.log_root / "launcher").glob("*.log")
+    )
 
 
 def test_ipv6_api_url() -> None:

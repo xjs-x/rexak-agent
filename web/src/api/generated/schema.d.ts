@@ -976,6 +976,63 @@ export interface components {
              */
             reasoning_tokens_included_in_output: boolean;
         };
+        /** ModelProfileRead */
+        ModelProfileRead: {
+            /** Provider Id */
+            provider_id: string;
+            /** Model Name */
+            model_name: string;
+            /** Base Url */
+            base_url: string;
+            /** Secret Ref */
+            secret_ref: string;
+            /** Secret Configured */
+            secret_configured: boolean;
+            /** Context Limit */
+            context_limit: number;
+            /** Output Reserve */
+            output_reserve: number;
+            /**
+             * Supports Tools
+             * @enum {string}
+             */
+            supports_tools: "supported" | "unsupported" | "unknown";
+            /**
+             * Supports Streaming
+             * @enum {string}
+             */
+            supports_streaming: "supported" | "unsupported" | "unknown";
+            /**
+             * Supports Images
+             * @enum {string}
+             */
+            supports_images: "supported" | "unsupported" | "unknown";
+            /**
+             * Supports Usage
+             * @enum {string}
+             */
+            supports_usage: "supported" | "unsupported" | "unknown";
+            /**
+             * Token Estimation Method
+             * @enum {string}
+             */
+            token_estimation_method: "provider_tokenizer" | "tiktoken_compatible" | "chars_div_4" | "unknown";
+            /** Profile Version */
+            profile_version: string;
+        };
+        /** ModelSettingsRead */
+        ModelSettingsRead: {
+            /** Default Provider */
+            default_provider: string;
+            /** Default Model */
+            default_model: string;
+            /** Profiles */
+            profiles: components["schemas"]["ModelProfileRead"][];
+            /** Price Catalog Version */
+            price_catalog_version: string;
+            /** Effective Scope */
+            effective_scope: string;
+        };
         /** OperationPage */
         OperationPage: {
             /** Operations */
@@ -2510,9 +2567,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["ModelSettingsRead"];
                 };
             };
         };

@@ -103,9 +103,23 @@ class Settings(BaseSettings):
     backup_path: Path = REPO_ROOT / "backups"
 
     # ---------- 供应商凭据（secret_ref 解析来源之一）----------
-    xiaomi_api_key: str | None = Field(default=None, alias="XIAOMI_API_KEY")
+    xiaomi_api_key: str | None = Field(default=None, alias="XIAOMI_API_KEY", repr=False)
     xiaomi_base_url: str = Field(default="https://api.xiaomimimo.com/v1", alias="XIAOMI_BASE_URL")
     xiaomi_model: str = Field(default="mimo-v2.6-pro", alias="XIAOMI_MODEL")
+    dashscope_api_key: str | None = Field(default=None, alias="DASHSCOPE_API_KEY", repr=False)
+    dashscope_base_url: str = Field(default="", alias="DASHSCOPE_BASE_URL")
+    dashscope_model: str = Field(default="deepseek-v4.1-flash", alias="DASHSCOPE_MODEL")
+    # 本机单次请求预算，保守初值；不是对供应商最大上下文能力的声明。
+    dashscope_context_limit: int = Field(default=131072, alias="DASHSCOPE_CONTEXT_LIMIT", gt=0)
+    launcher_model_key_configured: bool = False
+
+    def model_for_provider(self, provider_id: str | None = None) -> str:
+        provider = provider_id or self.default_provider
+        if provider == "xiaomi":
+            return self.xiaomi_model
+        if provider == "bailian":
+            return self.dashscope_model
+        raise ValueError(f"未配置的供应商：{provider}")
 
     @field_validator(
         "data_root",

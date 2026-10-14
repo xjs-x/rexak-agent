@@ -102,7 +102,7 @@ class PriceCatalog(BaseModel):
 def default_provider_profiles() -> dict[tuple[str, str], ProviderProfile]:
     """版本化默认供应商档案。
 
-    小米走 OpenAI 兼容协议适配。**能力字段全部为 `unknown`**，
+    小米与百炼走 OpenAI 兼容协议适配。**能力字段全部为 `unknown`**，
     必须由 `agent_workbench.models.probe` 用真实请求探明后再写入决策记录，
     不允许按模型名字声称支持工具调用或流式。
     """
@@ -117,6 +117,18 @@ def default_provider_profiles() -> dict[tuple[str, str], ProviderProfile]:
             output_reserve=8192,
             token_estimation_method="chars_div_4",
             provider_extra={"protocol": "openai-compatible"},
+        ),
+        ("bailian", "deepseek-v4.1-flash"): ProviderProfile(
+            provider_id="bailian",
+            model_name="deepseek-v4.1-flash",
+            base_url="",
+            secret_ref="env:DASHSCOPE_API_KEY",
+            context_limit=131072,
+            token_estimation_method="chars_div_4",
+            provider_extra={
+                "protocol": "openai-compatible",
+                "context_limit_source": "local_conservative_request_budget",
+            },
         ),
     }
 

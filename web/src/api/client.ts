@@ -89,18 +89,7 @@ export interface ReportItem {
   created_at: string;
 }
 
-export interface ModelSettings {
-  default_provider: string;
-  price_catalog_version: string;
-  effective_scope: string;
-  profiles: Array<{
-    provider_id: string;
-    model_name: string;
-    secret_configured: boolean;
-    context_limit: number;
-    profile_version: string;
-  }>;
-}
+export type ModelSettings = components["schemas"]["ModelSettingsRead"];
 
 export type ModelCallItem = components["schemas"]["ModelCallSummary"];
 export type OperationItem = components["schemas"]["OperationSummary"];

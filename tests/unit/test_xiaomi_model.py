@@ -8,12 +8,15 @@ from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 from pydantic import SecretStr
 
 from agent_workbench.config.catalog import default_provider_profiles
-from agent_workbench.models.provider import ModelBinding, build_chat_model
+from agent_workbench.models.openai_compatible import ReasoningChatOpenAI
+from agent_workbench.models.provider import ModelBinding, build_chat_model, resolve_provider_profile
 from agent_workbench.models.xiaomi import XiaomiChatOpenAI
+from tests.support.settings import isolated_settings
 
 
 @pytest.mark.asyncio
-async def test_actual_sdk_stream_preserves_reasoning_and_returns_it_on_next_tool_turn():
+@pytest.mark.parametrize("provider", ["xiaomi", "bailian"])
+async def test_actual_sdk_stream_preserves_reasoning_and_returns_it_on_next_tool_turn(provider):
     requests = []
 
     async def respond(request):
@@ -70,15 +73,25 @@ async def test_actual_sdk_stream_preserves_reasoning_and_returns_it_on_next_tool
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        model = XiaomiChatOpenAI(
-            api_key=SecretStr("fixture-only"),
-            model="fixture",
-            base_url="https://fixture.invalid/v1",
-            http_async_client=client,
-            streaming=True,
-            stream_usage=True,
-            max_retries=0,
-            use_responses_api=False,
+        cfg = isolated_settings(DASHSCOPE_BASE_URL="https://fixture.invalid/compatible-mode/v1")
+        profile = resolve_provider_profile(provider, settings=cfg)
+
+        class FixtureSecrets:
+            def resolve(self, secret_ref):
+                assert secret_ref == profile.secret_ref
+                return "fixture-only"
+
+            def exists(self, secret_ref):
+                return True
+
+        model = build_chat_model(
+            ModelBinding(
+                profile=profile,
+                extra={"http_async_client": client}
+                if provider == "bailian"
+                else {"http_async_client": client, "stream_usage": True},
+            ),
+            secret_store=FixtureSecrets(),
         )
         first = await model.ainvoke([HumanMessage(content="本地协议验收")])
         assert first.additional_kwargs["reasoning_content"] == "验收思考分片一，分片二"
@@ -99,6 +112,63 @@ async def test_actual_sdk_stream_preserves_reasoning_and_returns_it_on_next_tool
         )
         assert requests[1]["messages"][1]["tool_calls"][0]["id"] == "call-fixture"
         assert len(requests) == 2
+        assert requests[0]["model"] == profile.model_name
+        assert requests[0]["stream_options"]["include_usage"] is True
+        output_parameter = "max_tokens" if provider == "bailian" else "max_completion_tokens"
+        assert requests[0][output_parameter] == profile.effective_output_limit
+
+
+def test_bailian_profile_and_nonstream_reasoning_are_provider_specific():
+    cfg = isolated_settings(
+        default_provider="bailian",
+        DASHSCOPE_BASE_URL="https://fixture.invalid/compatible-mode/v1",
+    )
+    profile = resolve_provider_profile(settings=cfg)
+    assert profile.model_name == "deepseek-v4.1-flash"
+    assert profile.secret_ref == "env:DASHSCOPE_API_KEY"
+    assert profile.provider_extra["context_limit_source"] == "local_conservative_request_budget"
+    assert profile.supports_tools == "unknown"
+    model = ReasoningChatOpenAI(
+        api_key=SecretStr("fixture-only"),
+        model=profile.model_name,
+        base_url=profile.base_url,
+        use_responses_api=False,
+    )
+    result = model._create_chat_result(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "fixture",
+                        "reasoning_content": "fixture reasoning",
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    )
+    assert (
+        result.generations[0].message.additional_kwargs["reasoning_content"] == "fixture reasoning"
+    )
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "",
+        "http://fixture.invalid/compatible-mode/v1",
+        "https://fixture.invalid/compatible-mode/v1/chat/completions",
+        "https://fixture.invalid/compatible-mode/v1?api_key=fixture",
+        "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    ],
+)
+def test_bailian_requires_configured_base_url(endpoint):
+    from agent_workbench.models.provider import ProviderConfigurationError
+
+    cfg = isolated_settings(DASHSCOPE_BASE_URL=endpoint)
+    with pytest.raises(ProviderConfigurationError, match="Base URL"):
+        resolve_provider_profile("bailian", settings=cfg)
 
 
 def test_nonstream_reasoning_and_default_provider_transport_settings():

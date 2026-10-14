@@ -53,6 +53,7 @@ from agent_workbench.evidence.artifacts import (
 )
 from agent_workbench.execution.client import HttpExecutorClient
 from agent_workbench.execution.tunnel import SshTunnel
+from agent_workbench.models.provider import ModelBinding
 from agent_workbench.observability.events import append_event
 from agent_workbench.observability.logging import get_logger
 from agent_workbench.observability.spans import SpanRecorder
@@ -674,8 +675,12 @@ class AgentRunner:
 
             async with self._db.transaction() as db:
                 price_catalog = await price_catalog_for_run(db, run.id)
+            binding = await self._capture_model_binding(run)
             runtime_ctx = open_agent_runtime(
-                settings=settings, selection=selection, price_catalog=price_catalog
+                settings=settings,
+                selection=selection,
+                price_catalog=price_catalog,
+                binding=binding,
             )
             runtime = await runtime_ctx.__aenter__()
         except Exception as exc:
@@ -940,6 +945,44 @@ class AgentRunner:
                 payload={"scope": captured["scope"], "source": captured},
             )
 
+    def _model_binding(self, run: RunRow) -> ModelBinding:
+        from agent_workbench.models.provider import (
+            ProviderConfigurationError,
+            resolve_provider_profile,
+        )
+
+        snapshot = (run.config_snapshot or {}).get("model_binding")
+        if snapshot is not None:
+            binding = ModelBinding.from_snapshot(snapshot)
+            if (
+                binding.profile.provider_id != run.provider_id
+                or binding.profile.model_name != run.model_name
+                or binding.profile.secret_ref
+                != {
+                    "xiaomi": "env:XIAOMI_API_KEY",
+                    "bailian": "env:DASHSCOPE_API_KEY",
+                }.get(run.provider_id)
+            ):
+                raise ProviderConfigurationError("模型绑定快照与任务记录不一致")
+            return binding
+        return ModelBinding(
+            profile=resolve_provider_profile(run.provider_id, run.model_name, self._settings),
+            request_timeout_seconds=self._settings.model_request_timeout_seconds,
+        )
+
+    async def _capture_model_binding(self, run: RunRow) -> ModelBinding:
+        """首次装配固定非秘密模型配置，暂停恢复沿用同一快照。"""
+        async with self._db.transaction() as db:
+            current = (
+                await db.execute(select(RunRow).where(RunRow.id == run.id).with_for_update())
+            ).scalar_one()
+            binding = self._model_binding(current)
+            config = dict(current.config_snapshot or {})
+            config.setdefault("model_binding", binding.to_snapshot())
+            current.config_snapshot = config
+            run.config_snapshot = dict(config)
+        return binding
+
     def _precheck_configuration(self, run: RunRow) -> tuple[ErrorCode, str] | None:
         """开跑前的必要条件预检。
 
@@ -953,11 +996,10 @@ class AgentRunner:
         )
         from agent_workbench.models.provider import (
             ProviderConfigurationError,
-            resolve_provider_profile,
         )
 
         try:
-            profile = resolve_provider_profile(run.provider_id, run.model_name, self._settings)
+            profile = self._model_binding(run).profile
         except ProviderConfigurationError as exc:
             return (
                 ErrorCode.PROVIDER_ERROR,
