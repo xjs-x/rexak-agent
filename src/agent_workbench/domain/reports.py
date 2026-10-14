@@ -35,6 +35,7 @@ from agent_workbench.persistence.tables import (
     CoverageRow,
     FindingRow,
     LeadRow,
+    LeadWeaknessLinkRow,
     ObservationRow,
     ReportVersionRow,
     RunRow,
@@ -201,6 +202,17 @@ class ReportService:
             finding_revisions[finding.id] = finding.revision
 
         checked = sum(row.status in {"checked_negative", "checked_positive"} for row in coverage)
+        link_rows = list(
+            (
+                await self._s.execute(
+                    select(LeadWeaknessLinkRow)
+                    .where(LeadWeaknessLinkRow.session_id == session_id)
+                    .order_by(LeadWeaknessLinkRow.created_at, LeadWeaknessLinkRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
         observations = (
             (
                 await self._s.execute(
@@ -244,6 +256,40 @@ class ReportService:
             "run_statuses": [row.status for row in runs],
             "confirmed": confirmed,
             "candidates": candidates,
+            "weaknesses": [
+                {
+                    "id": str(row.id),
+                    "title": redact_text(row.title),
+                    "status": row.status,
+                    "weakness_kind": row.weakness_kind,
+                    "category": row.category,
+                    "conditions": [
+                        {
+                            "key": str(item.get("key")),
+                            "statement": redact_text(str(item.get("statement") or "")),
+                            "limitations": redact_text(str(item.get("limitations") or "")) or None,
+                            "evidence_refs": list(item.get("evidence_refs") or []),
+                        }
+                        for item in (row.provided_conditions or [])
+                    ],
+                    "connection_review": _connection_review_view(row),
+                }
+                for row in findings
+            ],
+            "weakness_breakdown": _weakness_breakdown(findings),
+            "exploration_chains": [
+                {
+                    "link_id": str(row.id),
+                    "lead_id": str(row.lead_id),
+                    "weakness_id": str(row.finding_id),
+                    "role": row.role,
+                    "relation_state": row.relation_state,
+                    "condition_key": row.condition_key,
+                    "requirement_key": row.requirement_key,
+                    "source_weakness_revision": row.source_weakness_revision,
+                }
+                for row in link_rows
+            ],
             "coverage": {
                 "checked": checked,
                 "registered": len(coverage),
@@ -251,10 +297,28 @@ class ReportService:
                 "not_checked": sum(row.status == "not_checked" for row in coverage),
                 "note": "分母仅为已登记的资产/入口 × 身份 × 检查类别，不代表网站漏洞覆盖率。",
             },
+            # 受阻与暂缓事项保留在报告里：不能靠改状态消除缺口。
             "open_leads": [
-                redact_text(row.hypothesis)
+                f"[{row.status}] {redact_text(row.hypothesis)}"
                 for row in leads
-                if row.status not in {"confirmed", "disproved", "blocked"}
+                if row.status not in {"confirmed", "disproved"}
+            ],
+            "open_items": [
+                {
+                    "lead_id": str(row.id),
+                    "hypothesis": redact_text(row.hypothesis),
+                    "status": row.status,
+                    "blocked_reason": redact_text(row.blocked_reason or "") or None,
+                    "resume_condition": redact_text(row.resume_condition or "") or None,
+                    "actionability": (row.actionability_assessment or {}).get("state"),
+                    "missing_conditions": [
+                        str(item.get("description") or item.get("condition_key"))
+                        for item in (row.required_conditions or [])
+                        if not item.get("satisfied")
+                    ],
+                }
+                for row in leads
+                if row.status not in {"confirmed", "disproved"}
             ],
             "observations": [
                 {
@@ -277,6 +341,7 @@ class ReportService:
                     "observations": {str(row.id): 1 for row in observations},
                     "findings": {str(row.id): row.revision for row in findings},
                     "leads": {str(row.id): row.revision for row in leads},
+                    "links": {str(row.id): row.revision for row in link_rows},
                 },
             ),
         }
@@ -290,6 +355,8 @@ class ReportService:
                 "findings": {str(row.id): row.revision for row in findings},
                 "coverage": {str(row.id): row.revision for row in coverage},
                 "leads": {str(row.id): row.revision for row in leads},
+                # 阶段签名包含**有效关系版本**：关系变了，旧报告就不代表当前链条。
+                "links": {str(row.id): row.revision for row in link_rows},
                 "observations": [str(row.id) for row in observations],
                 "stage_key": stage_metadata.get("stage_key") if stage_metadata else None,
                 "runs": [str(row.id) for row in runs],
@@ -483,6 +550,37 @@ class ReportService:
         ):
             raise ApiError(ErrorCode.CONFLICT, f"证据 {artifact_id} 不可用或已截断")
         return row
+
+
+def _connection_review_view(row: FindingRow) -> dict[str, Any] | None:
+    """用途判断的**脱敏摘要**；不重写历史判断，也不补造链条。"""
+    stored = dict(row.connection_review or {})
+    if not stored:
+        return None
+    return {
+        "linked_lead_ids": [str(item) for item in (stored.get("linked_lead_ids") or [])],
+        "no_connection_note": redact_text(str(stored.get("no_connection_note") or "")) or None,
+        "reviewed_content_revision": stored.get("reviewed_content_revision"),
+    }
+
+
+def _weakness_breakdown(findings: list[FindingRow]) -> dict[str, Any]:
+    by_kind: dict[str, int] = {}
+    reviewed = 0
+    for row in findings:
+        kind = row.weakness_kind or "unclassified"
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        if row.connection_review:
+            reviewed += 1
+    return {
+        "total": len(findings),
+        "by_kind": by_kind,
+        "with_connection_review": reviewed,
+        "note": (
+            "弱点是弱点，不等于漏洞：独立缺陷、可供后续利用的条件与未成立组合假设分别计数，"
+            "**不能**把弱点数量当作漏洞数量。"
+        ),
+    }
 
 
 @contextmanager
@@ -770,12 +868,83 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
                 "",
             ]
         )
+    lines.extend(["## 弱点与后续链条", ""])
+    breakdown = snapshot.get("weakness_breakdown") or {}
+    if breakdown:
+        lines.append(
+            f"弱点总数 {breakdown.get('total', 0)}；"
+            "按类型：" + "、".join(
+                f"{key}={value}" for key, value in (breakdown.get("by_kind") or {}).items()
+            )
+            + f"；已有后续用途判断 {breakdown.get('with_connection_review', 0)} 条。"
+        )
+        lines.append(_safe_markdown(str(breakdown.get("note") or "")))
+        lines.append("")
+    weaknesses = snapshot.get("weaknesses") or []
+    if not weaknesses:
+        lines.extend(["尚未登记弱点记录。", ""])
+    for item in weaknesses:
+        lines.append(
+            f"- `{item['id']}` [{item['weakness_kind']}][{item['status']}] "
+            f"{_safe_markdown(item['title'])}"
+        )
+        for condition in item.get("conditions") or []:
+            lines.append(
+                f"  - 条件 `{condition['key']}`：{_safe_markdown(condition['statement'])}"
+                + (
+                    f"（限制：{_safe_markdown(condition['limitations'])}）"
+                    if condition.get("limitations")
+                    else ""
+                )
+            )
+        review = item.get("connection_review")
+        if review:
+            if review.get("linked_lead_ids"):
+                lines.append("  - 后续线索：" + "、".join(review["linked_lead_ids"]))
+            elif review.get("no_connection_note"):
+                lines.append(f"  - 暂未发现连接：{_safe_markdown(review['no_connection_note'])}")
+        else:
+            lines.append("  - 尚未记录后续用途判断。")
+    chains = snapshot.get("exploration_chains") or []
+    if chains:
+        lines.extend(["", "已知链条（弱点 → 线索 → 弱点）：", ""])
+        lines.extend(
+            f"- {item['role']}: `{item['weakness_id']}` ↔ 线索 `{item['lead_id']}`"
+            f"（{item['relation_state']}"
+            + (f"，条件 `{item['condition_key']}`" if item.get("condition_key") else "")
+            + "）"
+            for item in chains
+        )
+    lines.extend(
+        [
+            "",
+            "组合限制：两个弱点分别成立**不代表**它们的组合已成立；报告只列出有引用依据的关系，"
+            "组合假设保持候选，除非另有独立验证记录。",
+            "",
+        ]
+    )
     lines.extend(["## 候选与未决事项", ""])
     lines.extend(
         f"- [{item['status']}] {_safe_markdown(item['title'])}：{_safe_markdown(item['description'])}"
         for item in snapshot["candidates"]
     )
     lines.extend(f"- 未决线索：{_safe_markdown(item)}" for item in snapshot["open_leads"])
+    open_items = snapshot.get("open_items") or []
+    if open_items:
+        lines.extend(["", "未决事项的限制说明（受阻与暂缓同样保留）：", ""])
+        for item in open_items:
+            detail = f"- [{item['status']}] {_safe_markdown(item['hypothesis'])}"
+            if item.get("blocked_reason"):
+                detail += f"；原因：{_safe_markdown(item['blocked_reason'])}"
+            if item.get("resume_condition"):
+                detail += f"；恢复条件：{_safe_markdown(item['resume_condition'])}"
+            if item.get("missing_conditions"):
+                detail += "；缺：" + "、".join(
+                    _safe_markdown(str(value)) for value in item["missing_conditions"]
+                )
+            if item.get("actionability"):
+                detail += f"（可推进性：{item['actionability']}）"
+            lines.append(detail)
     coverage = snapshot["coverage"]
     lines.extend(
         [

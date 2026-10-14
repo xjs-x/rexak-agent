@@ -1,10 +1,17 @@
-"""任务资料工具：`update_plan`、`record_lead`、`record_observation`、`propose_finding`。
+"""任务资料工具：`update_plan`、`record_lead`、`record_observation`、
+`record_weakness`（新）与 `propose_finding`（兼容入口）。
 
 规则（§8.2）：
 - 输入校验 + 来源检查；
 - **模型不能直接标记 verified**；
-- 计划写入图状态（LangGraph checkpoint 为权威）；线索/观察/发现写入业务表；
+- 计划写入图状态（LangGraph checkpoint 为权威）；线索/观察/弱点/关系写入业务表；
 - 模型猜测只形成 `candidate`，`confirmed` 只能由验证服务写入。
+
+V3（方案 §4）：
+- `record_weakness` 是弱点的主写入口，`propose_finding` 保留为兼容别名，共用内部实现；
+  旧入口的**操作身份与请求摘要**保持不变，否则旧调用在重放时会变成新操作；
+- `record_lead` 扩展关系与条件参数；`update_plan` 扩展 `kind` / `lead_ids`；
+- 关系写入与实体变更在**同一事务**中完成，失败整体撤销。
 """
 
 from __future__ import annotations
@@ -28,22 +35,31 @@ from agent_workbench.contracts.enums import (
     LeadStatus,
     ToolEffectClass,
 )
+from agent_workbench.contracts.weaknesses import (
+    ActionabilityAssessment,
+    WeaknessRelationRef,
+)
 from agent_workbench.domain.assets import record_asset
 from agent_workbench.domain.findings import CoverageService, FindingService
 from agent_workbench.domain.leads import LeadService, lead_summary
 from agent_workbench.domain.observations import record_observation_ref
+from agent_workbench.domain.weakness_relations import refute_links, upsert_links
 from agent_workbench.tools.operation import OperationRegistry, PreparedOperation
 from agent_workbench.tools.params import coerce_str_list
 from agent_workbench.tools.runtime import Toolbox
 
 PLAN_STEP_STATUSES = {"pending", "in_progress", "done", "dropped", "blocked"}
+PLAN_STEP_KINDS = {"coverage", "followup", "mixed"}
 MAX_PLAN_STEPS = 20
 #: 轻量判断的负载初值：单字段最多 500 字、引用最多 8 个。
 MAX_ASSESSMENT_CHARS = 500
 MAX_ASSESSMENT_REFS = 8
 
 
-def _parse_json(raw: str, field: str) -> Any:
+def _parse_json(raw: Any, field: str) -> Any:
+    """解析 JSON 字符串；已经解析好的结构直接返回（模型偶尔直接给对象）。"""
+    if isinstance(raw, (list, dict)):
+        return raw
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -73,7 +89,10 @@ async def update_plan(
     Args:
         steps_json: 计划步骤的 JSON 数组字符串。每项：
             `{"step_id": "s1", "description": "...", "status": "pending|in_progress|done|dropped|blocked",
-              "rationale": "为什么做这一步", "lead_id": "可选关联线索"}`。
+              "kind": "coverage|followup|mixed", "rationale": "为什么做这一步",
+              "lead_ids": ["本步骤服务的线索 ID"], "lead_id": "可选，主线索（兼容字段）"}`。
+            `kind` 区分覆盖检查、链条跟进与混合任务；`lead_ids` 允许一个步骤服务多条线索
+            （不要因为一个步骤服务三条线索就写三个当前焦点）。
             **不传表示保留现有计划**；显式 `[]` 才是清空。
         rationale: 本次计划变更的原因（会被记录，便于复盘方向变化）。
         focus_json: 可选焦点对象，含 step_id、lead_id、intent、reason、return_to_step_id。
@@ -97,6 +116,7 @@ async def update_plan(
         if len(raw) > MAX_PLAN_STEPS:
             raise ValueError(f"计划最多 {MAX_PLAN_STEPS} 步；请合并或删除已完成步骤")
         built: list[PlanStep] = []
+        declared_lead_ids: list[str] = []
         for index, item in enumerate(raw, start=1):
             if not isinstance(item, dict):
                 raise ValueError(f"第 {index} 项不是对象")
@@ -107,24 +127,46 @@ async def update_plan(
             status = str(item.get("status", "pending"))
             if status not in PLAN_STEP_STATUSES:
                 raise ValueError(f"第 {index} 项 status 非法：{status}")
+            kind = str(item.get("kind") or "mixed")
+            if kind not in PLAN_STEP_KINDS:
+                raise ValueError(f"第 {index} 项 kind 非法：{kind}")
             description = str(item.get("description") or "").strip()
             if not description:
                 raise ValueError(f"第 {index} 项缺少 description")
             if status == "blocked" and not item.get("rationale"):
                 raise ValueError(f"第 {index} 项状态为 blocked，必须写 rationale（受阻原因）")
+            primary = str(item.get("lead_id") or "").strip() or None
+            lead_ids = [
+                str(value).strip()
+                for value in coerce_str_list(item.get("lead_ids"), "lead_ids")
+                if str(value).strip()
+            ]
+            if primary and lead_ids and primary not in lead_ids:
+                raise ValueError(
+                    f"第 {index} 项 lead_id 与 lead_ids 冲突：lead_id 必须包含在 lead_ids 中。"
+                )
+            if primary and not lead_ids:
+                lead_ids = [primary]
+            if lead_ids and not primary:
+                primary = lead_ids[0]
+            declared_lead_ids.extend(lead_ids)
             built.append(
                 PlanStep(
                     step_id=step_id,
                     description=description,
                     status=status,  # type: ignore[typeddict-item]
+                    kind=kind,  # type: ignore[typeddict-item]
                     rationale=item.get("rationale"),
-                    lead_id=item.get("lead_id"),
+                    lead_id=primary,
+                    lead_ids=lead_ids,
                     done_when=item.get("done_when"),
                     resume_note=item.get("resume_note"),
                     evidence_refs=coerce_str_list(item.get("evidence_refs"), "evidence_refs"),
                 )
             )
         steps = built
+        if declared_lead_ids:
+            await _assert_leads_in_session(runtime, declared_lead_ids)
 
     previous_plan = list(runtime.state.get("plan") or [])
     effective_plan = steps if steps is not None else previous_plan
@@ -228,8 +270,14 @@ async def record_lead(
     observation_summary: str | None = None,
     source_operation_id: str | None = None,
     method: str | None = None,
+    source_weaknesses_json: list[Any] | str | None = None,
+    result_weaknesses_json: list[Any] | str | None = None,
+    refuted_weaknesses_json: list[str] | str | None = None,
+    required_conditions_json: list[Any] | str | None = None,
+    actionability_json: dict[str, Any] | str | None = None,
+    expected_revision: int | None = None,
 ) -> str:
-    """登记或更新一条**假设（线索）**。
+    """登记或更新一条**假设（线索）**，并写清它的弱点依据与前置条件。
 
     Args:
         hypothesis: 假设内容，例如"该接口可能缺少服务端权限校验"。
@@ -252,17 +300,39 @@ async def record_lead(
         source_operation_id: 可选；产生这些证据的真实操作 ID。系统据此读取真实
             方法/入口/身份，而不是默认成 GET。
         method: 可选；当无法从证据推导时显式声明采集方法。
+        source_weaknesses_json: `basis` 关系：这条线索从哪些弱点/条件获得依据。
+            每项 `{"weakness_id": "...", "condition_key": "可选", "source_weakness_revision": 3,
+              "requirement_key": "可选", "evidence_refs": ["工件 ID"]}`。
+        result_weaknesses_json: `result` 关系：这条线索的验证实际产生/更新了哪些弱点（同格式）。
+        refuted_weaknesses_json: 把与该线索的指定弱点关系标记为 `refuted`
+            （弱点被反证）。**不**级联判定下游线索失败。
+        required_conditions_json: 前置条件。每项
+            `{"condition_key": "可选", "description": "...", "weakness_id": "可选",
+              "producer_lead_id": "可选（另一条线索预期产出该条件）", "satisfied": false}`。
+            引用另一条线索只表示**依赖意图**，不伪造一个已经存在的弱点。
+        actionability_json: 当前能否推进的判断：
+            `{"state": "ready|needs_condition|no_new_action|needs_review", "note": "短说明",
+              "evidence_refs": ["工件 ID"], "operation_refs": ["操作 ID"],
+              "unknowns": ["尚有哪些未知"]}`。`no_new_action` 必须写 `unknowns`；
+            `ready` 必须已有 `next_action`。
+        expected_revision: 更新已有线索时的乐观锁；过期写入返回明确冲突。
 
     Returns:
-        线索记录摘要（JSON）。
+        线索记录摘要（JSON），包含关系写入结果与可推进性判断。
 
     Notes:
         - 评分仅供旧接口辅助展示，不作为必填或硬调度依据；
-        - `confirmed` 只能由确定性核验器写入，这里**不接受**把线索直接标为 confirmed。
+        - `confirmed` 只能由确定性核验器写入，这里**不接受**把线索直接标为 confirmed；
+        - 关系写入与线索变更在同一事务；失败整体撤销，不留下半条关系。
     """
     toolbox: Toolbox = runtime.context.toolbox
     identity_refs = coerce_str_list(identity_refs_json, "identity_refs_json")
     evidence_refs = coerce_str_list(evidence_refs_json, "evidence_refs_json")
+    basis_refs = _parse_relation_refs(source_weaknesses_json, role="basis", field="source_weaknesses_json")
+    result_refs = _parse_relation_refs(result_weaknesses_json, role="result", field="result_weaknesses_json")
+    refuted = coerce_str_list(refuted_weaknesses_json, "refuted_weaknesses_json")
+    conditions = _parse_object_list(required_conditions_json, "required_conditions_json")
+    actionability = _parse_actionability(actionability_json)
 
     target_status: LeadStatus | None = None
     if status:
@@ -310,6 +380,12 @@ async def record_lead(
                 "evidence_strength": evidence_strength,
                 "feasibility": feasibility,
                 "information_gain": information_gain,
+                "expected_revision": expected_revision,
+                "source_weaknesses": [item.model_dump() for item in basis_refs],
+                "result_weaknesses": [item.model_dump() for item in result_refs],
+                "refuted_weaknesses": refuted,
+                "required_conditions": conditions,
+                "actionability": actionability.model_dump() if actionability is not None else None,
             },
         )
         if operation.row.result_snapshot is not None:
@@ -361,6 +437,8 @@ async def record_lead(
             next_action=next_action,
             evidence_refs=[str(item) for item in evidence_refs],
             lead_id=UUID(lead_id) if lead_id else None,
+            required_conditions=conditions or None,
+            expected_revision=expected_revision,
         )
         if target_status is not None:
             row = await service.set_status(
@@ -368,6 +446,41 @@ async def record_lead(
                 target_status,
                 reason=blocked_reason,
                 resume_condition=resume_condition,
+            )
+        relation_payload: dict[str, Any] | None = None
+        if basis_refs or result_refs or refuted:
+            for ref in [*basis_refs, *result_refs]:
+                if ref.evidence_refs:
+                    await _verify_artifact_refs(db, toolbox, ref.evidence_refs)
+            batch = await upsert_links(
+                db,
+                session_id=toolbox.session_id,
+                lead_id=row.id,
+                refs=[*basis_refs, *result_refs],
+                source_operation_id=operation.operation_id,
+            )
+            refuted_results = await refute_links(
+                db,
+                session_id=toolbox.session_id,
+                lead_id=row.id,
+                weakness_ids=refuted,
+            )
+            relation_payload = batch.to_dict()
+            relation_payload["refuted"] = [
+                *relation_payload["refuted"],
+                *(item.to_dict() for item in refuted_results),
+            ]
+        if actionability is not None:
+            if actionability.evidence_refs:
+                await _verify_artifact_refs(db, toolbox, actionability.evidence_refs)
+            row = await service.assess_actionability(
+                row.id,
+                state=actionability.state,
+                note=actionability.note,
+                evidence_refs=actionability.evidence_refs,
+                operation_refs=actionability.operation_refs,
+                unknowns=actionability.unknowns,
+                source_tool_call_id=tool_call_id,
             )
         payload = lead_summary(row)
         observation_id = None
@@ -387,6 +500,7 @@ async def record_lead(
         result = {
             "ok": True,
             "lead": payload,
+            "relations": relation_payload,
             "operation_id": str(operation.operation_id),
             "observation_id": str(observation_id) if observation_id else None,
             "evidence_source_operation_ids": evidence_context["source_operation_ids"],
@@ -523,8 +637,94 @@ async def record_observation(
 
 
 # --------------------------------------------------------------------------- #
-# 发现（候选）
+# 弱点（Finding 的升级形态）
 # --------------------------------------------------------------------------- #
+
+
+@tool("record_weakness")
+async def record_weakness(
+    runtime: ToolRuntime[RunContext],
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+    weakness_id: str | None = None,
+    expected_revision: int | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    category: str | None = None,
+    url: str | None = None,
+    evidence_refs_json: list[str] | str | None = None,
+    impact: str | None = None,
+    weakness_kind: str | None = None,
+    applicability_json: dict[str, Any] | str | None = None,
+    provided_conditions_json: list[Any] | str | None = None,
+    remove_condition_keys_json: list[str] | str | None = None,
+    connection_review_json: dict[str, Any] | str | None = None,
+    source_operation_id: str | None = None,
+    method: str | None = None,
+) -> str:
+    """登记一个**弱点**（候选）：可独立成立的缺陷，或可供后续利用的条件。
+
+    Args:
+        tool_call_id: 框架注入，用于返回原重放回执。
+        weakness_id: 补充已有弱点时填写；留空表示新建。
+        expected_revision: 补充已有弱点时的乐观锁；与当前版本不一致会返回冲突，
+            不覆盖新的证据和条件。
+        title: 一句话标题（新建必填）。
+        description: 是什么、在哪里、怎么观察到的。
+        category: info_disclosure / auth_boundary / access_control / input_validation /
+            configuration / transport / session_management / other。
+        url: 关联入口（会按真实采集方法登记资产）。
+        evidence_refs_json: 支持该弱点的工件 ID 的 JSON 数组字符串。**必须**引用真实工件。
+        impact: 影响说明。
+        weakness_kind: `vulnerability`（独立缺陷）/ `enabling_condition`（为后续利用提供
+            条件）/ `unclassified`（尚未判定）。
+        applicability_json: 适用范围：`{"asset_ids": [], "identity_ids": [],
+            "prerequisites": [], "limitations": []}`。复用已有资产/身份，不新建身份库。
+        provided_conditions_json: 有证据引用的条件陈述。每项
+            `{"key": "可选（沿用已有条件时必须填）", "statement": "简短陈述",
+              "evidence_refs": ["工件 ID"], "limitations": "限制"}`。
+            证据引用说明**判断依据**，不自动证明陈述成立。省略 key 时由陈述派生稳定 key；
+            修订已有条件请带上原 key。
+        remove_condition_keys_json: 要删除的条件 key；删除被引用的条件前必须先处理引用。
+        connection_review_json: 你对**本次写入后版本**后续用途的短判断：
+            `{"linked_lead_ids": ["已产生的后续线索 ID"],
+              "no_connection_note": "暂未找到后续用途时的短说明",
+              "evidence_refs": ["工件 ID"]}`。
+            `linked_lead_ids` 必须引用真实存在的关联；允许有依据地写"暂未发现用途"，
+            但不要虚构连接。
+        source_operation_id: 可选；产生这些证据的真实操作 ID。
+        method: 可选；当无法从证据推导时显式声明采集方法。
+
+    Returns:
+        弱点写入摘要（JSON）：弱点 ID、版本、条件 key、实际新增/变化项、
+        用途判断是否仍需重评。**不**返回长原始正文。
+
+    Notes:
+        - 你**不能**把它标记为 confirmed；确认必须由确定性核验记录支撑；
+        - 请求成功、退出码 0、扫描器告警都**不是**确认依据；
+        - 已确认记录的核心事实不可原地改写：发现新事实请新建候选并建立关系；
+        - 同内容重复更新不会推进知识版本；只写用途判断也不会使该判断立刻过期。
+    """
+    return await _write_weakness(
+        runtime,
+        tool_call_id,
+        tool_name="record_weakness",
+        result_key="weakness",
+        weakness_id=weakness_id,
+        expected_revision=expected_revision,
+        title=title,
+        description=description,
+        category=category,
+        url=url,
+        evidence_refs_json=evidence_refs_json,
+        impact=impact,
+        weakness_kind=weakness_kind,
+        applicability_json=applicability_json,
+        provided_conditions_json=provided_conditions_json,
+        remove_condition_keys_json=remove_condition_keys_json,
+        connection_review_json=connection_review_json,
+        source_operation_id=source_operation_id,
+        method=method,
+    )
 
 
 @tool("propose_finding")
@@ -541,6 +741,10 @@ async def propose_finding(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """提出一条**候选发现**（candidate）。
+
+    兼容入口：内部实现与 `record_weakness` 共用；**操作身份与请求摘要保持不变**，
+    因此旧 checkpoint 的重放不会被当成新操作。新工作请优先使用 `record_weakness`
+    （可写适用范围、条件与后续用途判断）。
 
     Args:
         title: 一句话标题。
@@ -563,31 +767,125 @@ async def propose_finding(
         - 请求成功、退出码 0、扫描器告警都**不是**确认依据；
         - 没有可用证据时保留 candidate/inconclusive，并在说明里写清限制。
     """
+    return await _write_weakness(
+        runtime,
+        tool_call_id,
+        tool_name="propose_finding",
+        result_key="finding",
+        weakness_id=None,
+        expected_revision=None,
+        title=title,
+        description=description,
+        category=category,
+        url=url,
+        evidence_refs_json=evidence_refs_json,
+        impact=impact,
+        weakness_kind=None,
+        applicability_json=None,
+        provided_conditions_json=None,
+        remove_condition_keys_json=None,
+        connection_review_json=None,
+        source_operation_id=source_operation_id,
+        method=method,
+        # 沿用旧实现的参数集合，保证历史调用重放时摘要不变。
+        legacy_digest=True,
+    )
+
+
+async def _write_weakness(
+    runtime: ToolRuntime[RunContext],
+    tool_call_id: str,
+    *,
+    tool_name: str,
+    result_key: str,
+    weakness_id: str | None,
+    expected_revision: int | None,
+    title: str | None,
+    description: str | None,
+    category: str | None,
+    url: str | None,
+    evidence_refs_json: list[str] | str | None,
+    impact: str | None,
+    weakness_kind: str | None,
+    applicability_json: dict[str, Any] | str | None,
+    provided_conditions_json: list[Any] | str | None,
+    remove_condition_keys_json: list[str] | str | None,
+    connection_review_json: dict[str, Any] | str | None,
+    source_operation_id: str | None,
+    method: str | None,
+    legacy_digest: bool = False,
+) -> str:
+    """弱点写入的**唯一**内部实现（新建与补充走同一条路径）。
+
+    `legacy_digest` 仅供旧入口传入：它让操作**请求摘要**沿用旧实现的参数集合，
+    否则历史调用重放会被判成"新操作"而冲突。
+    """
     toolbox: Toolbox = runtime.context.toolbox
     refs = coerce_str_list(evidence_refs_json, "evidence_refs_json")
     resolved = await _verify_artifacts_exist(toolbox, refs)
-    try:
-        parsed_category = FindingCategory(category)
-    except ValueError:
-        parsed_category = FindingCategory.OTHER
+    conditions = _parse_object_list(provided_conditions_json, "provided_conditions_json")
+    review = _parse_optional_object(connection_review_json, "connection_review_json")
+    applicability = _parse_optional_object(applicability_json, "applicability_json")
+    remove_keys = coerce_str_list(remove_condition_keys_json, "remove_condition_keys_json")
+    if weakness_kind is not None and str(weakness_kind) not in {
+        "vulnerability",
+        "enabling_condition",
+        "unclassified",
+    }:
+        raise ValueError(f"weakness_kind 非法：{weakness_kind}")
+    raw_category = category
+    if category is not None:
+        try:
+            category = str(FindingCategory(category))
+        except ValueError:
+            category = str(FindingCategory.OTHER)
+    parsed_weakness_id: UUID | None = None
+    if weakness_id:
+        try:
+            parsed_weakness_id = UUID(str(weakness_id))
+        except ValueError as exc:
+            raise ValueError(f"weakness_id 不是合法 UUID：{weakness_id}") from exc
 
+    # 摘要口径：旧入口必须沿用**旧实现的参数集合**，否则历史重放会被判成"新操作"；
+    # 新入口才使用完整参数集合。
+    receipt_arguments: dict[str, Any] = (
+        {
+            "title": title,
+            "description": description,
+            "category": raw_category,
+            "url": url,
+            "evidence_refs": resolved,
+            "impact": impact,
+            "source_operation_id": source_operation_id,
+            "method": method,
+        }
+        if legacy_digest
+        else {
+            "weakness_id": weakness_id,
+            "expected_revision": expected_revision,
+            "title": title,
+            "description": description,
+            "category": category,
+            "url": url,
+            "evidence_refs": resolved,
+            "impact": impact,
+            "weakness_kind": weakness_kind,
+            "applicability": applicability,
+            "provided_conditions": conditions,
+            "remove_condition_keys": remove_keys,
+            "connection_review": review,
+            "source_operation_id": source_operation_id,
+            "method": method,
+        }
+    )
     async with toolbox.db.transaction() as db:
         receipt = await _prepare_domain_receipt(
             db,
             toolbox,
             runtime,
             tool_call_id,
-            "propose_finding",
-            {
-                "title": title,
-                "description": description,
-                "category": category,
-                "url": url,
-                "evidence_refs": resolved,
-                "impact": impact,
-                "source_operation_id": source_operation_id,
-                "method": method,
-            },
+            tool_name,
+            receipt_arguments,
         )
         if receipt.row.result_snapshot is not None:
             return json.dumps(receipt.row.result_snapshot, ensure_ascii=False, sort_keys=True)
@@ -604,41 +902,168 @@ async def propose_finding(
                 explicit_method=method,
                 identity_refs=[],
                 evidence_context=evidence_context,
-                notes="由 propose_finding 关联",
+                notes=f"由 {tool_name} 关联",
+            )
+        for item in conditions:
+            item_refs = coerce_str_list(item.get("evidence_refs"), "evidence_refs")
+            if item_refs:
+                await _verify_artifact_refs(db, toolbox, item_refs)
+        if review and review.get("evidence_refs"):
+            await _verify_artifact_refs(
+                db, toolbox, coerce_str_list(review.get("evidence_refs"), "evidence_refs")
             )
 
-        row = await FindingService(db).propose(
+        write = await FindingService(db).upsert_weakness(
             session_id=toolbox.session_id,
+            weakness_id=parsed_weakness_id,
+            expected_revision=expected_revision,
             title=title,
             description=description,
-            category=parsed_category,
+            category=category,
             asset_id=asset_id,
-            evidence_refs=resolved,
             impact=impact,
+            weakness_kind=weakness_kind,
+            applicability=applicability,
+            provided_conditions=conditions if provided_conditions_json is not None else None,
+            remove_condition_keys=remove_keys,
+            evidence_refs=resolved,
+            connection_review=review,
         )
+        row = await FindingService(db).get(write.weakness_id)
+        if row is None:  # pragma: no cover - 刚写入的记录必然存在
+            raise RuntimeError("弱点写入后无法读取，拒绝返回不一致回执")
         payload = {
-            "finding_id": str(row.id),
+            "weakness_id": str(row.id),
             "status": row.status,
+            "weakness_kind": row.weakness_kind,
+            "revision": write.revision,
+            "content_changed": write.content_changed,
+            "condition_keys": write.condition_keys,
+            "added_condition_keys": write.added_condition_keys,
+            "revised_condition_keys": write.revised_condition_keys,
+            "removed_condition_keys": write.removed_condition_keys,
+            "connection_review_required": write.review_required,
+            "connection_review_stale": write.review_stale,
+            "linked_lead_ids": write.linked_lead_ids,
             "evidence_refs": resolved,
             "evidence_source_operation_ids": evidence_context["source_operation_ids"],
             "evidence_source_ambiguous": evidence_context["ambiguous"],
             "asset_note": asset_note,
             "next_step": (
-                "该记录只是候选。需要确定性核验后由系统写入验证记录，才能成为 confirmed。"
-                "请在说明中写清验证方法与限制。"
+                "该记录只是候选。需要确定性核验后由系统写入验证记录才能成为 confirmed。"
+                "请接着判断它的后续用途：如果它有条件可供后续利用，用 record_lead 建立"
+                "有来源的线索；如果暂时没有可推进方向，也要写一句说明（不要虚构连接）。"
             ),
         }
-        result = {"ok": True, "finding": payload}
+        if legacy_digest:
+            # 兼容入口保持旧字段名：历史对话里的模型只认 finding_id。
+            payload["finding_id"] = str(row.id)
+            payload["next_step"] = (
+                "该记录只是候选。需要确定性核验后由系统写入验证记录，才能成为 confirmed。"
+                "请在说明中写清验证方法与限制。"
+            )
+        result = {"ok": True, result_key: payload}
         receipt.row.result_snapshot = result
         receipt.row.status = "succeeded"
 
-    runtime.context.note_progress(f"finding:{payload['finding_id']}")
+    runtime.context.note_progress(f"{result_key}:{payload['weakness_id']}:{payload['revision']}")
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
 # --------------------------------------------------------------------------- #
 # 辅助
 # --------------------------------------------------------------------------- #
+
+
+def _parse_object_list(raw: list[Any] | str | None, field: str) -> list[dict[str, Any]]:
+    """接受 JSON 字符串或列表，统一成对象列表。`None` 表示"未提供"。"""
+    if raw is None:
+        return []
+    value: Any = _parse_json(raw, field) if isinstance(raw, str) else raw
+    if not isinstance(value, list):
+        raise ValueError(f"{field} 必须是 JSON 数组")
+    out: list[dict[str, Any]] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"{field} 第 {index} 项不是对象")
+        out.append(dict(item))
+    return out
+
+
+def _parse_optional_object(raw: dict[str, Any] | str | None, field: str) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    value: Any = _parse_json(raw, field) if isinstance(raw, str) else raw
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} 必须为对象")
+    return dict(value)
+
+
+def _parse_relation_refs(
+    raw: list[Any] | str | None, *, role: str, field: str
+) -> list[WeaknessRelationRef]:
+    refs: list[WeaknessRelationRef] = []
+    for item in _parse_object_list(raw, field):
+        payload = {**item, "role": role}
+        payload.setdefault("evidence_refs", [])
+        try:
+            refs.append(WeaknessRelationRef.model_validate(payload))
+        except Exception as exc:  # pydantic ValidationError
+            raise ValueError(f"{field} 中的关系项不合法：{exc}") from exc
+    return refs
+
+
+def _parse_actionability(raw: dict[str, Any] | str | None) -> ActionabilityAssessment | None:
+    payload = _parse_optional_object(raw, "actionability_json")
+    if payload is None:
+        return None
+    try:
+        return ActionabilityAssessment.model_validate(payload)
+    except Exception as exc:  # pydantic ValidationError
+        raise ValueError(f"actionability_json 不合法：{exc}") from exc
+
+
+async def _assert_leads_in_session(
+    runtime: ToolRuntime[RunContext], lead_ids: list[str]
+) -> None:
+    """计划引用的线索必须属于当前会话（不接受跨会话对象）。"""
+    parsed: list[UUID] = []
+    for raw in dict.fromkeys(lead_ids):
+        try:
+            parsed.append(UUID(str(raw)))
+        except ValueError as exc:
+            raise ValueError(f"计划引用了非法线索 ID：{raw}") from exc
+    async with runtime.context.toolbox.db.session() as db:
+        for lead_id in parsed:
+            row = await LeadService(db).get(lead_id)
+            if row is None or row.session_id != runtime.context.toolbox.session_id:
+                raise ValueError(f"计划引用的线索不属于当前会话：{lead_id}")
+
+
+async def _verify_artifact_refs(db: Any, toolbox: Toolbox, raw_ids: list[str]) -> list[str]:
+    """在**当前事务**内校验证据引用（关系/条件的依据也必须是真实工件）。"""
+    from agent_workbench.persistence.tables import ArtifactRow
+
+    resolved: list[str] = []
+    for item in raw_ids:
+        candidate = str(item).strip()
+        if not candidate:
+            continue
+        try:
+            artifact_id = UUID(candidate)
+        except ValueError as exc:
+            raise ValueError(f"证据引用不是工件 ID：{candidate}") from exc
+        artifact = await db.get(ArtifactRow, artifact_id)
+        if (
+            artifact is None
+            or artifact.session_id != toolbox.session_id
+            or artifact.source_operation_id is None
+            or artifact.availability != "available"
+            or not toolbox.artifacts.verify(artifact.relative_key, artifact.sha256)
+        ):
+            raise ValueError("证据必须为当前会话真实工具工件")
+        resolved.append(str(artifact.id))
+    return resolved
 
 
 async def _prepare_domain_receipt(
@@ -838,4 +1263,10 @@ async def _link_asset(
     return asset.id, None
 
 
-TASK_TOOLS = [update_plan, record_lead, record_observation, propose_finding]
+TASK_TOOLS = [
+    update_plan,
+    record_lead,
+    record_observation,
+    record_weakness,
+    propose_finding,
+]

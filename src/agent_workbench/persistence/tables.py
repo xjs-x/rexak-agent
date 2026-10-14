@@ -335,6 +335,14 @@ class LeadRow(TimestampMixin, Base):
     resume_condition: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: 前置条件：条件 key、描述，以及可选的已有对象引用或预期产出该条件的 lead_id。
+    #: 由线索关系投影，**不**另存一套可写 depends_on 图。
+    required_conditions: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    #: 当前能否推进（ready/needs_condition/no_new_action/needs_review）与依据指纹。
+    #: 与 `status`（工作状态）是两个维度：`deferred + ready` 仍然阻止自主结束。
+    actionability_assessment: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     __table_args__ = (
         Index("ix_leads_session_status_priority", "session_id", "status", "priority"),
@@ -347,6 +355,12 @@ class LeadRow(TimestampMixin, Base):
 
 
 class FindingRow(TimestampMixin, Base):
+    """弱点实体。
+
+    产品概念与新工具使用"弱点"，物理表继续沿用 `findings` 以保留 UUID、验证外键、
+    历史报告与旧 API 兼容（方案 §3.1）。**不**另建一张与 Finding 同步写入的 Weakness 主表。
+    """
+
     __tablename__ = "findings"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -367,6 +381,20 @@ class FindingRow(TimestampMixin, Base):
     verification_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
     reported_in_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: `vulnerability / enabling_condition / unclassified`：区分独立缺陷与可供后续利用的条件。
+    #: 旧 Finding 迁移后一律为 `unclassified`，**不**自动认定为可利用弱点。
+    weakness_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="unclassified")
+    #: 适用资产、身份、已知前置条件和限制；复用已有 asset_id / identity_id。
+    applicability: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: 有证据引用的条件陈述（稳定 key + 简短 statement + evidence_refs + limitations）。
+    #: 证据引用说明**判断依据**，不自动证明陈述成立。
+    provided_conditions: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    #: 模型对当前版本后续用途的短判断：依据指纹、关联线索 ID、暂未发现连接的说明、来源调用。
+    connection_review: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    #: 实质内容的哈希。仅更新用途判断元数据**不**改变它，避免判断刚写入就使自己过期。
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (
         Index("ix_findings_session_status", "session_id", "status"),
@@ -374,6 +402,61 @@ class FindingRow(TimestampMixin, Base):
             "status <> 'confirmed' OR verification_id IS NOT NULL",
             name="finding_confirmed_requires_verification",
         ),
+    )
+
+
+class LeadWeaknessLinkRow(TimestampMixin, Base):
+    """线索—弱点关系。`basis` = 线索依据哪个弱点；`result` = 线索验证产生了哪个弱点。
+
+    **两个弱点分别成立不代表其组合已成立**：`evidence_linked` 只表示关系有引用依据，
+    不等于整条组合路径已确认，也不使弱点从 candidate 变成 confirmed（方案 §3.3）。
+    """
+
+    __tablename__ = "lead_weakness_links"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        # RESTRICT：禁止静默级联抹掉关系证据
+        ForeignKey(f"{APP_SCHEMA}.leads.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    finding_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.findings.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    condition_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requirement_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 引用时的来源弱点版本；旧版本来源**不**自动升级为新版本判断。
+    source_weakness_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    relation_state: Mapped[str] = mapped_column(String(32), nullable=False, default="proposed")
+    evidence_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    source_operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        # 关系身份唯一：空 key 统一表示，避免 NULL 造成重复行。
+        UniqueConstraint(
+            "lead_id",
+            "finding_id",
+            "role",
+            "condition_key",
+            "requirement_key",
+            name="uq_lead_weakness_links_identity",
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index("ix_lead_weakness_links_session_lead", "session_id", "lead_id"),
+        Index("ix_lead_weakness_links_session_finding", "session_id", "finding_id"),
+        Index("ix_lead_weakness_links_finding_condition", "finding_id", "condition_key"),
     )
 
 
@@ -702,6 +785,7 @@ ALL_TABLES = [
     AssetRow,
     LeadRow,
     FindingRow,
+    LeadWeaknessLinkRow,
     VerificationRow,
     CoverageRow,
     ObservationRow,

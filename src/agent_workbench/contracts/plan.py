@@ -11,8 +11,13 @@ class PlanStepRead(BaseModel):
     step_id: str
     description: str
     status: Literal["pending", "in_progress", "done", "dropped", "blocked"]
+    #: 步骤类型：覆盖检查 / 链条跟进 / 混合。旧 checkpoint 缺失时按 `mixed` 读取。
+    kind: Literal["coverage", "followup", "mixed"] = "mixed"
     rationale: str | None = None
+    #: 兼容字段：本步骤的**主**线索。新写入与 `lead_ids` 冲突时以 `lead_ids` 为准。
     lead_id: str | None = None
+    #: 本步骤服务的全部线索（一个步骤可服务多条线索）。
+    lead_ids: list[str] = Field(default_factory=list)
     done_when: str | None = None
     resume_note: str | None = None
     evidence_refs: list[str] = Field(default_factory=list)

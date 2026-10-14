@@ -31,6 +31,7 @@ from agent_workbench.tools.execution_context import (
     batch_tool_names,
     context_from_state,
     execution_context,
+    weakness_revisions_for_focus,
 )
 
 log = structlog.get_logger(__name__)
@@ -68,7 +69,9 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         state = dict(request.state or {})
         token = execution_context.set(
             context_from_state(
-                state, same_batch_plan_update="update_plan" in batch_tool_names(state)
+                state,
+                same_batch_plan_update="update_plan" in batch_tool_names(state),
+                weakness_revisions=weakness_revisions_for_focus(context.toolbox),
             )
         )
         try:

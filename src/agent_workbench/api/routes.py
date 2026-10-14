@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -26,9 +27,10 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Text, cast, literal, select, tuple_, union_all
+from sqlalchemy import Text, and_, cast, literal, or_, select, tuple_, union_all
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
+from agent_workbench.agent.state import plan_step_kind, plan_step_lead_ids
 from agent_workbench.api.auth import LocalAuth
 from agent_workbench.api.redaction import redact_api_value as _redact_api_value
 from agent_workbench.api.redaction import redact_event_payload
@@ -54,6 +56,7 @@ from agent_workbench.contracts.plan import (
     PlanStepRead,
     WorkAssessmentRead,
 )
+from agent_workbench.domain.findings import FindingService
 from agent_workbench.domain.instruction_scope import scope_from_instructions, sync_instruction_scope
 from agent_workbench.domain.prices import PriceUpdate
 from agent_workbench.domain.run_state import (
@@ -80,6 +83,7 @@ from agent_workbench.persistence.tables import (
     FindingRow,
     IdentityRow,
     LeadRow,
+    LeadWeaknessLinkRow,
     ModelCallRow,
     ReportVersionRow,
     RunRow,
@@ -660,7 +664,17 @@ async def session_plan(session_id: UUID, request: Request) -> PlanRead:
     raw_steps = values.get("plan") or []
     return PlanRead(
         revision=int(values.get("plan_revision") or 0),
-        steps=[PlanStepRead.model_validate(_redact_api_value(step)) for step in raw_steps],
+        steps=[
+            PlanStepRead.model_validate(
+                {
+                    **_redact_api_value(step),
+                    # 旧步骤只有 lead_id：读取时映射为单元素 lead_ids（不回写历史）。
+                    "lead_ids": plan_step_lead_ids(step),
+                    "kind": plan_step_kind(step),
+                }
+            )
+            for step in raw_steps
+        ],
         current_focus=CurrentFocusRead.model_validate(_redact_api_value(values["current_focus"]))
         if values.get("current_focus")
         else None,
@@ -761,6 +775,7 @@ async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]
                 "title": row.title,
                 "status": row.status,
                 "category": row.category,
+                "weakness_kind": row.weakness_kind,
                 "verification_id": str(row.verification_id) if row.verification_id else None,
             }
             for row in findings
@@ -1208,6 +1223,11 @@ async def list_leads(
                     redact_text(row.resume_condition) if row.resume_condition else None
                 ),
                 "evidence_refs": list(row.evidence_refs or []),
+                "required_conditions": _redact_api_value(row.required_conditions or []),
+                "actionability": (row.actionability_assessment or {}).get("state"),
+                "actionability_note": _redact_api_value(
+                    (row.actionability_assessment or {}).get("note")
+                ),
                 "revision": row.revision,
             }
             for row in rows[:limit]
@@ -1275,6 +1295,284 @@ async def list_verifications(
     }
 
 
+@router.get("/sessions/{session_id}/exploration-relations", tags=["read"])
+async def list_exploration_relations(
+    session_id: UUID,
+    request: Request,
+    weakness_id: Annotated[UUID | None, Query()] = None,
+    lead_id: Annotated[UUID | None, Query()] = None,
+    cursor: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> dict[str, Any]:
+    """关系分页：`弱点 → 线索 → 弱点` 的一跳关系。
+
+    `evidence_linked` 只表示关系有引用依据，不代表组合路径已确认。
+    """
+    get_auth().require_session(request)
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        stmt = select(LeadWeaknessLinkRow).where(LeadWeaknessLinkRow.session_id == session_id)
+        if weakness_id is not None:
+            stmt = stmt.where(LeadWeaknessLinkRow.finding_id == weakness_id)
+        if lead_id is not None:
+            stmt = stmt.where(LeadWeaknessLinkRow.lead_id == lead_id)
+        if cursor:
+            try:
+                raw = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+                after_at = datetime.fromisoformat(str(raw["at"]))
+                after_id = UUID(str(raw["id"]))
+            except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                raise ApiError(ErrorCode.VALIDATION_FAILED, "关系分页游标无效") from exc
+            stmt = stmt.where(
+                or_(
+                    LeadWeaknessLinkRow.created_at > after_at,
+                    and_(
+                        LeadWeaknessLinkRow.created_at == after_at,
+                        LeadWeaknessLinkRow.id > after_id,
+                    ),
+                )
+            )
+        rows = list(
+            (
+                await db.execute(
+                    stmt.order_by(LeadWeaknessLinkRow.created_at, LeadWeaknessLinkRow.id).limit(
+                        limit + 1
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = None
+    if has_more and rows:
+        last = rows[-1]
+        next_cursor = base64.urlsafe_b64encode(
+            json.dumps({"at": last.created_at.isoformat(), "id": str(last.id)}).encode()
+        ).decode()
+    return {
+        "relations": [
+            {
+                "link_id": str(row.id),
+                "lead_id": str(row.lead_id),
+                "weakness_id": str(row.finding_id),
+                "role": row.role,
+                "relation_state": row.relation_state,
+                "condition_key": row.condition_key,
+                "requirement_key": row.requirement_key,
+                "source_weakness_revision": row.source_weakness_revision,
+                "evidence_refs": list(row.evidence_refs or []),
+                "source_operation_id": (
+                    str(row.source_operation_id) if row.source_operation_id else None
+                ),
+                "revision": row.revision,
+            }
+            for row in rows
+        ],
+        "next_cursor": next_cursor,
+        "retrieval": "explicit_id_or_condition_relation",
+        "note": "关系只表示有引用依据；两侧弱点分别成立不代表组合已成立。",
+    }
+
+
+@router.get("/sessions/{session_id}/weaknesses/{weakness_id}", tags=["read"])
+async def get_weakness(session_id: UUID, weakness_id: UUID, request: Request) -> dict[str, Any]:
+    """弱点详情：适用条件、后续用途判断与关系邻居（按需展开，不加载全图）。"""
+    get_auth().require_session(request)
+    from agent_workbench.evidence.artifacts import redact_text
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        row = (
+            await db.execute(
+                select(FindingRow).where(
+                    FindingRow.id == weakness_id, FindingRow.session_id == session_id
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise ApiError(ErrorCode.NOT_FOUND, f"弱点不存在：{weakness_id}")
+        links = list(
+            (
+                await db.execute(
+                    select(LeadWeaknessLinkRow)
+                    .where(
+                        LeadWeaknessLinkRow.session_id == session_id,
+                        LeadWeaknessLinkRow.finding_id == weakness_id,
+                    )
+                    .order_by(LeadWeaknessLinkRow.created_at, LeadWeaknessLinkRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        lead_ids = [link.lead_id for link in links]
+        leads = (
+            list(
+                (
+                    await db.execute(
+                        select(LeadRow).where(LeadRow.id.in_(lead_ids))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if lead_ids
+            else []
+        )
+        verifications = list(
+            (
+                await db.execute(
+                    select(VerificationRow)
+                    .where(VerificationRow.finding_id == weakness_id)
+                    .order_by(VerificationRow.created_at, VerificationRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        stale = not FindingService(db).review_is_current(row)
+    return {
+        "weakness": {
+            "id": str(row.id),
+            "title": redact_text(row.title),
+            "description": redact_text(row.description),
+            "category": row.category,
+            "status": row.status,
+            "weakness_kind": row.weakness_kind,
+            "impact": redact_text(row.impact) if row.impact else None,
+            "applicability": _redact_api_value(row.applicability or {}),
+            "provided_conditions": [
+                {
+                    "key": item.get("key"),
+                    "statement": redact_text(str(item.get("statement") or "")),
+                    "limitations": redact_text(str(item.get("limitations") or "")) or None,
+                    "evidence_refs": list(item.get("evidence_refs") or []),
+                }
+                for item in (row.provided_conditions or [])
+            ],
+            "connection_review": _redact_api_value(row.connection_review or {}),
+            "connection_review_stale": stale,
+            "evidence_refs": list(row.evidence_refs or []),
+            "verification_id": str(row.verification_id) if row.verification_id else None,
+            "revision": row.revision,
+        },
+        "relations": [
+            {
+                "link_id": str(link.id),
+                "lead_id": str(link.lead_id),
+                "role": link.role,
+                "relation_state": link.relation_state,
+                "condition_key": link.condition_key,
+                "requirement_key": link.requirement_key,
+                "source_weakness_revision": link.source_weakness_revision,
+                "revision": link.revision,
+            }
+            for link in links
+        ],
+        "related_leads": [
+            {
+                "id": str(item.id),
+                "hypothesis": redact_text(item.hypothesis),
+                "status": item.status,
+                "next_action": redact_text(item.next_action) if item.next_action else None,
+                "required_conditions": _redact_api_value(item.required_conditions or []),
+                "actionability": (item.actionability_assessment or {}).get("state"),
+                "revision": item.revision,
+            }
+            for item in leads
+        ],
+        "verifications": [
+            {
+                "id": str(item.id),
+                "conclusion": item.conclusion,
+                "method_version": item.method_version,
+                "performed_by": item.performed_by,
+                "limitations": redact_text(item.limitations) if item.limitations else None,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in verifications
+        ],
+        "note": (
+            "候选不等于确认；组合假设不因两侧分别成立而成立。"
+            "`connection_review_stale=true` 表示该用途判断已过期，需要重新评估。"
+        ),
+    }
+
+
+@router.get("/sessions/{session_id}/weaknesses", tags=["read"])
+async def list_weaknesses(
+    session_id: UUID,
+    request: Request,
+    weakness_kind: str | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """弱点列表（与旧 `/findings` 返回同一实体）。"""
+    get_auth().require_session(request)
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
+        stmt = select(FindingRow).where(FindingRow.session_id == session_id)
+        if weakness_kind is not None:
+            stmt = stmt.where(FindingRow.weakness_kind == weakness_kind)
+        if status_filter is not None:
+            stmt = stmt.where(FindingRow.status == status_filter)
+        rows = list(
+            (
+                await db.execute(
+                    stmt.order_by(FindingRow.created_at.desc(), FindingRow.id)
+                    .offset(offset)
+                    .limit(limit + 1)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        service = FindingService(db)
+        stale_ids = {
+            str(row.id)
+            for row in rows[:limit]
+            if row.connection_review and not service.review_is_current(row)
+        }
+        unreviewed_ids = {
+            str(row.id) for row in rows[:limit] if not service.review_is_current(row)
+        }
+    has_more = len(rows) > limit
+    return {
+        "weaknesses": [
+            {
+                "id": str(row.id),
+                "title": _redact_api_value(row.title),
+                "category": row.category,
+                "status": row.status,
+                "weakness_kind": row.weakness_kind,
+                "impact": _redact_api_value(row.impact),
+                "condition_keys": [
+                    str(item.get("key")) for item in (row.provided_conditions or [])
+                ],
+                "connection_reviewed": str(row.id) not in unreviewed_ids,
+                "connection_review_stale": str(row.id) in stale_ids,
+                "evidence_refs": list(row.evidence_refs or []),
+                "verification_id": str(row.verification_id) if row.verification_id else None,
+                "revision": row.revision,
+            }
+            for row in rows[:limit]
+        ],
+        "next_offset": offset + limit if has_more else None,
+        "note": (
+            "弱点是弱点，不等于漏洞：独立缺陷与可供后续利用的条件分别标注，"
+            "**不能**把弱点数量当作漏洞数量。"
+        ),
+    }
+
+
 @router.get("/sessions/{session_id}/findings", tags=["read"])
 async def list_findings(
     session_id: UUID,
@@ -1310,6 +1608,7 @@ async def list_findings(
                 "title": _redact_api_value(row.title),
                 "category": row.category,
                 "status": row.status,
+                "weakness_kind": row.weakness_kind,
                 "impact": _redact_api_value(row.impact),
                 "description": _redact_api_value(row.description),
                 "evidence_refs": list(row.evidence_refs or []),
@@ -1321,6 +1620,7 @@ async def list_findings(
         "next_offset": offset + limit if has_more else None,
         "note": (
             "candidate 是候选，不计入已确认数量；confirmed 必须有 verification_id 且引用可用工件。"
+            "`/weaknesses` 返回同一实体的弱点视图（含条件与关系）。"
         ),
     }
 

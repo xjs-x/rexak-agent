@@ -63,7 +63,7 @@ async def test_end_checkpoint_reenters_official_model_without_reinjecting_object
 async def test_new_run_updates_objective_and_preserves_prior_messages():
     first_id, new_id, session_id = uuid4(), uuid4(), uuid4()
     values = {
-        "state_schema_version": 3,
+        "state_schema_version": 4,
         "messages": ["已保存的历史"],
         "active_run_id": str(first_id),
         "plan": [],
@@ -96,7 +96,7 @@ async def test_pending_graph_nodes_resume_without_new_input():
 
     async def state(_config):
         return SimpleNamespace(
-            values={"state_schema_version": 3, "messages": ["历史"], "active_run_id": str(run.id)},
+            values={"state_schema_version": 4, "messages": ["历史"], "active_run_id": str(run.id)},
             next=("tools",),
         )
 

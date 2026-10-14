@@ -1,4 +1,18 @@
-"""从 checkpoint、领域表与执行台账装配只读视图；不存第二份黑板。"""
+"""从 checkpoint、领域表与执行台账装配只读视图；不存第二份黑板。
+
+V3（方案 §5.2 / §7）新增**弱点消费**区块：
+
+```
+changed_weaknesses: 本轮尚待分析的弱点摘要（含尚未建立任何关系的新弱点）
+related_leads:      已显式关联、可能受本次变化影响的线索
+condition_changes:  哪些条件增加、修订或失去依据
+current_route:      当前主线的一跳关系、待解决条件和证据引用
+pending_connection_review_count: 尚未判断后续用途的弱点数量
+```
+
+这些只是**只读投影**；"已保存 / 实际呈现 / 模型判断 / 关联执行"四件事分别记录，
+只有真正进入最终请求 payload 的条目才推进呈现游标（由 context builder 的 manifest 证明）。
+"""
 
 import hashlib
 import json
@@ -10,10 +24,28 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agent_workbench.domain.exploration_review import (
+    current_route,
+    recall_by_condition_change,
+    sort_key_for_recall,
+)
+from agent_workbench.domain.findings import FindingService
 from agent_workbench.domain.leads import lead_summary
-from agent_workbench.persistence.tables import LeadRow, ToolJobRow, ToolOperationRow
+from agent_workbench.persistence.tables import (
+    FindingRow,
+    LeadRow,
+    LeadWeaknessLinkRow,
+    ToolJobRow,
+    ToolOperationRow,
+)
 
 UNFINISHED = ("new", "investigating", "needs_verification", "blocked", "deferred")
+
+#: 初始呈现预算（上下文资源初值，**不是**总探索数量上限）。
+MAX_PRESENTED_WEAKNESSES = 2
+MAX_RELATED_LEADS = 3
+#: 候选池上限（用于挑选，不直接全部进入 payload）。
+MAX_WEAKNESS_CANDIDATES = 12
 
 
 def cursor_for(row: LeadRow) -> str:
@@ -214,12 +246,20 @@ async def assemble_working_context(
         .scalars()
         .all()
     )
+    consumption = await _assemble_weakness_consumption(
+        db, session_id, state, focus=focus, selected=selected
+    )
     return {
         "goal": {
             "objective": state.get("objective"),
             "constraints": state.get("user_constraints") or [],
         },
-        "judgment": {"focus": focus, "leads": selected},
+        "judgment": {
+            "focus": focus,
+            "leads": selected,
+            "current_route": consumption["current_route"],
+        },
+        "weakness_consumption": consumption,
         "progress": {
             "plan_revision": int(state.get("plan_revision") or 0),
             "jobs": [
@@ -243,6 +283,7 @@ async def assemble_working_context(
             "turn": turn,
             "review_age_rounds": turn - int(previous or 0),
             "source_signature": source_signature,
+            "consumption_commit": consumption["consumption_commit"],
             "note": (
                 "展示不代表模型已复评；游标只在**召回结果实际发送**后才提交，"
                 "因预算被省略的线索不算已展示。"
@@ -250,3 +291,238 @@ async def assemble_working_context(
         },
         "pending_job_ids": [str(row.job_id) for row in jobs],
     }
+
+
+async def _assemble_weakness_consumption(
+    db: AsyncSession,
+    session_id: UUID,
+    state: dict[str, Any],
+    *,
+    focus: dict[str, Any],
+    selected: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """弱点消费区块：变化弱点、相关线索、条件变化与当前路线。"""
+    baseline = {
+        str(key): int(value) for key, value in (state.get("last_weakness_revisions") or {}).items()
+    }
+    presented = {str(item) for item in (state.get("presented_weakness_ids") or [])}
+    focus_lead_ids = {
+        str(item.get("lead_id")) for item in selected if item.get("lead_id")
+    } | ({str(focus.get("lead_id"))} if focus.get("lead_id") else set())
+
+    rows = list(
+        (
+            await db.execute(
+                select(FindingRow)
+                .where(
+                    FindingRow.session_id == session_id,
+                    FindingRow.status != "disproved",
+                )
+                .order_by(FindingRow.created_at, FindingRow.id)
+                .limit(MAX_WEAKNESS_CANDIDATES * 40)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # 一次查全会话关系再分组：不能每个弱点各查一次（几百条弱点会变成几百次往返）。
+    links_by_finding: dict[str, list[str]] = {}
+    for link in (
+        await db.execute(
+            select(LeadWeaknessLinkRow).where(LeadWeaknessLinkRow.session_id == session_id)
+        )
+    ).scalars():
+        links_by_finding.setdefault(str(link.finding_id), []).append(str(link.lead_id))
+    service = FindingService(db)
+    candidates: list[tuple[int, int, str, dict[str, Any]]] = []
+    changed_conditions: list[dict[str, Any]] = []
+    new_ids: list[UUID] = []
+    revised_ids: list[UUID] = []
+    pending_review_ids: list[str] = []
+    for row in rows:
+        key = str(row.id)
+        previous = baseline.get(key)
+        linked_lead_ids = links_by_finding.get(key, [])
+        has_relation = key in links_by_finding
+        # 尚未建立任何关系、也尚未判断用途的新弱点，必须有进入待分析列表的机会。
+        needs_review = not service.review_is_current(row)
+        if needs_review:
+            pending_review_ids.append(key)
+        if previous is None:
+            new_ids.append(row.id)
+        elif int(previous) != int(row.revision):
+            revised_ids.append(row.id)
+        if previous is None or int(previous) != int(row.revision):
+            changed_conditions.append(
+                {
+                    "weakness_id": key,
+                    "change": "added" if previous is None else "revised",
+                    "condition_keys": [
+                        str(item.get("key")) for item in (row.provided_conditions or [])
+                    ],
+                    "weakness_kind": row.weakness_kind,
+                    "title": row.title[:120],
+                    "status": row.status,
+                }
+            )
+        if not needs_review and previous is not None and int(previous) == int(row.revision):
+            continue
+        # 定性优先级：当前主线相关 > 可能解除其他路线阻塞 > 其他待分析项。
+        if set(linked_lead_ids) & focus_lead_ids:
+            rank = 0
+        elif row.provided_conditions:
+            rank = 1
+        else:
+            rank = 2
+        presented_rank = 1 if key in presented else 0
+        candidates.append(
+            (
+                rank,
+                presented_rank,
+                key,
+                {
+                    "weakness_id": key,
+                    "revision": int(row.revision),
+                    "title": row.title[:160],
+                    "status": row.status,
+                    "weakness_kind": row.weakness_kind,
+                    "change": "added" if previous is None else "revised",
+                    "condition_keys": [
+                        str(item.get("key")) for item in (row.provided_conditions or [])
+                    ],
+                    "provided_conditions": [
+                        {
+                            "key": str(item.get("key")),
+                            "statement": str(item.get("statement") or "")[:200],
+                            "evidence_refs": list(item.get("evidence_refs") or []),
+                        }
+                        for item in (row.provided_conditions or [])[:3]
+                    ],
+                    "linked_lead_ids": linked_lead_ids[:5],
+                    "has_relation": has_relation,
+                    "connection_review_required": needs_review,
+                    "already_presented": key in presented,
+                },
+            )
+        )
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    selected_weaknesses = [item[3] for item in candidates[:MAX_PRESENTED_WEAKNESSES]]
+
+    # 条件变化召回（P2）：先精确关系，后资产/身份与主线受阻。
+    mainline_blocked = str((_focus_step(state, focus) or {}).get("status")) in {
+        "done",
+        "dropped",
+        "blocked",
+    }
+    identity_signature = str(state.get("active_identity_id") or "")
+    identity_changed = bool(identity_signature) and identity_signature != str(
+        state.get("last_identity_signature") or ""
+    )
+    recall = await recall_by_condition_change(
+        db,
+        session_id,
+        new_weakness_ids=new_ids[:10],
+        revised_weakness_ids=revised_ids[:10],
+        identity_changed=identity_changed,
+        mainline_blocked=mainline_blocked,
+        exclude_lead_ids={
+            UUID(item["lead_id"]) for item in selected if item.get("lead_id")
+        },
+        limit=MAX_RELATED_LEADS * 2,
+    )
+    seen_keys = {str(item) for item in (state.get("last_recall_keys") or [])}
+    recall = [item for item in recall if item.dedupe_key not in seen_keys]
+    recall.sort(key=sort_key_for_recall)
+    recall = recall[:MAX_RELATED_LEADS]
+
+    related_leads: list[dict[str, Any]] = []
+    for item in recall:
+        related_leads.append(
+            {
+                "lead_id": item.lead_id,
+                "hypothesis": item.hypothesis,
+                "status": item.status,
+                "actionability": item.actionability,
+                "recall_reason": item.recall_reason,
+                "trigger": item.trigger,
+                "dedupe_key": item.dedupe_key,
+                "missing_conditions": item.missing_conditions,
+                "relation_ids": item.relation_ids,
+                "revision": item.revision,
+                "source": "condition_change_recall",
+            }
+        )
+    # 显式关系补充：变化弱点的下游线索（即使没有触发召回也要让模型看到）。
+    known = {item["lead_id"] for item in related_leads}
+    for weakness in selected_weaknesses:
+        for lead_id in weakness["linked_lead_ids"]:
+            if len(related_leads) >= MAX_RELATED_LEADS or lead_id in known:
+                continue
+            row = (
+                await db.execute(
+                    select(LeadRow).where(
+                        LeadRow.id == UUID(lead_id), LeadRow.session_id == session_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                continue
+            related_leads.append(
+                {**lead_summary(row), "source": "explicit_relation", "recall_reason": "显式关系"}
+            )
+            known.add(lead_id)
+
+    route = await current_route(db, session_id, focus_lead_id=focus.get("lead_id"))
+    route_missing: list[str] = []
+    for item in route:
+        row = await db.get(FindingRow, UUID(item.weakness_id))
+        if row is None:
+            continue
+        for condition in row.provided_conditions or []:
+            if item.condition_key and str(condition.get("key")) == item.condition_key:
+                route_missing.append(str(condition.get("statement") or "")[:200])
+
+    return {
+        "changed_weaknesses": selected_weaknesses,
+        "weakness_candidate_count": len(candidates),
+        "weakness_scan_bounded": len(rows) >= MAX_WEAKNESS_CANDIDATES * 40,
+        "related_leads": related_leads,
+        "condition_changes": changed_conditions[:8],
+        "current_route": [item.model_dump() for item in route],
+        "unresolved_conditions": route_missing[:5],
+        "pending_connection_review_count": len(pending_review_ids),
+        "pending_connection_review_ids": pending_review_ids[:10],
+        "new_weakness_ids": [str(item) for item in new_ids[:10]],
+        "revised_weakness_ids": [str(item) for item in revised_ids[:10]],
+        "identity_changed": identity_changed,
+        "mainline_blocked": mainline_blocked,
+        # 只有**真正进入最终 payload**的条目才提交这里（由 context builder 的 manifest 决定）。
+        "consumption_commit": {
+            "presented_weakness_ids": [item["weakness_id"] for item in selected_weaknesses],
+            "recall_keys": [item["dedupe_key"] for item in related_leads if item.get("dedupe_key")],
+            "weakness_revisions": {str(row.id): int(row.revision) for row in rows},
+            "identity_signature": identity_signature,
+        },
+        "presentation_budget": {
+            "max_changed_weaknesses": MAX_PRESENTED_WEAKNESSES,
+            "max_related_leads": MAX_RELATED_LEADS,
+        },
+        "note": (
+            "这里只呈现有界摘要；候选池共 "
+            f"{len(candidates)} 条。未进入最终请求 payload 的条目不算已呈现，"
+            "也不会推进呈现游标。已呈现但没有判断的弱点仍是待判断项，"
+            "`pending_connection_review_count` 会继续反映它们；"
+            "结束复查由领域层完整枚举，**不**受这里的展示上限影响"
+            "（`weakness_scan_bounded=true` 表示本次展示扫描已到上限）。"
+        ),
+    }
+
+
+def _focus_step(state: dict[str, Any], focus: dict[str, Any]) -> dict[str, Any] | None:
+    step_id = focus.get("step_id")
+    if not step_id:
+        return None
+    for step in state.get("plan") or []:
+        if step.get("step_id") == step_id:
+            return step
+    return None

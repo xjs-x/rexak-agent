@@ -56,10 +56,77 @@ export interface FindingItem {
   title: string;
   category: string;
   status: string;
+  /** `vulnerability / enabling_condition / unclassified`：弱点角色，不是严重等级。 */
+  weakness_kind?: string;
   description?: string;
   impact?: string | null;
   evidence_refs?: string[];
   verification_id: string | null;
+}
+
+export interface WeaknessCondition {
+  key: string;
+  statement: string;
+  limitations?: string | null;
+  evidence_refs?: string[];
+}
+
+export interface WeaknessItem {
+  id: string;
+  title: string;
+  category: string;
+  status: string;
+  weakness_kind: string;
+  impact?: string | null;
+  condition_keys?: string[];
+  /** 是否已做过"后续用途判断"。未判断的弱点仍会被结束复查拦住。 */
+  connection_reviewed?: boolean;
+  /** 判断依据已过期，需要重新评估。 */
+  connection_review_stale?: boolean;
+  evidence_refs?: string[];
+  verification_id: string | null;
+  revision?: number;
+}
+
+export interface RelationItem {
+  link_id: string;
+  lead_id: string;
+  weakness_id: string;
+  role: string;
+  relation_state: string;
+  condition_key?: string | null;
+  requirement_key?: string | null;
+  source_weakness_revision?: number | null;
+  revision?: number;
+}
+
+export interface WeaknessDetail {
+  weakness: WeaknessItem & {
+    description?: string;
+    applicability?: Record<string, unknown>;
+    provided_conditions?: WeaknessCondition[];
+    connection_review?: { linked_lead_ids?: string[]; no_connection_note?: string | null } | Record<string, unknown>;
+    connection_review_stale?: boolean;
+  };
+  relations: RelationItem[];
+  related_leads: Array<{
+    id: string;
+    hypothesis: string;
+    status: string;
+    next_action?: string | null;
+    required_conditions?: Array<Record<string, unknown>>;
+    actionability?: string | null;
+    revision?: number;
+  }>;
+  verifications: Array<{
+    id: string;
+    conclusion: string;
+    method_version: string;
+    performed_by: string;
+    limitations?: string | null;
+    created_at: string;
+  }>;
+  note: string;
 }
 
 export interface LeadItem {
@@ -71,6 +138,10 @@ export interface LeadItem {
   blocked_reason: string | null;
   next_action?: string | null;
   evidence_refs?: string[];
+  /** 当前能否推进；与 status（工作状态）是两个维度。 */
+  required_conditions?: Array<Record<string, unknown>>;
+  actionability?: string | null;
+  actionability_note?: string | null;
 }
 
 export interface JobItem {
@@ -243,6 +314,23 @@ export class ApiClient {
 
   findings(sessionId: string): Promise<{ findings: FindingItem[] }> {
     return request(`/sessions/${sessionId}/findings?limit=100`);
+  }
+
+  /** 弱点列表（与 findings 同一实体，附带弱点角色与用途判断状态）。 */
+  weaknesses(sessionId: string): Promise<{ weaknesses: WeaknessItem[] }> {
+    return request(`/sessions/${sessionId}/weaknesses?limit=200`);
+  }
+
+  /** 按需展开弱点详情与一跳关系（不为首屏加载全图）。 */
+  weakness(sessionId: string, weaknessId: string): Promise<WeaknessDetail> {
+    return request(`/sessions/${sessionId}/weaknesses/${weaknessId}`);
+  }
+
+  relations(sessionId: string, params: { weaknessId?: string; leadId?: string } = {}): Promise<{ relations: RelationItem[]; next_cursor: string | null }> {
+    const query = new URLSearchParams({ limit: "100" });
+    if (params.weaknessId) query.set("weakness_id", params.weaknessId);
+    if (params.leadId) query.set("lead_id", params.leadId);
+    return request(`/sessions/${sessionId}/exploration-relations?${query.toString()}`);
   }
 
   leads(sessionId: string): Promise<{ leads: LeadItem[] }> {

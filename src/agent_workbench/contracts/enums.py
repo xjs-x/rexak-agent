@@ -167,6 +167,58 @@ class FindingCategory(StrEnum):
     OTHER = "other"
 
 
+class WeaknessKind(StrEnum):
+    """弱点的**角色**，不是严重等级。
+
+    - `vulnerability`：可独立成立的缺陷；
+    - `enabling_condition`：本身未必是缺陷，但为后续利用提供条件；
+    - `unclassified`：尚未判定（旧 Finding 迁移后一律落在这里，不得自动编造）。
+    """
+
+    VULNERABILITY = "vulnerability"
+    ENABLING_CONDITION = "enabling_condition"
+    UNCLASSIFIED = "unclassified"
+
+
+class LeadWeaknessRole(StrEnum):
+    """线索与弱点关系的方向。"""
+
+    #: 这条线索从哪个弱点/条件获得依据
+    BASIS = "basis"
+    #: 这条线索的验证实际产生或更新了哪个弱点
+    RESULT = "result"
+
+
+class LeadWeaknessRelationState(StrEnum):
+    """关系状态。`evidence_linked` 只表示**关系**已有引用依据，
+    **不表示**整条组合路径已确认，也不使弱点从 candidate 变成 confirmed。"""
+
+    PROPOSED = "proposed"
+    EVIDENCE_LINKED = "evidence_linked"
+    REFUTED = "refuted"
+
+
+class Actionability(StrEnum):
+    """线索当前能否推进。与 `LeadStatus`（工作状态）是两个维度。
+
+    `deferred + ready` = 可以做但当前排在后面，仍然阻止自主结束；
+    `blocked` 但没有明确缺失条件 => `needs_review`，不能直接放行。
+    """
+
+    READY = "ready"
+    NEEDS_CONDITION = "needs_condition"
+    NO_NEW_ACTION = "no_new_action"
+    NEEDS_REVIEW = "needs_review"
+
+
+class PlanStepKind(StrEnum):
+    """计划步骤类型：覆盖检查、链条跟进或混合。"""
+
+    COVERAGE = "coverage"
+    FOLLOWUP = "followup"
+    MIXED = "mixed"
+
+
 class CoverageStatus(StrEnum):
     NOT_CHECKED = "not_checked"
     CHECKED_NEGATIVE = "checked_negative"

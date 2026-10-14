@@ -1,6 +1,10 @@
 """阶段结束工具：`propose_completion`。
 
 **提交结构化结束提议**，不直接结束。是否真的结束由确定性 `finish_gate` 决定（§6.5）。
+
+V3（方案 §6.4）：`coverage_summary` / `remaining_leads` / `relevant_lead_ids`
+保留用于**兼容读取与说明**，但**不再**作为放行凭据——复查集合由程序从业务表完整枚举。
+`relevant_lead_ids` 只表达展示偏好，不能用来排除其他对象。
 """
 
 from __future__ import annotations
@@ -41,11 +45,13 @@ async def propose_completion(
         stop_rationale: 为什么现在可以结束。
         coverage_summary_json: 覆盖摘要的 JSON 对象字符串，例如
             `{"checked":12,"unresolved_items":[{"lead_id":"...","disposition":"deferred|outside_goal|not_required","reason":"具体搁置理由"}]}`。
+            **说明用途**：这些标签不再豁免检查，只是解释；未决对象仍会出现在复查集合中。
         verified_findings_json: 已确认发现的 JSON 数组字符串（每项含 finding_id 与证据引用）。
         remaining_leads_json: 剩余线索的 JSON 数组字符串（说明为何可以搁置）。
         evidence_refs_json: 关键证据的工件 ID 的 JSON 数组字符串。
         follow_up_suggestions_json: 后续建议的 JSON 数组字符串。
         missing_conditions_json: 缺少账号、目标不可达等继续测试所需条件。
+            只有在**所有有效方向**都确实需要外部条件时才填；否则请继续推进。
         tool_call_id: 由框架注入，不要自己填写。
 
     Returns:
@@ -53,12 +59,15 @@ async def propose_completion(
 
     Notes:
         - 提交前请自查：有未处理的高优先级用户指令吗？有状态未知的后台任务吗？
-          重点线索是否都已验证或有明确阻碍？确认发现的证据是否真实可用？
-        - **缺少账号/目标不可达**这类情况应当说明受阻，而不是提交"没有问题"的完成提议。
+          **每个实质弱点都做过后续用途判断吗**？仍有可推进方向吗？确认发现的证据是否真实可用？
+        - `blocked` / `deferred` 不是自动放行；"不是当前目标必需"不再是自主结束的豁免。
+        - **缺少账号/目标不可达**这类情况应当说明受阻（会进入等待用户），
+          而不是提交"没有问题"的完成提议。
     """
     if reason not in COMPLETION_REASONS:
         raise ValueError(f"reason 必须是 {sorted(COMPLETION_REASONS)} 之一，收到 {reason!r}")
 
+    focus = runtime.state.get("current_focus") or {}
     payload: dict[str, Any] = {
         "reason": reason,
         "goal_answer": goal_answer,
@@ -66,9 +75,8 @@ async def propose_completion(
         "coverage_summary": coerce_json_object(coverage_summary_json, "coverage_summary_json"),
         "verified_findings": coerce_str_list(verified_findings_json, "verified_findings_json"),
         "remaining_leads": coerce_str_list(remaining_leads_json, "remaining_leads_json"),
-        "relevant_lead_ids": [runtime.state["current_focus"]["lead_id"]]
-        if (runtime.state.get("current_focus") or {}).get("lead_id")
-        else [],
+        "relevant_lead_ids": [focus["lead_id"]] if focus.get("lead_id") else [],
+        "focus_lead_id": focus.get("lead_id"),
         "evidence_refs": coerce_str_list(evidence_refs_json, "evidence_refs_json"),
         "follow_up_suggestions": coerce_str_list(
             follow_up_suggestions_json, "follow_up_suggestions_json"
@@ -81,7 +89,12 @@ async def propose_completion(
         {
             "ok": True,
             "proposal": payload,
-            "note": "提议已提交；finish_gate 将检查挂起任务、重点线索、证据可用性与覆盖缺口。",
+            "note": (
+                "提议已提交；finish_gate 会从业务表完整枚举复查集合"
+                "（未完成线索、暂缓/受阻线索、未完成计划事项、覆盖缺口、待分析弱点），"
+                "并检查待处理指令、证据可用性与挂起任务。"
+                "`remaining_leads` / `coverage_summary` 里的处置标签只作说明，不作为放行凭据。"
+            ),
         },
         ensure_ascii=False,
     )

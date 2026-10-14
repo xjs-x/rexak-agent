@@ -25,6 +25,7 @@ from agent_workbench.observability.logging import get_logger
 from agent_workbench.persistence.tables import (
     FindingRow,
     LeadRow,
+    LeadWeaknessLinkRow,
     ObservationRow,
     ToolOperationRow,
 )
@@ -124,6 +125,16 @@ async def _domain_signals(toolbox: Any) -> tuple[dict[str, Any], dict[str, Any]]
                 )
             ).scalars()
         ]
+        links = [
+            (str(row.id), row.revision)
+            for row in (
+                await db.execute(
+                    select(LeadWeaknessLinkRow)
+                    .where(LeadWeaknessLinkRow.session_id == toolbox.session_id)
+                    .order_by(LeadWeaknessLinkRow.id)
+                )
+            ).scalars()
+        ]
         latest_operation = (
             await db.execute(
                 select(func.max(ToolOperationRow.created_at)).where(
@@ -131,12 +142,19 @@ async def _domain_signals(toolbox: Any) -> tuple[dict[str, Any], dict[str, Any]]
                 )
             )
         ).scalar_one()
-    signals = {"observations": observations, "findings": findings, "leads": leads}
+    signals = {
+        "observations": observations,
+        "findings": findings,
+        "leads": leads,
+        "links": links,
+    }
     covered = {
         "domain_versions": {
             "observations": dict.fromkeys(observations, 1),
             "findings": dict(findings),
             "leads": dict(leads),
+            # 阶段签名包含有效关系版本：链条变化必须触发新的阶段报告。
+            "links": dict(links),
         },
         "latest_domain_records": {
             "observations": observations[-1] if observations else None,
@@ -171,6 +189,7 @@ class StageReportMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             domain_signals["observations"]
             or domain_signals["findings"]
             or domain_signals["leads"]
+            or domain_signals["links"]
             or completed
             or signals["assessment_revision"]
         )

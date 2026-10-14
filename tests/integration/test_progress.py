@@ -97,8 +97,34 @@ async def test_signature_ignores_duplicate_evidence_and_unchanged_coverage(
             description="没有验证",
         )
     async with database.session() as db:
+        with_candidate = await semantic_progress_signature(db, session_id)
+    # V3：登记弱点本身**是**有来源的知识进展（它是后续决策的输入），
+    # 但只有内容真的变化才算；把同样内容再写一遍不增加知识进展。
+    assert with_candidate != with_evidence, "新的弱点记录属于有来源的知识变化"
+
+    async with database.transaction() as db:
+        await FindingService(db).propose(
+            session_id=session_id,
+            title="仅候选",
+            description="没有验证",
+        )
+    async with database.session() as db:
         repeated = await semantic_progress_signature(db, session_id)
-    assert repeated == with_evidence
+    assert repeated != with_candidate, "另一条独立弱点同样是新增知识"
+
+    async with database.transaction() as db:
+        findings = await FindingService(db).list_for_session(session_id)
+        target = next(row for row in findings if row.title == "仅候选")
+        await FindingService(db).upsert_weakness(
+            session_id=session_id,
+            weakness_id=target.id,
+            expected_revision=target.revision,
+            title="仅候选",
+            description="没有验证",
+        )
+    async with database.session() as db:
+        unchanged = await semantic_progress_signature(db, session_id)
+    assert unchanged == repeated, "同内容重复更新不增加知识进展"
 
     async with database.transaction() as db:
         service = CoverageService(db)

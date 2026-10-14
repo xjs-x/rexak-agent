@@ -33,6 +33,7 @@ from agent_workbench.persistence.tables import (
     CoverageRow,
     FindingRow,
     LeadRow,
+    LeadWeaknessLinkRow,
     ObservationRow,
     ToolOperationRow,
 )
@@ -125,6 +126,32 @@ async def semantic_progress_signature(db: AsyncSession, session_id: Any) -> str:
         .all()
     )
     facts.update(f"verified:{row.id}:{row.verification_id}" for row in confirmed)
+    # 弱点与关系也计入知识进展：新条件、条件修订、关系状态变化都是实质信息。
+    # 但"已分析后续用途"的 review 元数据**不**计入（避免判断本身制造进展幻觉）。
+    all_findings = (
+        (await db.execute(select(FindingRow).where(FindingRow.session_id == session_id)))
+        .scalars()
+        .all()
+    )
+    facts.update(
+        f"weakness:{row.id}:{row.status}:{row.weakness_kind}:{row.content_hash or ''}:"
+        f"{','.join(sorted(str(item.get('key')) for item in (row.provided_conditions or [])))}"
+        for row in all_findings
+    )
+    links = (
+        (
+            await db.execute(
+                select(LeadWeaknessLinkRow).where(LeadWeaknessLinkRow.session_id == session_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    facts.update(
+        f"relation:{row.lead_id}:{row.finding_id}:{row.role}:{row.condition_key or ''}:"
+        f"{row.requirement_key or ''}:{row.relation_state}"
+        for row in links
+    )
     canonical = "\n".join(sorted(facts)).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
 

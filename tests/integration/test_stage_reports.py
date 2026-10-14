@@ -111,7 +111,8 @@ async def test_stage_report_only_triggers_for_domain_turning_point(database, uni
     )
 
 
-async def test_completion_uses_relevance_explanations_instead_of_score(database, unique_name):
+async def test_completion_uses_complete_review_inventory_instead_of_score(database, unique_name):
+    """结束复查集合由程序枚举：未申报的线索也拦得住，处置标签不再豁免。"""
     context = await context_for(database, unique_name)
     async with database.transaction() as db:
         lead = await LeadService(db).upsert(
@@ -129,15 +130,15 @@ async def test_completion_uses_relevance_explanations_instead_of_score(database,
     }
     async with database.session() as db:
         gate = FinishGate(db)
-        assert (
-            await gate.evaluate(session_id=context.toolbox.session_id, proposal=proposal)
-        ).allowed
-        relevant = {**proposal, "relevant_lead_ids": [str(lead.id)]}
-        assert not (
-            await gate.evaluate(session_id=context.toolbox.session_id, proposal=relevant)
-        ).allowed
+        # 即使提议里**没有**申报任何相关线索，未完成的线索仍会被找到。
+        decision = await gate.evaluate(session_id=context.toolbox.session_id, proposal=proposal)
+        assert not decision.allowed
+        page = decision.blocking_objects.get("review_page") or []
+        assert any(str(lead.id) in item for item in page), page
+        # `outside_goal` + 理由不再是放行凭据。
         explained = {
-            **relevant,
+            **proposal,
+            "relevant_lead_ids": [str(lead.id)],
             "coverage_summary": {
                 "unresolved_items": [
                     {
@@ -148,7 +149,7 @@ async def test_completion_uses_relevance_explanations_instead_of_score(database,
                 ]
             },
         }
-        assert (
+        assert not (
             await gate.evaluate(session_id=context.toolbox.session_id, proposal=explained)
         ).allowed
         assert not (
@@ -156,6 +157,24 @@ async def test_completion_uses_relevance_explanations_instead_of_score(database,
                 session_id=context.toolbox.session_id,
                 proposal={**proposal, "evidence_refs": ["不存在的证据"]},
             )
+        ).allowed
+    # 写明缺失条件后：剩余有效方向确实需要外部条件 -> 等待用户，且保留未决项。
+    async with database.transaction() as db:
+        await LeadService(db).update_conditions(
+            lead.id,
+            [{"description": "需要一个已登录账号", "satisfied": False}],
+        )
+    async with database.session() as db:
+        waiting = await FinishGate(db).evaluate(
+            session_id=context.toolbox.session_id,
+            proposal={**proposal, "missing_conditions": ["测试账号"]},
+        )
+    assert waiting.decision == "wait_user"
+    assert waiting.blocking_objects.get("waiting_items")
+    # 没有外部条件说明时不能假装收敛：仍然是可推进/缺条件的未决项。
+    async with database.session() as db:
+        assert not (
+            await FinishGate(db).evaluate(session_id=context.toolbox.session_id, proposal=proposal)
         ).allowed
 
 

@@ -80,7 +80,23 @@ async def test_baseline_database_exports_without_upgrade(settings, tmp_path):
             )
         payload = await collect_run_bundle(legacy, run.id)
         assert payload["session_knowledge"]["leads"][0]["merged_into_id"] is None
-        assert len(payload["snapshot"]["missing_schema_fields"]) == 4
+        missing = set(payload["snapshot"]["missing_schema_fields"])
+        # 旧 schema 缺少的字段必须**如实列出**，而不是让导出失败或补造数据。
+        assert "lead_weakness_links(table)" in missing
+        assert {
+            "leads.merged_into_id",
+            "leads.required_conditions",
+            "leads.actionability_assessment",
+            "findings.weakness_kind",
+            "findings.applicability",
+            "findings.provided_conditions",
+            "findings.connection_review",
+            "findings.content_hash",
+            "tool_operations.execution_context",
+            "tool_operations.result_snapshot",
+            "report_versions.captured_snapshot",
+        } <= missing
+        assert payload["session_knowledge"]["lead_weakness_links"] == []
         output = write_run_bundle(tmp_path / "bundle", payload, ArtifactStore(legacy.settings))
         assert verify_run_bundle(output) == []
         async with legacy.session() as db:

@@ -377,6 +377,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/exploration-relations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Exploration Relations
+         * @description 关系分页：`弱点 → 线索 → 弱点` 的一跳关系。
+         *
+         *     `evidence_linked` 只表示关系有引用依据，不代表组合路径已确认。
+         */
+        get: operations["list_exploration_relations_api_sessions__session_id__exploration_relations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/weaknesses/{weakness_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Weakness
+         * @description 弱点详情：适用条件、后续用途判断与关系邻居（按需展开，不加载全图）。
+         */
+        get: operations["get_weakness_api_sessions__session_id__weaknesses__weakness_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/weaknesses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Weaknesses
+         * @description 弱点列表（与旧 `/findings` 返回同一实体）。
+         */
+        get: operations["list_weaknesses_api_sessions__session_id__weaknesses_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/findings": {
         parameters: {
             query?: never;
@@ -1103,10 +1165,18 @@ export interface components {
              * @enum {string}
              */
             status: "pending" | "in_progress" | "done" | "dropped" | "blocked";
+            /**
+             * Kind
+             * @default mixed
+             * @enum {string}
+             */
+            kind: "coverage" | "followup" | "mixed";
             /** Rationale */
             rationale?: string | null;
             /** Lead Id */
             lead_id?: string | null;
+            /** Lead Ids */
+            lead_ids?: string[];
             /** Done When */
             done_when?: string | null;
             /** Resume Note */
@@ -2113,6 +2183,116 @@ export interface operations {
             path: {
                 session_id: string;
                 finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_exploration_relations_api_sessions__session_id__exploration_relations_get: {
+        parameters: {
+            query?: {
+                weakness_id?: string | null;
+                lead_id?: string | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_weakness_api_sessions__session_id__weaknesses__weakness_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                weakness_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_weaknesses_api_sessions__session_id__weaknesses_get: {
+        parameters: {
+            query?: {
+                weakness_kind?: string | null;
+                status?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
             };
             cookie?: never;
         };

@@ -40,15 +40,13 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
 
     async def awrap_model_call(self, request, handler):  # type: ignore[no-untyped-def]
         state = request.state or {}
-        context = _build_context_block(state)
         runtime: Any = request.runtime
         ctx: RunContext | None = getattr(runtime, "context", None)
         working = getattr(getattr(ctx, "toolbox", None), "working_context", None)
-        if working is not None:
-            context += "\n\n### 当前只读黑板（领域与执行台账投影）\n" + json.dumps(
-                working, ensure_ascii=False
-            )
+        # 弱点/关系区块按**整条对象**裁剪；只有真正进入最终 payload 的条目才记作已呈现。
+        working_view = _copy_working(working)
         scope = getattr(getattr(ctx, "toolbox", None), "scope", None)
+        scope_block = ""
         if scope is not None:
             snapshot = scope.snapshot
             mode = (
@@ -56,20 +54,24 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 if snapshot.mode == "instruction"
                 else "严格范围模式"
             )
-            context += f"\n\n### 当前运行模式\n{mode}\n当前目标规则：" + json.dumps(
+            scope_block = f"\n\n### 当前运行模式\n{mode}\n当前目标规则：" + json.dumps(
                 [rule.model_dump() for rule in snapshot.rules], ensure_ascii=False
             )
         base_system = request.system_message
         system_text = base_system.content if base_system is not None else ""
-        merged = SystemMessage(
-            content=[*system_text, {"type": "text", "text": context}]
-            if isinstance(system_text, list)
-            else f"{system_text}\n\n{context}"
-            if system_text
-            else context
-        )
+
+        def compose(context_text: str) -> SystemMessage:
+            if isinstance(system_text, list):
+                return SystemMessage(content=[*system_text, {"type": "text", "text": context_text}])
+            if system_text:
+                return SystemMessage(content=f"{system_text}\n\n{context_text}")
+            return SystemMessage(content=context_text)
+
+        context = _compose_context(state, working_view, scope_block)
+        merged = compose(context)
         selected = list(request.messages)
         replacements = []
+        trimmed: list[str] = []
         profile = self.profile
         budget = None
         if profile is not None:
@@ -111,15 +113,39 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     budget = estimate()
                     if budget.estimated_input_tokens <= budget.allowed_input_tokens:
                         break
+            # 仍然超预算时，按整条对象裁剪弱点/关系区块（保留 ID、版本与下一页引用）。
+            guard = 0
+            while (
+                budget.estimated_input_tokens > budget.allowed_input_tokens
+                and working_view is not None
+                and guard < 20
+            ):
+                dropped = _trim_working(working_view)
+                if dropped is None:
+                    break
+                trimmed.append(dropped)
+                guard += 1
+                context = _compose_context(state, working_view, scope_block)
+                merged = compose(context)
+                budget = estimate()
             ensure_fits(budget)
         manifest = _build_manifest(state, selected, str(merged.content))
         manifest.update(
-            manifest_version=2,
+            manifest_version=3,
             selected_messages=message_inventory(selected),
             replacements=replacements,
             context_projection=context,
             system_message_chars=len(str(merged.content)),
-            working_context=working,
+            working_context=working_view,
+            presented_weakness_ids=[
+                str(item["weakness_id"])
+                for item in ((working_view or {}).get("weakness_consumption") or {}).get(
+                    "changed_weaknesses"
+                )
+                or []
+                if item.get("weakness_id")
+            ],
+            trimmed_weakness_ids=trimmed,
         )
         if budget is not None:
             manifest["budget"] = budget.to_dict()
@@ -138,6 +164,44 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
 
         updated = request.override(system_message=merged, messages=selected)
         return await handler(updated)
+
+
+def _copy_working(working: Any) -> dict[str, Any] | None:
+    if working is None:
+        return None
+    view = json.loads(json.dumps(working, ensure_ascii=False, default=str))
+    return view if isinstance(view, dict) else None
+
+
+def _compose_context(
+    state: Mapping[str, Any], working_view: dict[str, Any] | None, scope_block: str
+) -> str:
+    context = _build_context_block(state)
+    if working_view is not None:
+        context += "\n\n### 当前只读黑板（领域与执行台账投影）\n" + json.dumps(
+            working_view, ensure_ascii=False
+        )
+    return context + scope_block
+
+
+def _trim_working(working_view: dict[str, Any]) -> str | None:
+    """按整条对象裁掉一个弱点或一条相关线索；返回被裁掉的 ID（无可裁时返回 None）。"""
+    consumption = working_view.get("weakness_consumption")
+    if not isinstance(consumption, dict):
+        return None
+    weaknesses = consumption.get("changed_weaknesses")
+    if isinstance(weaknesses, list) and weaknesses:
+        dropped = weaknesses.pop()
+        if isinstance(dropped, dict) and dropped.get("weakness_id"):
+            return f"weakness:{dropped['weakness_id']}"
+        return "weakness:unknown"
+    leads = consumption.get("related_leads")
+    if isinstance(leads, list) and leads:
+        dropped = leads.pop()
+        if isinstance(dropped, dict) and dropped.get("lead_id"):
+            return f"lead:{dropped['lead_id']}"
+        return "lead:unknown"
+    return None
 
 
 def _estimated_tokens(text: str) -> int:
@@ -194,9 +258,15 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
         recent = [step for step in plan if step not in relevant][-3:]
         for step in (relevant + recent)[:12]:
             note = f"（恢复备注：{step['resume_note']}）" if step.get("resume_note") else ""
+            lead_ids = [str(item) for item in (step.get("lead_ids") or []) if item]
+            if not lead_ids and step.get("lead_id"):
+                lead_ids = [str(step["lead_id"])]
+            kind = str(step.get("kind") or "mixed")
             lines.append(
-                f"- [{step.get('status')}] {step.get('step_id')}: {step.get('description')}"
+                f"- [{step.get('status')}] {step.get('step_id')}（{kind}）: "
+                f"{step.get('description')}"
                 + (f"（理由：{step['rationale']}）" if step.get("rationale") else "")
+                + (f"（服务线索：{', '.join(lead_ids[:6])}）" if lead_ids else "")
                 + note
             )
 

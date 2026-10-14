@@ -254,9 +254,18 @@ async def test_official_v1_migration_keeps_messages_plan_sources_and_pending_nod
         snapshot = await ensure_current_checkpoint(
             graph, config, old, database, context.toolbox.session_id
         )
-        assert snapshot.values["state_schema_version"] == 3
+        assert snapshot.values["state_schema_version"] == 4
         assert snapshot.next == old.next
-        assert snapshot.values["plan"] == old.values["plan"]
+        migrated_plan = snapshot.values["plan"]
+        assert [step["step_id"] for step in migrated_plan] == [
+            step["step_id"] for step in old.values["plan"]
+        ]
+        assert [step["description"] for step in migrated_plan] == [
+            step["description"] for step in old.values["plan"]
+        ]
+        assert [step["status"] for step in migrated_plan] == [
+            step["status"] for step in old.values["plan"]
+        ]
         assert snapshot.values["work_summary"] == old.values["work_summary"]
         assert [m.model_dump() for m in snapshot.values["messages"]] == [
             m.model_dump() for m in old.values["messages"]

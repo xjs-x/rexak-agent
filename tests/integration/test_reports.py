@@ -95,6 +95,30 @@ async def test_report_versions_export_only_verified_evidence(
                 "stop_rationale": "目标已回答",
             },
         )
+    # V3：已保存的实质弱点必须先做后续用途判断，不能自动结束。
+    assert decision.allowed is False
+    assert decision.unreviewed_count >= 2
+    assert "review_page" in decision.blocking_objects
+    async with database.transaction() as db:
+        service = FindingService(db)
+        for target in (candidate, verified):
+            row = await service.get(target.id)
+            assert row is not None
+            await service.upsert_weakness(
+                session_id=session_id,
+                weakness_id=target.id,
+                expected_revision=row.revision,
+                connection_review={"no_connection_note": "暂时没有可推进的后续路线，保留候选"},
+            )
+    async with database.session() as db:
+        decision = await FinishGate(db, store).evaluate(
+            session_id=session_id,
+            proposal={
+                "reason": "goal_answered",
+                "goal_answer": "已复测",
+                "stop_rationale": "目标已回答",
+            },
+        )
     assert decision.allowed is True
     async with database.session() as db:
         open_exploration = await FinishGate(db, store).evaluate(

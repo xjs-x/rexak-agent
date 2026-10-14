@@ -60,10 +60,13 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         try:
             async with toolbox.db.session() as db:
                 decision = await FinishGate(db).evaluate(
-                    session_id=toolbox.session_id, proposal=proposal
+                    session_id=toolbox.session_id,
+                    proposal=proposal,
+                    plan=list(state.get("plan") or []),
+                    review_cursor=state.get("weakness_review_cursor"),
                 )
             span.finish()
-            toolbox.spans.record(span, decision=decision.decision)
+            toolbox.spans.record(span, **decision.as_metadata())
         except Exception as exc:
             span.finish(error=type(exc).__name__)
             raise
@@ -87,6 +90,12 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             "completion_proposal": None,
             "finish_gate_feedback": decision.reasons,
             "finish_gate_attempts": attempts + 1,
+            # 复查分页游标放 checkpoint；对象判断本身写业务表，不另建可写任务清单。
+            "weakness_review_cursor": (
+                decision.review_next_cursor
+                if decision.unreviewed_count
+                else state.get("weakness_review_cursor")
+            ),
             "messages": [SystemMessage(content=feedback)],
             **(
                 {"jump_to": "model"}
@@ -167,6 +176,14 @@ def _render_feedback(decision: Any) -> str:
         "【系统提示】结束提议未通过检查，原因如下：",
     ]
     lines.extend(f"- {reason}" for reason in decision.reasons)
+    counts = (
+        f"（未复查/过期 {decision.unreviewed_count} 项，可推进 {decision.ready_count} 项，"
+        f"缺外部条件 {decision.blocked_count} 项）"
+        if any((decision.unreviewed_count, decision.ready_count, decision.blocked_count))
+        else ""
+    )
+    if counts:
+        lines.append(f"复查集合概览{counts}")
     if decision.blocking_objects:
         lines.append("待处理对象：")
         for key, values in decision.blocking_objects.items():
@@ -178,8 +195,9 @@ def _render_feedback(decision: Any) -> str:
             f"受阻 {len(decision.coverage_gap.get('blocked_entries') or [])} 项。"
         )
     lines.append(
-        "请针对上述具体问题补齐；**不要**只是把线索改成 deferred 来绕过检查，"
-        "也不要重复提交同一份提议。如果确实无法完成（例如缺少账号），"
-        "请明确说明缺少什么条件。"
+        "请针对上述具体问题补齐。**不要**把线索改成 deferred 来绕过检查，"
+        "也不要把 `outside_goal` / `not_required` 当作放行理由——这些标签已经不再豁免；"
+        "不要重复提交同一份提议。如果确实无法完成（例如缺少账号或目标不可达），"
+        "请明确说明缺少什么条件，系统会进入等待用户状态并保留全部未决项。"
     )
     return "\n".join(lines)

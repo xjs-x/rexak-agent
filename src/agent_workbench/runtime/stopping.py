@@ -1,22 +1,32 @@
 """阶段结束的确定性检查（finish_gate）。
 
-检查项（§6.5，**全部可确定性判定**，不额外增加评审模型调用）：
+V3（方案 §6）：复查集合由**程序**从业务表完整枚举，不再依赖模型在结束申请里主动列出的线索。
 
-1. 没有未处理的**高优先级用户指令**；
-2. 没有未交待的**运行中 job** 或执行状态未知的关键操作；
-3. 提议声明的目标相关未决线索有处理结果或具体搁置理由，不按固定分数强制收尾；
-4. 确认发现具有**验证记录与可用证据**；
-5. 开放探索收尾时做一次**覆盖缺口复查**，仍无有效方向才允许 `exploration_converged`；
-6. 缺账号/目标不可达等问题进入 `waiting_user`/受阻说明，不冒充完成。
+决策顺序：
+```
+if pending_user_commands:                    -> continue
+if invalid_evidence_or_unverified_findings:  -> continue（带具体反馈）
+if unreviewed_or_stale_items:                -> continue（带回一页复查对象）
+if ready_leads_or_feasible_coverage_work:    -> continue
+if unresolved_tool_jobs:                     -> wait_tool
+if all_remaining_routes_need_external_conditions: -> wait_user
+if no_supported_next_action_remains:         -> complete
+```
 
-"无进展"判断基于新增可用证据、有效入口、假设变化、验证改善；
-**相同结果再写一遍不算进展**。重复出现时先检查新条件、切换路线，
-只有全部可继续路线收敛才结束阶段。
+硬性语义：
+- `blocked` / `deferred` **不在**自动终态集合中；缺失可推进性判断时归为 `needs_review`；
+- `deferred/outside_goal/not_required + reason` 不再直接通过检查；
+- "非当前目标必需"不再是自主结束的豁免；
+- `no_new_action` 必须绑定本次依赖版本并说明未知，程序检查遗漏、版本与结构矛盾。
+- 程序**不能**证明自然语言理由一定正确，也不声称能证明模型想到所有方法。
+
+缺少外部条件（账号、可达目标）时进入 `wait_user`，但未决对象必须保留在复查与报告中，
+不能用"把线索改成 blocked/deferred"消除缺口。
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID
@@ -24,18 +34,20 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agent_workbench.contracts.enums import CommandStatus, CoverageStatus, LeadStatus
+from agent_workbench.contracts.enums import CommandStatus, CoverageStatus
+from agent_workbench.contracts.exploration import REVIEW_PAGE_SIZE
+from agent_workbench.domain.exploration_review import build_review_inventory
 from agent_workbench.evidence.artifacts import ArtifactError, ArtifactStore, build_artifact_store
 from agent_workbench.persistence.tables import (
     ArtifactRow,
     CommandRow,
     CoverageRow,
     FindingRow,
-    LeadRow,
     VerificationRow,
 )
 
 Decision = Literal["complete", "continue", "wait_user", "wait_tool"]
+
 
 @dataclass(slots=True)
 class CompletionDecision:
@@ -45,10 +57,25 @@ class CompletionDecision:
     reasons: list[str] = field(default_factory=list)
     blocking_objects: dict[str, list[str]] = field(default_factory=dict)
     coverage_gap: dict[str, Any] | None = None
+    #: metadata-only 观测（方案 §12）：结束复查的四类计数。
+    unreviewed_count: int = 0
+    ready_count: int = 0
+    blocked_count: int = 0
+    #: 复查分页游标（由 checkpoint 保存）；为 None 表示已到末尾，下次从头再核对全量。
+    review_next_cursor: str | None = None
 
     @property
     def allowed(self) -> bool:
         return self.decision == "complete"
+
+    def as_metadata(self) -> dict[str, Any]:
+        return {
+            "decision": self.decision,
+            "unreviewed_count": self.unreviewed_count,
+            "ready_count": self.ready_count,
+            "blocked_count": self.blocked_count,
+            "reason_count": len(self.reasons),
+        }
 
 
 class FinishGate:
@@ -63,10 +90,9 @@ class FinishGate:
         *,
         session_id: UUID,
         proposal: Mapping[str, Any] | None,
+        plan: Sequence[Mapping[str, Any]] | None = None,
+        review_cursor: str | None = None,
     ) -> CompletionDecision:
-        reasons: list[str] = []
-        blocking: dict[str, list[str]] = {}
-
         if proposal is None or proposal.get("reason") not in {
             "goal_answered",
             "exploration_converged",
@@ -87,58 +113,103 @@ class FinishGate:
         # 1) 未处理的高优先级用户指令
         pending_command_ids = await self._pending_high_priority_commands(session_id)
         if pending_command_ids:
-            reasons.append("存在未处理的高优先级用户指令")
-            blocking["pending_commands"] = pending_command_ids
+            return CompletionDecision(
+                decision="continue",
+                reasons=["存在未处理的高优先级用户指令"],
+                blocking_objects={"pending_commands": pending_command_ids},
+                ready_count=0,
+            )
 
-        # 2) 未交待的运行中 job / 状态未知的关键操作
+        # 2) 结束提议引用的证据与已确认发现的可信度
+        invalid_refs = await self._invalid_proposal_refs(session_id, proposal)
+        unverified = await self._confirmed_without_verification(session_id)
+        if invalid_refs or unverified:
+            reasons = []
+            blocking: dict[str, list[str]] = {}
+            if invalid_refs:
+                reasons.append("结束提议引用不可用或其他会话证据")
+                blocking["invalid_evidence_refs"] = invalid_refs
+            if unverified:
+                reasons.append("存在缺少验证记录或证据不可用的已确认发现")
+                blocking["unverified_findings"] = unverified
+            return CompletionDecision(
+                decision="continue", reasons=reasons, blocking_objects=blocking
+            )
+
+        # 3) 程序枚举的**完整**复查集合（不按 priority 阈值裁剪，也不依赖 .limit(200)）
+        inventory = await build_review_inventory(
+            self._s,
+            session_id,
+            plan=plan or [],
+            cursor=review_cursor,
+            page_size=REVIEW_PAGE_SIZE,
+            focus_lead_id=proposal.get("focus_lead_id"),
+        )
+        page_labels = [
+            f"{item.kind}:{item.object_id}:{item.label[:60]}" for item in inventory.items
+        ]
+        if inventory.unreviewed_count:
+            return CompletionDecision(
+                decision="continue",
+                reasons=[
+                    "还有尚未复查或依据已过期的对象（含待分析弱点、失效的条件判断）；"
+                    "请先按下面这一页给出判断或推进，再考虑结束。"
+                    "`deferred/outside_goal/not_required` 不再是放行理由。",
+                ],
+                blocking_objects={"review_page": page_labels},
+                unreviewed_count=inventory.unreviewed_count,
+                ready_count=inventory.actionable_count,
+                review_next_cursor=inventory.next_cursor,
+            )
+
+        # 4) 仍有可推进方向 -> 继续
+        if inventory.actionable_count:
+            return CompletionDecision(
+                decision="continue",
+                reasons=["仍有可推进的线索或覆盖缺口，默认继续而不是结束。"],
+                blocking_objects={"actionable_items": page_labels},
+                ready_count=inventory.actionable_count,
+            )
+
+        # 5) 未交待结果的工具任务
         unresolved_jobs = await self._unresolved_jobs(session_id)
         if unresolved_jobs:
-            reasons.append("存在未交待结果的工具任务（含状态未知）")
-            blocking["unresolved_jobs"] = unresolved_jobs
+            return CompletionDecision(
+                decision="wait_tool",
+                reasons=["存在未交待结果的工具任务（含状态未知）"],
+                blocking_objects={"unresolved_jobs": unresolved_jobs},
+            )
 
-        # 3) 重点线索必须已验证或有明确阻碍
-        open_leads = await self._open_relevant_leads(session_id, proposal)
-        if open_leads:
-            reasons.append("目标相关未决线索缺少处理或搁置理由")
-            blocking["open_leads"] = open_leads
-
-        # 4) 确认发现必须有验证记录且证据可用
-        unverified = await self._confirmed_without_verification(session_id)
-        invalid_refs = await self._invalid_proposal_refs(session_id, proposal)
-        if invalid_refs:
-            reasons.append("结束提议引用不可用或其他会话证据")
-            blocking["invalid_evidence_refs"] = invalid_refs
-        if unverified:
-            reasons.append("存在缺少验证记录或证据不可用的已确认发现")
-            blocking["unverified_findings"] = unverified
-
-        # 缺账号/连通性等外部前置条件时，重点线索可能仍是 open；应明确等待用户，
-        # 但未决任务、待处理指令和不可信的确认发现不能借此被掩盖。
-        missing_conditions = proposal.get("missing_conditions") or []
-        if missing_conditions and not (
-            pending_command_ids or unresolved_jobs or unverified or invalid_refs
-        ):
+        # 6) 所有有效方向都确实需要外部条件 -> 等待用户（保留全部未决项）
+        waiting = [
+            item
+            for item in inventory.items
+            if item.actionability == "needs_condition"
+        ]
+        external = [str(item) for item in (proposal.get("missing_conditions") or [])]
+        if waiting or external:
+            details: list[str] = []
+            for item in waiting:
+                missing = (item.detail or {}).get("missing_conditions") or []
+                details.append(
+                    f"{item.object_id}:{item.label[:60]}"
+                    + (f"（缺：{'; '.join(str(v) for v in missing[:3])}）" if missing else "")
+                )
             return CompletionDecision(
                 decision="wait_user",
-                reasons=[*reasons, *(f"缺少必要条件：{item}" for item in missing_conditions)],
+                reasons=[
+                    "剩余有效方向都需要外部条件：",
+                    *(f"缺少必要条件：{item}" for item in external),
+                ],
                 blocking_objects={
-                    **blocking,
-                    "missing_conditions": [str(item) for item in missing_conditions],
+                    "waiting_items": details,
+                    "missing_conditions": external,
                 },
+                blocked_count=len(waiting),
             )
 
-        if reasons:
-            return CompletionDecision(
-                decision="wait_tool"
-                if unresolved_jobs
-                and not (pending_command_ids or unverified or invalid_refs or open_leads)
-                else "continue",
-                reasons=reasons,
-                blocking_objects=blocking,
-            )
-
-        # 5) 开放探索：收尾覆盖缺口复查
-        if proposal is not None and proposal.get("reason") == "exploration_converged":
+        # 7) 开放探索收尾：覆盖缺口复查（受阻项保留在报告里，不能靠改状态消除）
+        if proposal.get("reason") == "exploration_converged":
             gap = await self._coverage_gap(session_id)
             if gap["total_entries"] == 0:
                 return CompletionDecision(
@@ -151,11 +222,14 @@ class FinishGate:
                     decision="continue",
                     reasons=[
                         "请求以 exploration_converged 结束，但仍有未检查且未说明原因的覆盖缺口；"
-                        "请先补检或给出明确的搁置理由（不要直接把线索改成 deferred 绕过检查）。"
+                        "请先补检或给出明确的搁置理由。"
                     ],
                     blocking_objects={"coverage_gaps": gap["not_checked_entries"]},
                     coverage_gap=gap,
                 )
+            return CompletionDecision(
+                decision="complete", reasons=[], coverage_gap=gap
+            )
 
         return CompletionDecision(decision="complete", reasons=[])
 
@@ -228,59 +302,6 @@ class FinishGate:
             if not valid:
                 invalid.append(str(raw))
         return invalid
-
-    async def _open_relevant_leads(
-        self, session_id: UUID, proposal: Mapping[str, Any]
-    ) -> list[str]:
-        declared = (proposal.get("coverage_summary") or {}).get("unresolved_items") or []
-        explanations = {
-            str(item.get("lead_id")): item for item in declared if isinstance(item, dict)
-        }
-        ids = set(proposal.get("relevant_lead_ids") or []) | set(explanations)
-        for raw in proposal.get("remaining_leads") or []:
-            try:
-                ids.add(str(UUID(str(raw))))
-            except ValueError:
-                continue  # 旧工具允许文字说明，保留为报告资料，不伪造 ID。
-        parsed = []
-        for raw in ids:
-            try:
-                parsed.append(UUID(str(raw)))
-            except ValueError:
-                return [f"{raw}:目标相关线索 ID 无效"]
-        if not parsed:
-            return []
-        rows = (
-            (
-                await self._s.execute(
-                    select(LeadRow).where(
-                        LeadRow.session_id == session_id,
-                        LeadRow.id.in_(parsed),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        terminal = {
-            str(LeadStatus.CONFIRMED),
-            str(LeadStatus.DISPROVED),
-            str(LeadStatus.BLOCKED),
-        }
-        problems = [
-            f"{key}:不属于当前会话" for key in parsed if key not in {row.id for row in rows}
-        ]
-        for row in rows:
-            if row.status in terminal or row.merged_into_id is not None:
-                continue
-            explanation = explanations.get(str(row.id)) or {}
-            if (
-                explanation.get("disposition") in {"deferred", "outside_goal", "not_required"}
-                and str(explanation.get("reason") or "").strip()
-            ):
-                continue
-            problems.append(f"{row.id}:{row.status}:{row.hypothesis[:60]}")
-        return problems
 
     async def _confirmed_without_verification(self, session_id: UUID) -> list[str]:
         rows = (

@@ -1,7 +1,11 @@
-"""决策前刷新只读领域投影；实际展示后才推进 checkpoint 召回游标。
+"""决策前刷新只读领域投影；实际展示后才推进 checkpoint 召回与弱点消费游标。
 
 本中间件同时负责**焦点自动承接**（§5.2）：在装配前用与 `update_plan` 相同的纯函数
 解析焦点，并用同一解析结果同时构造只读黑板与返回图更新 —— 避免两处推导出不同焦点。
+
+V3（方案 §5.3）：区分"保存 / 呈现 / 判断 / 执行"四件事。
+`aafter_model` 只在**模型调用真的发生**之后，按 context manifest 里记录的实际发送内容
+更新呈现游标与召回去重集合；供应商失败、恢复尝试、压缩与取消都不会推进它们。
 """
 
 from typing import Any, cast
@@ -10,8 +14,11 @@ from langchain.agents.middleware import AgentMiddleware
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.focus import focus_signature, resolve_focus
-from agent_workbench.agent.state import AgentGraphState
+from agent_workbench.agent.state import AgentGraphState, merge_unique
 from agent_workbench.agent.working_context import assemble_working_context
+
+#: 召回去重键的保留上限（防止 checkpoint 无限增长）。
+MAX_RECALL_KEYS = 60
 
 
 class WorkingContextMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
@@ -50,10 +57,40 @@ class WorkingContextMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         manifest = context.toolbox.context_manifest or {}
         view = manifest.get("working_context") or {}
         selected = view.get("next") or {}
-        if not selected.get("review_due"):
-            return None
-        return {
-            "review_cursor": selected.get("cursor_after_selection"),
-            "last_review_turn": selected.get("turn", 0),
-            "last_review_source_signature": selected.get("source_signature"),
-        }
+        consumption = view.get("weakness_consumption") or {}
+        commit = dict(selected.get("consumption_commit") or {})
+        update: dict[str, object] = {}
+        if selected.get("review_due"):
+            update["review_cursor"] = selected.get("cursor_after_selection")
+            update["last_review_turn"] = selected.get("turn", 0)
+            update["last_review_source_signature"] = selected.get("source_signature")
+        # 呈现记录：只写**实际进入最终 payload**的弱点 ID（budget 裁剪掉的条目不算呈现）。
+        presented = manifest.get("presented_weakness_ids")
+        if presented is None:
+            presented = commit.get("presented_weakness_ids") or []
+            # 未经预算裁剪时仍以最终 payload 中的对象为准。
+            presented = [
+                str(item["weakness_id"])
+                for item in consumption.get("changed_weaknesses") or []
+                if item.get("weakness_id")
+            ]
+        if presented:
+            update["presented_weakness_ids"] = merge_unique(
+                [str(item) for item in state.get("presented_weakness_ids") or []] if state else [],
+                [str(item) for item in presented],
+            )[-200:]
+        recall_keys = [
+            str(item)
+            for item in (consumption.get("related_leads") or [])
+            if item.get("dedupe_key")
+        ]
+        if recall_keys:
+            existing = [str(item) for item in (state.get("last_recall_keys") or [])] if state else []
+            update["last_recall_keys"] = merge_unique(existing, recall_keys)[-MAX_RECALL_KEYS:]
+        if commit.get("weakness_revisions"):
+            update["last_weakness_revisions"] = {
+                str(key): int(value) for key, value in commit["weakness_revisions"].items()
+            }
+        if commit.get("identity_signature") is not None:
+            update["last_identity_signature"] = str(commit.get("identity_signature") or "")
+        return update or None

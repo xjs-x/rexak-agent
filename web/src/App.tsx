@@ -21,6 +21,8 @@ import {
   type SpanItem,
   type Snapshot,
   type UsageSummary,
+  type WeaknessDetail,
+  type WeaknessItem,
 } from "./api/client";
 import { PlanGraph } from "./PlanGraph";
 import { ToolActivityGroup } from "./ToolActivity";
@@ -101,10 +103,33 @@ const statusLabels: Record<string, string> = {
   succeeded: "已完成",
   rejected: "已拒绝",
   unknown: "状态未知",
+  vulnerability: "独立缺陷",
+  enabling_condition: "使能条件",
+  unclassified: "未判定类型",
+  ready: "可推进",
+  needs_condition: "缺条件",
+  no_new_action: "无新动作",
+  needs_review: "待复查",
+  basis: "依据",
+  result: "产出",
+  proposed: "提议",
+  evidence_linked: "已有引用依据",
+  refuted: "已反证",
+  not_checked: "未检查",
+  checked_negative: "已检查（阴性）",
+  checked_positive: "已检查（阳性）",
+  not_applicable: "不适用",
 };
 
 function label(value: string | null | undefined): string {
   return value ? statusLabels[value] || value.replaceAll("_", " ") : "未知";
+}
+
+/** 弱点角色不是严重等级：这里只说明它在链条里的作用。 */
+function weaknessKindHint(kind: string | undefined): string {
+  if (kind === "vulnerability") return "可独立成立的缺陷";
+  if (kind === "enabling_condition") return "本身未必是缺陷，但为后续利用提供条件";
+  return "尚未判定角色";
 }
 
 const spanTitles: Record<string, string> = {
@@ -403,6 +428,8 @@ export default function App() {
   const [assistantStartedAt, setAssistantStartedAt] = useState<string | null>(null);
   const [connection, setConnection] = useState<Connection>("准备中");
   const [findings, setFindings] = useState<FindingItem[]>([]);
+  const [weaknesses, setWeaknesses] = useState<WeaknessItem[]>([]);
+  const [weaknessDetail, setWeaknessDetail] = useState<WeaknessDetail | null>(null);
   const [leads, setLeads] = useState<LeadItem[]>([]);
   const [plan, setPlan] = useState<PlanRead | null>(null);
   const [jobs, setJobs] = useState<JobItem[]>([]);
@@ -557,14 +584,16 @@ export default function App() {
         visible && currentTab === "settings" ? api.modelSettings() : Promise.resolve(null),
         visible && currentTab === "plan" ? api.plan(sessionId) : Promise.resolve(null), api.conversation(sessionId),
         api.toolActivities(sessionId),
+        visible && currentTab === "findings" ? api.weaknesses(sessionId) : Promise.resolve(null),
       ]);
       detailsRefreshing = false;
       if (closed) return;
-      const [snap, found, lead, job, cost, calls, operation, span, report, settings, currentPlan, chat, activity] = results;
+      const [snap, found, lead, job, cost, calls, operation, span, report, settings, currentPlan, chat, activity, weak] = results;
       if (snap.status === "fulfilled" && snap.value.event_cursor >= lastSeq) {
         setSnapshot(snap.value);
       }
       if (found.status === "fulfilled" && found.value) setFindings(found.value.findings);
+      if (weak.status === "fulfilled" && weak.value) setWeaknesses(weak.value.weaknesses);
       if (lead.status === "fulfilled" && lead.value) setLeads(lead.value.leads);
       if (job.status === "fulfilled" && job.value) setJobs(job.value.jobs);
       if (cost.status === "fulfilled") setUsage(cost.value);
@@ -878,6 +907,16 @@ export default function App() {
     if (removed && pending) setNotice("任务已从列表移除；后台仍在确认取消结果。");
   };
 
+  const loadWeaknessDetail = async (id: string) => {
+    const sessionId = project?.sessionId;
+    if (!sessionId) return;
+    try {
+      setWeaknessDetail(await api.weakness(sessionId, id));
+    } catch (cause) {
+      setNotice(String(cause));
+    }
+  };
+
   const showEvidence = async (id: string) => {
     try {
       setPreview(await api.artifact(id));
@@ -1111,7 +1150,7 @@ export default function App() {
               </div>}
             </div>
             {showDetails && <nav className="tabs" aria-label="任务内容">
-              {([["activity", "实时活动"], ["conversation", "对话"], ["plan", "当前计划"], ["findings", "发现与覆盖"], ["jobs", "后台任务"], ["cost", "费用"], ["diagnostics", "耗时诊断"], ["reports", "报告"], ["settings", "设置"]] as const).map(([key, title]) =>
+              {([["activity", "实时活动"], ["conversation", "对话"], ["plan", "当前计划"], ["findings", "弱点与覆盖"], ["jobs", "后台任务"], ["cost", "费用"], ["diagnostics", "耗时诊断"], ["reports", "报告"], ["settings", "设置"]] as const).map(([key, title]) =>
                 <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{title}</button>
               )}
             </nav>}
@@ -1151,15 +1190,51 @@ export default function App() {
                 <section className="panel"><div className="panel-head"><div><h2>步骤与线索关系</h2><p>只显示计划中明确填写的 lead_id 关联；位置和连线不表示依赖或执行顺序。</p></div></div>{plan && <PlanGraph plan={plan} leads={leads} />}</section>
               </div>}
               {tab === "findings" && <div className="stack">
-                <section className="panel"><div className="panel-head"><div><h2>发现</h2><p>待验证结果不会计入已确认数量。</p></div></div>
-                  {findings.length ? findings.map((item) => <article key={item.id} className="record"><div className="record-title"><strong>{item.title}</strong><span className={`pill status-${item.status}`}>{label(item.status)}</span></div>
-                    <p>{item.description || "暂无说明"}</p><small>{item.category} · {item.id}</small>
-                    {!!item.evidence_refs?.length && <div className="evidence-links">{item.evidence_refs.map((id) => <button key={id} onClick={() => void showEvidence(id)}>查看证据 {id.slice(0, 8)}</button>)}</div>}
-                  </article>) : <p className="empty">尚无发现</p>}
+                <section className="panel"><div className="panel-head"><div><h2>弱点</h2><p>弱点是后续决策的来源，不等于漏洞数量：独立缺陷、使能条件与未判定项分开标注。待验证结果不计入已确认数量。</p></div></div>
+                  {weaknesses.length ? weaknesses.map((item) => <article key={item.id} className="record">
+                    <div className="record-title"><strong>{item.title}</strong><span className={`pill status-${item.status}`}>{label(item.status)}</span></div>
+                    <p>{weaknessKindHint(item.weakness_kind)}（{label(item.weakness_kind)}）</p>
+                    <small>{item.category} · 第 {item.revision ?? 1} 版 · 条件 {item.condition_keys?.length ?? 0} 条{item.verification_id ? " · 有验证记录" : ""}</small>
+                    <p className="fineprint">{item.connection_reviewed === false
+                      ? "尚未判断后续用途；结束复查会把它作为待处理项。"
+                      : item.connection_review_stale
+                        ? "后续用途判断已过期（条件或来源版本变化），需要重新评估。"
+                        : "已有后续用途判断，可在详情中查看依据。"}</p>
+                    <div className="evidence-links">
+                      <button onClick={() => void loadWeaknessDetail(item.id)}>查看关系详情</button>
+                      {!!item.evidence_refs?.length && item.evidence_refs.map((id) => <button key={id} onClick={() => void showEvidence(id)}>查看证据 {id.slice(0, 8)}</button>)}
+                    </div>
+                  </article>) : <p className="empty">尚无弱点记录</p>}
                 </section>
-                <section className="panel"><div className="panel-head"><div><h2>待跟进线索</h2><p>优先级仅辅助排序，受阻与暂缓会保留原因。</p></div></div>
+                {weaknessDetail && <section className="panel"><div className="panel-head"><div><h2>关系详情</h2><p>只读；关系编辑由领域工具完成。关系只表示有引用依据，组合假设不因此自动成立。</p></div><button onClick={() => setWeaknessDetail(null)}>收起</button></div>
+                  <article className="record">
+                    <div className="record-title"><strong>{weaknessDetail.weakness.title}</strong><span className="pill">{label(weaknessDetail.weakness.weakness_kind)}</span></div>
+                    <p>{weaknessDetail.weakness.description || "暂无说明"}</p>
+                    {(weaknessDetail.weakness.provided_conditions ?? []).length
+                      ? <ul>{weaknessDetail.weakness.provided_conditions?.map((condition) => <li key={condition.key}><small>{condition.key}</small> {condition.statement}{condition.limitations ? `（限制：${condition.limitations}）` : ""}</li>)}</ul>
+                      : <p className="fineprint">尚未记录条件：没有条件就不能说它“提供了”什么。</p>}
+                    <p className="fineprint">{weaknessDetail.weakness.connection_review_stale
+                      ? "后续用途判断已过期，需要重新评估。"
+                      : "后续用途判断见下方关系。"}</p>
+                  </article>
+                  <div className="fineprint">来源弱点 → 当前假设 → 验证结果</div>
+                  {weaknessDetail.relations.length
+                    ? weaknessDetail.relations.map((relation) => <article key={relation.link_id} className="record compact">
+                      <div className="record-title"><strong>{label(relation.role)}</strong><span className="pill">{label(relation.relation_state)}</span></div>
+                      <small>线索 {relation.lead_id.slice(0, 8)} · 来源版本 {relation.source_weakness_revision ?? "未记录"}{relation.condition_key ? ` · 条件 ${relation.condition_key}` : ""}</small>
+                    </article>)
+                    : <p className="empty">暂无显式关系；这本身不是结论，但意味着该弱点尚未影响后续行动。</p>}
+                  {weaknessDetail.related_leads.map((lead) => <article key={lead.id} className="record compact">
+                    <div className="record-title"><strong>{lead.hypothesis}</strong><span className="pill">{label(lead.status)}</span></div>
+                    <small>可推进性：{label(lead.actionability ?? "needs_review")}{lead.next_action ? ` · 下一步：${lead.next_action}` : ""}</small>
+                  </article>)}
+                  <p className="fineprint">{weaknessDetail.note}</p>
+                </section>}
+                <section className="panel"><div className="panel-head"><div><h2>待跟进线索</h2><p>优先级仅辅助排序；受阻与暂缓会保留原因，并显示缺失条件与可推进性。</p></div></div>
                   {leads.length ? leads.map((item) => <article key={item.id} className="record"><div className="record-title"><strong>{item.hypothesis}</strong><span className="pill">{label(item.status)}</span></div>
-                    <p>{item.next_action || item.blocked_reason || "等待下一步"}</p><small>优先级 {item.priority}</small></article>) : <p className="empty">尚无线索</p>}
+                    <p>{item.next_action || item.blocked_reason || "等待下一步"}</p><small>优先级 {item.priority} · 可推进性：{label(item.actionability ?? "needs_review")}</small>
+                    {!!item.required_conditions?.length && <p className="fineprint">前置条件：{item.required_conditions.map((condition) => String((condition as { description?: string }).description ?? "")).filter(Boolean).join("；") || "已记录条件"}</p>}
+                    {item.actionability_note && <p className="fineprint">{item.actionability_note}</p>}</article>) : <p className="empty">尚无线索</p>}
                 </section>
                 <section className="panel"><div className="panel-head"><h2>覆盖记录</h2></div>
                   <div className="coverage-grid">{Object.entries(snapshot?.coverage.by_status ?? {}).map(([key, count]) => <div key={key}><strong>{count}</strong><span>{label(key)}</span></div>)}</div>

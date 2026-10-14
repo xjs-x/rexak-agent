@@ -26,6 +26,7 @@ from agent_workbench.persistence.tables import (
     EventRow,
     FindingRow,
     LeadRow,
+    LeadWeaknessLinkRow,
     ModelCallRow,
     ObservationRow,
     ReportVersionRow,
@@ -86,13 +87,31 @@ def _safe(value: Any) -> Any:
 
 
 def _record(row: Any, fields: str) -> dict[str, Any]:
-    optional = {"merged_into_id", "execution_context", "result_snapshot", "captured_snapshot"}
     return _safe(
         {
-            field: row.__dict__.get(field) if field in optional else getattr(row, field)
+            field: row.__dict__.get(field) if field in OPTIONAL_FIELD_NAMES else getattr(row, field)
             for field in fields.split()
         }
     )
+
+
+#: 旧 schema 可能缺少的列 / 表。缺列时必须 `defer` 读取，不能触发懒加载 IO。
+OPTIONAL_COLUMNS: dict[Any, tuple[str, ...]] = {
+    ToolOperationRow: ("execution_context", "result_snapshot"),
+    ReportVersionRow: ("captured_snapshot",),
+    LeadRow: ("merged_into_id", "required_conditions", "actionability_assessment"),
+    FindingRow: (
+        "weakness_kind",
+        "applicability",
+        "provided_conditions",
+        "connection_review",
+        "content_hash",
+    ),
+}
+OPTIONAL_FIELD_NAMES = frozenset(
+    field for columns in OPTIONAL_COLUMNS.values() for field in columns
+)
+OPTIONAL_TABLES: tuple[str, ...] = (LeadWeaknessLinkRow.__tablename__,)
 
 
 async def collect_run_diagnostic(
@@ -115,17 +134,27 @@ async def collect_run_diagnostic(
                 )
             ).all()
         )
-        optional_columns = {
-            ToolOperationRow: ("execution_context", "result_snapshot"),
-            ReportVersionRow: ("captured_snapshot",),
-            LeadRow: ("merged_into_id",),
-        }
+        optional_columns = OPTIONAL_COLUMNS
+        # 整表可能不存在（旧 schema）：关系表在迁移前不存在，不能因此让导出失败。
+        optional_tables = OPTIONAL_TABLES
+        tables = set(
+            (
+                await session.execute(
+                    text(
+                        "SELECT table_name FROM information_schema.tables WHERE table_schema=:schema"
+                    ),
+                    {"schema": database.settings.app_schema},
+                )
+            )
+            .scalars()
+            .all()
+        )
         missing_schema_fields = [
             f"{model.__tablename__}.{field}"
             for model, fields in optional_columns.items()
             for field in fields
             if (model.__tablename__, field) not in columns
-        ]
+        ] + [f"{name}(table)" for name in optional_tables if name not in tables]
 
         def projection(model: Any):
             return select(model).options(
@@ -258,12 +287,15 @@ async def collect_run_diagnostic(
             (
                 LeadRow,
                 "leads",
-                "id hypothesis status priority next_action blocked_reason resume_condition evidence_refs merged_into_id revision created_at updated_at",
+                "id hypothesis status priority next_action blocked_reason resume_condition evidence_refs "
+                "merged_into_id required_conditions actionability_assessment revision created_at updated_at",
             ),
             (
                 FindingRow,
                 "findings",
-                "id title category status evidence_refs verification_id reported_in_version revision created_at updated_at",
+                "id title category status evidence_refs verification_id reported_in_version "
+                "weakness_kind applicability provided_conditions connection_review content_hash "
+                "revision created_at updated_at",
             ),
             (
                 CoverageRow,
@@ -283,6 +315,31 @@ async def collect_run_diagnostic(
                 .all()
             )
             knowledge[label] = [_record(row, fields) for row in rows]
+        # 线索—弱点关系：只导出引用与版本，不复制证据正文。
+        if LeadWeaknessLinkRow.__tablename__ in tables:
+            relations = (
+                (
+                    await session.execute(
+                        select(LeadWeaknessLinkRow)
+                        .where(LeadWeaknessLinkRow.session_id == run.session_id)
+                        .order_by(LeadWeaknessLinkRow.created_at, LeadWeaknessLinkRow.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            knowledge["lead_weakness_links"] = [
+                _record(
+                    row,
+                    "id lead_id finding_id role condition_key requirement_key "
+                    "source_weakness_revision relation_state evidence_refs source_operation_id "
+                    "revision created_at updated_at",
+                )
+                for row in relations
+            ]
+        else:
+            # 关系表在迁移前不存在：如实留空，并在 missing_schema_fields 里标明。
+            knowledge["lead_weakness_links"] = []
         verifications = (
             (
                 await session.execute(

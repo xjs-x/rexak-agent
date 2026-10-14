@@ -18,13 +18,16 @@ from langgraph.graph.message import add_messages
 
 #: 状态 schema 版本。升级时必须提供迁移或**明确拒绝恢复**，不能加载不兼容状态（§16.3）。
 #: v3：增加 `current_focus.source`（explicit | plan_inferred）与 `work_assessment`
-#: （最近一次明确判断）。1→2→3 顺序兼容，不允许跳过迁移。
-CURRENT_STATE_SCHEMA_VERSION = 3
+#: （最近一次明确判断）。
+#: v4：计划步骤支持多线索（`lead_ids`）与类型（`kind`）；新增弱点呈现与复查进度字段
+#: （`presented_weakness_ids` / `weakness_review_cursor` / `last_recall_keys`）。
+#: 1→2→3→4 顺序兼容，不允许跳过迁移。
+CURRENT_STATE_SCHEMA_VERSION = 4
 
-StateSchemaVersion = Literal[3]
+StateSchemaVersion = Literal[4]
 
 #: 可迁移到当前版本的旧版本（由 `state_migration` 提供显式适配）。
-MIGRATABLE_STATE_SCHEMA_VERSIONS = (1, 2)
+MIGRATABLE_STATE_SCHEMA_VERSIONS = (1, 2, 3)
 
 
 class StateSchemaIncompatibleError(RuntimeError):
@@ -58,9 +61,28 @@ class PlanStep(TypedDict):
     status: Literal["pending", "in_progress", "done", "dropped", "blocked"]
     rationale: str | None
     lead_id: str | None
+    #: 步骤类型：覆盖检查 / 链条跟进 / 混合。缺失时按 `mixed` 读取（旧 checkpoint 兼容）。
+    kind: NotRequired[Literal["coverage", "followup", "mixed"]]
+    #: 本步骤服务的**全部**线索。旧步骤只有 `lead_id`，读取时映射为单元素列表。
+    #: 一个步骤可以服务多条线索，但**不能**因此虚构多个当前焦点。
+    lead_ids: NotRequired[list[str]]
     done_when: NotRequired[str | None]
     resume_note: NotRequired[str | None]
     evidence_refs: NotRequired[list[str]]
+
+
+def plan_step_lead_ids(step: dict[str, Any]) -> list[str]:
+    """统一读取步骤服务的线索集合（兼容只有 `lead_id` 的旧步骤）。"""
+    values = [str(item) for item in (step.get("lead_ids") or []) if item]
+    primary = step.get("lead_id")
+    if primary and str(primary) not in values:
+        values.insert(0, str(primary))
+    return list(dict.fromkeys(values))
+
+
+def plan_step_kind(step: dict[str, Any]) -> str:
+    kind = str(step.get("kind") or "").strip()
+    return kind if kind in {"coverage", "followup", "mixed"} else "mixed"
 
 
 class CurrentFocus(TypedDict):
@@ -174,6 +196,17 @@ class AgentGraphState(AgentState):
     current_focus: NotRequired[CurrentFocus | None]
     #: 最近一次明确判断（解释，不是漏洞事实）。
     work_assessment: NotRequired[WorkAssessment | None]
+    #: 弱点消费进度：本轮**实际发送**给模型的弱点 ID（预算裁剪掉的条目不计入）。
+    presented_weakness_ids: NotRequired[list[str]]
+    #: 结束复查的分页游标与来源签名（扫描进度放 checkpoint，对象判断放业务表）。
+    weakness_review_cursor: NotRequired[str | None]
+    weakness_review_signature: NotRequired[str]
+    #: 每个弱点的上一版快照 revision，用于识别"条件确实发生变化"。
+    last_weakness_revisions: NotRequired[dict[str, int]]
+    #: 条件变化召回的去重键（对象 + 实质版本 + 触发原因），防止重复召回同一批内容。
+    last_recall_keys: NotRequired[list[str]]
+    #: 上一次实际呈现给模型的身份签名，用于识别"身份/auth 变化"触发。
+    last_identity_signature: NotRequired[str]
     review_cursor: NotRequired[str | None]
     last_review_turn: NotRequired[int]
     last_review_source_signature: NotRequired[str]
@@ -237,6 +270,12 @@ def new_graph_state(
         plan_revision=0,
         current_focus=None,
         work_assessment=None,
+        presented_weakness_ids=[],
+        weakness_review_cursor=None,
+        weakness_review_signature="",
+        last_weakness_revisions={},
+        last_recall_keys=[],
+        last_identity_signature="",
         active_lead_ids=[],
         pending_job_ids=[],
         coverage_revision=0,
@@ -280,6 +319,13 @@ def next_input_state(
         "finish_gate_feedback": [],
         "finish_gate_attempts": 0,
         "pending_job_ids": [],
+        # 弱点呈现/复查进度置空：恢复后从领域表重新组装，不沿用旧段的发送记录。
+        "presented_weakness_ids": [],
+        "weakness_review_cursor": None,
+        "weakness_review_signature": "",
+        "last_weakness_revisions": {},
+        "last_recall_keys": [],
+        "last_identity_signature": "",
         "no_progress_streak": 0,
         "last_progress_signature": "",
         "similar_result_streak": 0,
@@ -307,4 +353,6 @@ __all__ = [
     "merge_unique",
     "new_graph_state",
     "next_input_state",
+    "plan_step_kind",
+    "plan_step_lead_ids",
 ]
