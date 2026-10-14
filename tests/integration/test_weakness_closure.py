@@ -8,17 +8,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
-from typing import Any, cast
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
+from langchain.tools import ToolRuntime
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolCallId, tool
 from pydantic import Field
 from sqlalchemy import select
 
@@ -29,12 +30,19 @@ from agent_workbench.agent.middleware.finish_gate import FinishGateMiddleware
 from agent_workbench.agent.middleware.tool_dispatch import ToolDispatchMiddleware
 from agent_workbench.agent.middleware.working_context import WorkingContextMiddleware
 from agent_workbench.agent.state import AgentGraphState
+from agent_workbench.contracts.enums import ToolEffectClass
 from agent_workbench.domain.findings import FindingService
 from agent_workbench.evidence.artifacts import ArtifactStore
 from agent_workbench.observability.spans import SpanRecorder
-from agent_workbench.persistence.tables import FindingRow, LeadRow, LeadWeaknessLinkRow
+from agent_workbench.persistence.tables import (
+    FindingRow,
+    LeadRow,
+    LeadWeaknessLinkRow,
+    ToolOperationRow,
+)
 from agent_workbench.tools.completion import propose_completion
 from agent_workbench.tools.execution_context import execution_context
+from agent_workbench.tools.operation import OperationRegistry
 from agent_workbench.tools.task import record_lead, record_weakness, update_plan
 from tests.integration.test_request_budget import context_for
 from tests.unit.test_context_budget import profile
@@ -117,9 +125,17 @@ PROBE_CALLS: list[dict[str, Any]] = []
 
 
 @tool
-def probe(where: str) -> str:
+async def probe(where: str, runtime: ToolRuntime[RunContext], tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
     """只读探测（记录派发时的执行关联，不产生远端副作用）。"""
     PROBE_CALLS.append(dict(execution_context.get() or {}))
+    toolbox = runtime.context.toolbox
+    async with toolbox.db.transaction() as db:
+        prepared = await OperationRegistry(db).prepare(run_id=toolbox.run_id, session_id=toolbox.session_id,
+            tool_call_id=tool_call_id, tool_name="probe", arguments={"where": where},
+            effect_class=ToolEffectClass.READ_ONLY, policy_revision=toolbox.policy_revision,
+            scope_revision=toolbox.scope_revision, dispatch_control_version=runtime.state.get("dispatch_control_version"))
+        prepared.row.status = "succeeded"
+        prepared.row.result_snapshot = {"fixture_result": "observed"}
     return f"probe:{where}"
 
 
@@ -281,6 +297,11 @@ async def test_official_loop_consumes_weakness_and_links_execution(database, uni
     assert PROBE_CALLS[0]["lead_ids"] == [seen["lead_id"]]
     assert PROBE_CALLS[0]["step_kind"] == "followup"
     assert PROBE_CALLS[0]["step_id"] == "s1"
+    async with database.session() as db:
+        operation = (await db.execute(select(ToolOperationRow).where(
+            ToolOperationRow.run_id == context.toolbox.run_id, ToolOperationRow.tool_name == "probe"))).scalar_one()
+    assert operation.status == "succeeded"
+    assert operation.execution_context == PROBE_CALLS[0], "派发上下文必须真正落入操作台账，不能只检查内存变量"
 
 
 async def test_official_loop_never_consuming_weakness_yields_specific_review(database, unique_name):

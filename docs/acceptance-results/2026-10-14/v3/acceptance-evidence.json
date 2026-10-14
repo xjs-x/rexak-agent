@@ -1,0 +1,81 @@
+{
+  "evidence_version": 1,
+  "captured_at_utc": "2026-10-14T16:22:13.703431+00:00",
+  "workspace": "C:/xjs/rexak-agent",
+  "implementation_base_commit": "5da99028044269164e0c2f4bb366573cd3759dd4",
+  "verified_source_sha256": {
+    "executor/tests/test_processes.py": "add477d53ae0e6950dbfbc05a86eb7c09afc39f1dbe9169dbff9fb8d96776da8",
+    "migrations/versions/c9e40b17fa32_relationship_integrity.py": "c62dd4d72869b104d177e3edd00c563cfcd274d405ac6be434489f9536437150",
+    "scripts/deploy_executor.py": "ac0c92e2c80d82ab0e33111077a606c6070defa0445ba3650ee68305bf3b3de2",
+    "src/agent_workbench/agent/middleware/context_builder.py": "d8af7627f8eec5bcb96d1095ebe946d4cb0b7f5d8e4d39767d04b243e2990ff5",
+    "src/agent_workbench/agent/middleware/finish_gate.py": "dc549e7d179a82258e832a1e33a9da80f21f703e8ca20afb550806560fa9dcad",
+    "src/agent_workbench/agent/middleware/tool_dispatch.py": "87d2563e6d75d250f7ba28288c160bd8f22bac38121bed7bb3df4d16b2b65be3",
+    "src/agent_workbench/agent/middleware/working_context.py": "5cc39a7c66d918417a3c50fbf2544ac06762ccfe1e2c23d90075bb63fa786ae1",
+    "src/agent_workbench/agent/prompts/methods.py": "4f62c0f4bb4727f4c7e6783c82d28b0ad76a0313c865d06f3653f03ea4b60907",
+    "src/agent_workbench/agent/prompts/methods/weakness-chains.md": "7f64b8d9182ea9915c47b55069779622fb5f97d13cb0849cd17355d1096bf763",
+    "src/agent_workbench/agent/working_context.py": "43a0be6f29095b3937b7188e45aba4ee0edb0c76b1a9aec1f9c10e9b4c6f80ea",
+    "src/agent_workbench/contracts/events.py": "0598082b11d51c18ac9065cba170a3961ee600e16da8dfb35229c2dc1ae0227f",
+    "src/agent_workbench/contracts/exploration.py": "2f8501d85ed56e69ae4f20f38a6632c4e67e655034aa3c6bf4a41ddcf85c3180",
+    "src/agent_workbench/contracts/weaknesses.py": "7d632a16131fff83b00bc22461ffc374aaab5fb53256536dd4310a8275b81d63",
+    "src/agent_workbench/domain/exploration_lock.py": "0561bb0b753b6845e2bab18706747f87dbc73af71314e061beb69da2e92b30fb",
+    "src/agent_workbench/domain/exploration_review.py": "8f7c4726861f416fa00d863872307218cdca25606d11ffe40c5a7e4e4de6090b",
+    "src/agent_workbench/domain/findings.py": "6c1155ae9204c47897d24c133a1c275f5dd864c3da31ade7da61f84e88d6a886",
+    "src/agent_workbench/domain/leads.py": "ae188c7d78dfdde357f8ae9cc1ef2a7dbf20ab15fa4efd9c9760075755fde088",
+    "src/agent_workbench/domain/reports.py": "8e23f4e4332ecf7a367f079c11b18ba075b2d8fb1c4234d5d267c3d9957d00aa",
+    "src/agent_workbench/domain/weakness_relations.py": "be900d5b3982798dfeb6d71ff1b08163ee35f57c4a93a327fd7103af90949187",
+    "src/agent_workbench/maintenance/run_bundle.py": "79eb9caae07315400560da448294986bed0af6bcea3d9661841d2e4012023ecb",
+    "src/agent_workbench/persistence/tables.py": "66ebc07ec58e6ac61e3ce333cbb17cde12e1724874c6e19456d0c56555e6da7d",
+    "src/agent_workbench/runtime/runner.py": "5a3b6a32ba1549a027fa8c01afa2eb5f785db32beb46a376109b6ee751f3b959",
+    "src/agent_workbench/runtime/stopping.py": "3d7d57ab8e47818727501324193f1aa3bdfabb357d14178aaa805bdb20f5d2a5",
+    "src/agent_workbench/tools/execution_context.py": "18ae43ada2ba62300d3eef1624ba7812342023e5ed2398047779ccf126b98956",
+    "src/agent_workbench/tools/task.py": "7a3eb8e8fe1d926fbc4589a490405040ad35eba0266436c6edf64efceac9d051",
+    "start-workbench.cmd": "b59f69240665a33fe17af511406284037bc580a8f068f3f197a6377f0675979b",
+    "tests/integration/test_completion_inventory.py": "fa6c39251d9e5ba990baec7b288faf5c277a4240618d98530cd1ba865893c7ef",
+    "tests/integration/test_reports.py": "dfa3e20f4e7eb706293a93cf850935eaf215533578674b5c1fcf06e521701daf",
+    "tests/integration/test_stage_reports.py": "b0d3bfb632b3ba4d23bd6792393d449526e4f37c3c2e34b887ffd5a042e43d78",
+    "tests/integration/test_v3_acceptance_gaps.py": "c90b6246bc7e695f51dd62e5fbeee4ddefe9f27988890228f3c5e818848790c9",
+    "tests/integration/test_weakness_closure.py": "0a840b52a64cbadddb75340f7a5c09ff96300b0ca3d530d78bad21070d64be3a",
+    "web/src/App.tsx": "9a4ca7532acecd82685eb80dfc331d905f14be1ff696463f307f6fa2c4830090",
+    "web/src/PlanGraph.tsx": "1b818a162494b4c28c105980f3e724626440574d84b88eb8d6edda986ee3a1a9",
+    "web/src/api/generated/schema.d.ts": "f6bf0f6311dbcb190efb06b211b954242321160d3888fedea3ca662f04a76297"
+  },
+  "state_schema_version": 4,
+  "system_prompt_version": "6",
+  "methods_bundle_version": "4",
+  "database_revision": "c9e40b17fa32",
+  "local_tests": {
+    "passed": 542,
+    "skipped": 40,
+    "failed": 0,
+    "errors": 0
+  },
+  "real_model_tests_deselected": 1,
+  "official_loop_strengthened_tests": {
+    "passed": 3,
+    "skipped": 0,
+    "failed": 0,
+    "errors": 0
+  },
+  "kali_isolated_tests": {
+    "passed": 26,
+    "failed": 0,
+    "warnings": 1
+  },
+  "backup_verified_files": 2283,
+  "engineering_checks": {
+    "dependencies": "passed",
+    "ruff": "passed",
+    "pyright": "0 errors",
+    "utf8_without_bom": "passed",
+    "openapi_generation": "passed",
+    "frontend_build": "passed"
+  },
+  "real_model_call_performed": false,
+  "real_target_testing_performed": false,
+  "runner_started_for_smoke": false,
+  "existing_unrelated_changes_preserved": [
+    ".workbuddy/",
+    "docs/experiments/002-v1-three-targets-2026-10-13/"
+  ],
+  "source_hash_basis": "UTF-8 source bytes with CRLF normalized to LF, matching Git text blobs"
+}

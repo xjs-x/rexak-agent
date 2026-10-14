@@ -912,7 +912,7 @@ export interface components {
          * EventType
          * @enum {string}
          */
-        EventType: "run.status" | "message.delta" | "message.completed" | "plan.updated" | "focus.updated" | "leads.recalled" | "context.selected" | "segment.yielded" | "snapshot.captured" | "model.response_quality" | "tool.accepted" | "tool.output" | "tool.completed" | "lead.updated" | "finding.updated" | "coverage.updated" | "usage.updated" | "memory.compacted" | "input.required" | "report.ready" | "error" | "stream.resync_required" | "stream.heartbeat";
+        EventType: "run.status" | "message.delta" | "message.completed" | "plan.updated" | "focus.updated" | "leads.recalled" | "context.selected" | "segment.yielded" | "snapshot.captured" | "model.response_quality" | "tool.accepted" | "tool.output" | "tool.completed" | "lead.updated" | "finding.updated" | "weakness.changed" | "weakness.presented" | "weakness.reviewed" | "relation.changed" | "condition.review_due" | "completion.review" | "coverage.updated" | "usage.updated" | "memory.compacted" | "input.required" | "report.ready" | "error" | "stream.resync_required" | "stream.heartbeat";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */

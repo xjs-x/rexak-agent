@@ -130,6 +130,23 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 budget = estimate()
             ensure_fits(budget)
         manifest = _build_manifest(state, selected, str(merged.content))
+        if working_view is not None:
+            consumption = working_view.get("weakness_consumption") or {}
+            commit = dict(consumption.get("consumption_commit") or {})
+            actual_ids = {str(item["weakness_id"]) for item in consumption.get("changed_weaknesses") or []}
+            commit["presented_weakness_ids"] = sorted(actual_ids)
+            commit["weakness_revisions"] = {key: value for key, value in (commit.get("weakness_revisions") or {}).items() if key in actual_ids}
+            commit["recall_keys"] = [item["dedupe_key"] for item in consumption.get("related_leads") or [] if item.get("dedupe_key")]
+            consumption["consumption_commit"] = commit
+            (working_view.get("next") or {})["consumption_commit"] = commit
+            # 裁剪后的提交元数据也属于实际请求；在最终预算检查前重新组装。
+            context = _compose_context(state, working_view, scope_block)
+            merged = compose(context)
+            if profile is not None:
+                budget = estimate_request(selected, merged, request.tools, profile,
+                    model=request.model, model_settings=request.model_settings, tool_choice=request.tool_choice)
+                ensure_fits(budget)
+            manifest = _build_manifest(state, selected, str(merged.content))
         manifest.update(
             manifest_version=3,
             selected_messages=message_inventory(selected),
@@ -170,6 +187,9 @@ def _copy_working(working: Any) -> dict[str, Any] | None:
     if working is None:
         return None
     view = json.loads(json.dumps(working, ensure_ascii=False, default=str))
+    if isinstance(view, dict):
+        view.pop("execution_sources", None)
+        view.pop("execution_source_bindings", None)
     return view if isinstance(view, dict) else None
 
 

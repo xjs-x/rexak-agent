@@ -301,7 +301,7 @@ class ReportService:
             "open_leads": [
                 f"[{row.status}] {redact_text(row.hypothesis)}"
                 for row in leads
-                if row.status not in {"confirmed", "disproved"}
+                if row.status not in {"confirmed", "disproved"} and row.merged_into_id is None
             ],
             "open_items": [
                 {
@@ -318,7 +318,7 @@ class ReportService:
                     ],
                 }
                 for row in leads
-                if row.status not in {"confirmed", "disproved"}
+                if row.status not in {"confirmed", "disproved"} and row.merged_into_id is None
             ],
             "observations": [
                 {
@@ -561,6 +561,7 @@ def _connection_review_view(row: FindingRow) -> dict[str, Any] | None:
         "linked_lead_ids": [str(item) for item in (stored.get("linked_lead_ids") or [])],
         "no_connection_note": redact_text(str(stored.get("no_connection_note") or "")) or None,
         "reviewed_content_revision": stored.get("reviewed_content_revision"),
+        "stale": stored.get("reviewed_content_revision") != row.revision,
     }
 
 
@@ -570,7 +571,7 @@ def _weakness_breakdown(findings: list[FindingRow]) -> dict[str, Any]:
     for row in findings:
         kind = row.weakness_kind or "unclassified"
         by_kind[kind] = by_kind.get(kind, 0) + 1
-        if row.connection_review:
+        if row.connection_review and row.connection_review.get("reviewed_content_revision") == row.revision:
             reviewed += 1
     return {
         "total": len(findings),
@@ -899,6 +900,8 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
             )
         review = item.get("connection_review")
         if review:
+            if review.get("stale"):
+                lines.append("  - 以下是此前版本的用途判断，来源变化后需要重新评估。")
             if review.get("linked_lead_ids"):
                 lines.append("  - 后续线索：" + "、".join(review["linked_lead_ids"]))
             elif review.get("no_connection_note"):

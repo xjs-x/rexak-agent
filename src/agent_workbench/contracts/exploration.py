@@ -62,6 +62,7 @@ class ReviewInventory(BaseModel):
     #: 未复核或依据已过期的对象总数（不是本页数量）。
     unreviewed_count: int = 0
     actionable_count: int = 0
+    waiting_count: int = 0
     #: 本页之后的游标；为 None 表示已到末尾，最后一页必须再跑一次全量核对。
     next_cursor: str | None = None
     #: 程序判定：是否还有可推进方向（决定是否允许自主结束）。

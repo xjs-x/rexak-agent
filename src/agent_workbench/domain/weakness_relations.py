@@ -88,6 +88,9 @@ async def upsert_links(
     relation_state: LeadWeaknessRelationState | None = None,
 ) -> RelationBatchResult:
     """在同一事务内写入/更新关系。调用方负责事务边界（失败整体撤销）。"""
+    from agent_workbench.domain.exploration_lock import lock_exploration
+
+    await lock_exploration(session, session_id)
     result = RelationBatchResult()
     lead = await _require_lead(session, session_id, lead_id)
     for ref in refs:
@@ -140,7 +143,7 @@ async def upsert_links(
             )
         else:
             merged = _merge(row.evidence_refs, ref.evidence_refs)
-            changed = merged != list(row.evidence_refs or [])
+            changed = merged != list(row.evidence_refs or []) or row.source_weakness_revision != int(finding.revision)
             new_state = str(
                 _upgrade_state(row.relation_state, state, has_evidence=bool(merged))
             )
@@ -167,6 +170,10 @@ async def upsert_links(
                 )
             )
     await session.flush()
+    if any(item.changed for item in result.links):
+        from agent_workbench.domain.leads import LeadService
+
+        await LeadService(session)._invalidate_actionability(lead)
     return result
 
 
@@ -178,6 +185,9 @@ async def refute_links(
     weakness_ids: list[str],
 ) -> list[LinkWriteResult]:
     """把指定关系标记为 `refuted`（弱点被反证）：**不**级联判定下游线索失败。"""
+    from agent_workbench.domain.exploration_lock import lock_exploration
+
+    await lock_exploration(session, session_id)
     lead = await _require_lead(session, session_id, lead_id)
     parsed: list[UUID] = []
     for raw in weakness_ids:
@@ -220,6 +230,10 @@ async def refute_links(
             )
         )
     await session.flush()
+    if out:
+        from agent_workbench.domain.leads import LeadService
+
+        await LeadService(session)._invalidate_actionability(lead)
     return out
 
 
@@ -247,7 +261,7 @@ async def mark_dependent_judgements_stale(
 
     只标记待复核，**不**级联判定线索失败，也不猜测新的结论（方案 §3.2 / §7）。
     """
-    from agent_workbench.contracts.weaknesses import actionability_basis_fingerprint
+    from agent_workbench.domain.leads import LeadService
 
     links = await links_for_finding(session, session_id, finding_id)
     touched: list[UUID] = []
@@ -258,21 +272,10 @@ async def mark_dependent_judgements_stale(
         stored = dict(lead.actionability_assessment or {})
         if not stored:
             continue
-        basis: list[tuple[str, int | None]] = []
-        for item in await links_for_lead(session, session_id, lead.id):
-            finding = await session.get(FindingRow, item.finding_id)
-            basis.append((str(item.finding_id), int(finding.revision) if finding else None))
         lead.actionability_assessment = {
             **stored,
             "state": "needs_review",
-            "basis_fingerprint": actionability_basis_fingerprint(
-                hypothesis=lead.hypothesis,
-                next_action=lead.next_action,
-                required_conditions=list(lead.required_conditions or []),
-                basis_revisions=basis,
-                identity_state="|".join(sorted(str(item) for item in (lead.identity_refs or [])))
-                or None,
-            ),
+            "basis_fingerprint": await LeadService(session).actionability_fingerprint(lead),
             "revision": int(stored.get("revision") or 0) + 1,
         }
         session.add(lead)
@@ -458,6 +461,13 @@ async def _require_lead(session: AsyncSession, session_id: UUID, lead_id: UUID) 
     ).scalar_one_or_none()
     if row is None:
         raise ApiError(ErrorCode.NOT_FOUND, f"线索不存在或不属于当前会话：{lead_id}")
+    visited = {row.id}
+    while row.merged_into_id is not None:
+        target = await session.get(LeadRow, row.merged_into_id)
+        if target is None or target.session_id != session_id or target.id in visited:
+            raise ApiError(ErrorCode.CONFLICT, "线索别名关系不可解析")
+        visited.add(target.id)
+        row = target
     return row
 
 

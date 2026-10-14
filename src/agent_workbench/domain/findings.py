@@ -149,6 +149,9 @@ class FindingService:
         - 只允许创建 candidate，不接受 confirmed；
         - 指定 `expected_revision` 时，过期写入返回明确冲突，不覆盖新的证据和条件。
         """
+        from agent_workbench.domain.exploration_lock import lock_exploration
+
+        await lock_exploration(self._s, session_id)
         if weakness_id is None:
             clean_title = (title or "").strip()
             if not clean_title:
@@ -183,10 +186,12 @@ class FindingService:
                 )
             created = False
             # 已确认记录的核心事实不原地扩大：新事实请建候选记录再建立关系。
-            if row.status == str(FindingStatus.CONFIRMED) and any(
+            if row.status == str(FindingStatus.CONFIRMED) and (any(
                 value is not None
                 for value in (title, description, category, impact, weakness_kind)
-            ):
+            ) or (applicability is not None and ApplicabilitySpec.normalize(applicability).model_dump() != row.applicability)
+                or (asset_id is not None and asset_id != row.asset_id)
+                or (identity_id is not None and identity_id != row.identity_id)):
                 raise ApiError(
                     ErrorCode.CONFLICT,
                     "已确认弱点的核心事实不可原地改写；请创建新的候选记录并建立关系。",
@@ -214,6 +219,22 @@ class FindingService:
         row.evidence_refs = _merge(row.evidence_refs, evidence_refs)
 
         removed = [str(item) for item in (remove_condition_keys or [])]
+        if provided_conditions == []:
+            removed = list(before_conditions)
+        if removed:
+            from agent_workbench.persistence.tables import LeadWeaknessLinkRow
+
+            referenced = (await self._s.execute(select(LeadWeaknessLinkRow.id).where(
+                LeadWeaknessLinkRow.finding_id == row.id,
+                LeadWeaknessLinkRow.condition_key.in_(removed),
+            ).limit(1))).scalar_one_or_none()
+            lead_rows = (await self._s.execute(select(LeadRow.required_conditions).where(LeadRow.session_id == session_id))).scalars()
+            referenced_requirement = any(
+                item.get("weakness_id") == str(row.id) and item.get("condition_key") in removed
+                for conditions in lead_rows for item in conditions or []
+            )
+            if referenced is not None or referenced_requirement:
+                raise ApiError(ErrorCode.CONFLICT, "条件仍被线索或关系引用，不能删除；请修订条件并保留原 key。")
         for key in removed:
             before_conditions.pop(key, None)
 
@@ -257,7 +278,7 @@ class FindingService:
         if connection_review is not None:
             review = ConnectionReview.model_validate(connection_review)
             linked_lead_ids = await self._validate_referenced_leads(
-                session_id, review.linked_lead_ids
+                session_id, review.linked_lead_ids, row.id
             )
             if not review.has_judgment():
                 raise ApiError(
@@ -319,7 +340,9 @@ class FindingService:
             condition_keys=[str(item["key"]) for item in (row.provided_conditions or [])],
         )
 
-    async def _validate_referenced_leads(self, session_id: UUID, raw_ids: list[str]) -> list[str]:
+    async def _validate_referenced_leads(self, session_id: UUID, raw_ids: list[str], finding_id: UUID) -> list[str]:
+        from agent_workbench.persistence.tables import LeadWeaknessLinkRow
+
         resolved: list[str] = []
         for raw in raw_ids:
             try:
@@ -341,12 +364,21 @@ class FindingService:
                     "『已产生后续线索』的判断必须引用真实存在的关联；"
                     f"线索 {raw} 不在当前会话。",
                 )
+            linked = (await self._s.execute(select(LeadWeaknessLinkRow.id).where(
+                LeadWeaknessLinkRow.session_id == session_id,
+                LeadWeaknessLinkRow.lead_id == lead_id,
+                LeadWeaknessLinkRow.finding_id == finding_id,
+                LeadWeaknessLinkRow.role == "basis",
+                LeadWeaknessLinkRow.relation_state != "refuted",
+            ).limit(1))).scalar_one_or_none()
+            if linked is None:
+                raise ApiError(ErrorCode.VALIDATION_FAILED, "用途判断必须引用真实存在的 basis 关系，不能只填写无关线索 ID。")
             resolved.append(str(row))
         return resolved
 
     async def get(self, finding_id: UUID) -> FindingRow | None:
         return (
-            await self._s.execute(select(FindingRow).where(FindingRow.id == finding_id))
+            await self._s.execute(select(FindingRow).where(FindingRow.id == finding_id).execution_options(populate_existing=True))
         ).scalar_one_or_none()
 
     async def list_for_session(self, session_id: UUID, *, limit: int = 200) -> list[FindingRow]:
@@ -451,7 +483,7 @@ def _with_condition_key(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _content_hash(row: FindingRow) -> str:
-    return content_revision_payload(
+    core = content_revision_payload(
         title=row.title,
         description=row.description,
         category=row.category,
@@ -462,10 +494,20 @@ def _content_hash(row: FindingRow) -> str:
                 "key": item.get("key"),
                 "statement": item.get("statement"),
                 "limitations": item.get("limitations"),
+                "evidence_refs": item.get("evidence_refs") or [],
             }
             for item in (row.provided_conditions or [])
         ],
     )
+    import hashlib
+    import json
+
+    return hashlib.sha256(json.dumps({
+        "core": core, "evidence_refs": sorted(row.evidence_refs or []),
+        "asset_id": str(row.asset_id) if row.asset_id else None,
+        "identity_id": str(row.identity_id) if row.identity_id else None,
+        "impact": row.impact,
+    }, sort_keys=True).encode()).hexdigest()
 
 
 
@@ -496,6 +538,10 @@ class VerificationService:
         finding = await FindingService(self._s).get(finding_id)
         if finding is None:
             raise ApiError(ErrorCode.NOT_FOUND, f"发现不存在：{finding_id}")
+        from agent_workbench.domain.exploration_lock import lock_exploration
+
+        await lock_exploration(self._s, finding.session_id)
+        await self._s.refresh(finding)
 
         if conclusion is FindingStatus.CONFIRMED and performed_by != "code":
             raise ApiError(
@@ -537,6 +583,9 @@ class VerificationService:
         # 验证结论是实质状态变化：同步刷新内容哈希，使依赖版本的一致性检查仍然成立。
         finding.content_hash = _content_hash(finding)
         await self._s.flush()
+        from agent_workbench.domain.weakness_relations import mark_dependent_judgements_stale
+
+        await mark_dependent_judgements_stale(self._s, finding.session_id, finding.id)
         return row
 
     async def list_for_finding(self, finding_id: UUID) -> list[VerificationRow]:

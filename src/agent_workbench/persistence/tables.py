@@ -20,6 +20,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     MetaData,
@@ -346,6 +347,7 @@ class LeadRow(TimestampMixin, Base):
 
     __table_args__ = (
         Index("ix_leads_session_status_priority", "session_id", "status", "priority"),
+        UniqueConstraint("id", "session_id", name="uq_leads_id_session"),
         Index("ix_leads_alias", "merged_into_id"),
         CheckConstraint(
             "status NOT IN ('blocked','deferred') OR blocked_reason IS NOT NULL",
@@ -398,6 +400,7 @@ class FindingRow(TimestampMixin, Base):
 
     __table_args__ = (
         Index("ix_findings_session_status", "session_id", "status"),
+        UniqueConstraint("id", "session_id", name="uq_findings_id_session"),
         CheckConstraint(
             "status <> 'confirmed' OR verification_id IS NOT NULL",
             name="finding_confirmed_requires_verification",
@@ -445,6 +448,10 @@ class LeadWeaknessLinkRow(TimestampMixin, Base):
 
     __table_args__ = (
         # 关系身份唯一：空 key 统一表示，避免 NULL 造成重复行。
+        ForeignKeyConstraint(["lead_id", "session_id"], [f"{APP_SCHEMA}.leads.id", f"{APP_SCHEMA}.leads.session_id"], name="fk_links_lead_session", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["finding_id", "session_id"], [f"{APP_SCHEMA}.findings.id", f"{APP_SCHEMA}.findings.session_id"], name="fk_links_finding_session", ondelete="RESTRICT"),
+        CheckConstraint("role IN ('basis', 'result')", name="link_role_valid"),
+        CheckConstraint("relation_state IN ('proposed', 'evidence_linked', 'refuted')", name="link_state_valid"),
         UniqueConstraint(
             "lead_id",
             "finding_id",

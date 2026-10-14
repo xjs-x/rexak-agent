@@ -1354,7 +1354,9 @@ class AgentRunner:
         try:
             async with self._db.session() as session:
                 decision = await FinishGate(session).evaluate(
-                    session_id=run.session_id, proposal=proposal
+                    session_id=run.session_id, proposal=proposal,
+                    plan=list(values.get("plan") or []),
+                    review_cursor=values.get("weakness_review_cursor"),
                 )
             span.finish()
             spans.record(span, decision=decision.decision)

@@ -19,6 +19,8 @@ from langchain_core.messages import SystemMessage
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.state import AgentGraphState
+from agent_workbench.contracts.events import EventType
+from agent_workbench.observability.events import append_event
 from agent_workbench.observability.logging import get_logger
 from agent_workbench.runtime.stopping import FinishGate
 
@@ -57,6 +59,7 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             session_id=toolbox.session_id,
             run_id=toolbox.run_id,
         )
+        decision = None
         try:
             async with toolbox.db.session() as db:
                 decision = await FinishGate(db).evaluate(
@@ -74,6 +77,9 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             try:
                 async with toolbox.db.transaction() as db:
                     await toolbox.spans.flush(db)
+                    if decision is not None:
+                        await append_event(db, session_id=toolbox.session_id, run_id=toolbox.run_id,
+                            event_type=EventType.COMPLETION_REVIEW, payload=decision.as_metadata())
             except Exception as exc:
                 log.warning(
                     "finish_gate_span_persist_failed",
@@ -81,6 +87,8 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     error_type=type(exc).__name__,
                 )
 
+        if decision is None:
+            raise RuntimeError("结束检查没有返回决策")
         if decision.allowed or decision.decision in {"wait_user", "wait_tool"}:
             # 通过：保留提议，由 Runner 在一致边界把 run 置为 completed
             return None

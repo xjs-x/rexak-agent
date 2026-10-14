@@ -147,6 +147,8 @@ class RequiredConditionRef(BaseModel):
     identity_id: str | None = None
     asset_id: str | None = None
     satisfied: bool = False
+    #: 只有明确需要用户/环境提供的条件才允许整体等待；探索可产生的条件不能冒充外部阻塞。
+    external: bool = False
 
 
 class ActionabilityAssessment(BaseModel):
@@ -236,6 +238,7 @@ def content_revision_payload(
                     "key": item.get("key"),
                     "statement": item.get("statement"),
                     "limitations": item.get("limitations"),
+                    "evidence_refs": sorted(item.get("evidence_refs") or []),
                 }
                 for item in provided_conditions
             ),
@@ -293,6 +296,10 @@ def actionability_basis_fingerprint(
                     "key": item.get("condition_key"),
                     "description": item.get("description"),
                     "producer": item.get("producer_lead_id"),
+                    "weakness": item.get("weakness_id"),
+                    "identity": item.get("identity_id"),
+                    "asset": item.get("asset_id"),
+                    "external": bool(item.get("external")),
                     "satisfied": bool(item.get("satisfied")),
                 }
                 for item in required_conditions

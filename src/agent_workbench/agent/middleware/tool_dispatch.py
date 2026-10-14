@@ -72,6 +72,7 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 state,
                 same_batch_plan_update="update_plan" in batch_tool_names(state),
                 weakness_revisions=weakness_revisions_for_focus(context.toolbox),
+                weakness_bindings=(getattr(context.toolbox, "working_context", None) or {}).get("execution_source_bindings"),
             )
         )
         try:

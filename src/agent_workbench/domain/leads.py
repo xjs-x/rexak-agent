@@ -17,10 +17,12 @@ V3 扩展（方案 §3.2）：线索额外承载**待验证连接**——
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_workbench.contracts.enums import (
@@ -34,7 +36,16 @@ from agent_workbench.contracts.weaknesses import (
     RequiredConditionRef,
     actionability_basis_fingerprint,
 )
-from agent_workbench.persistence.tables import FindingRow, LeadRow
+from agent_workbench.domain.exploration_lock import lock_exploration
+from agent_workbench.persistence.tables import (
+    ArtifactRow,
+    AssetRow,
+    FindingRow,
+    IdentityRow,
+    LeadRow,
+    SessionRow,
+    ToolOperationRow,
+)
 
 
 def compute_priority(
@@ -87,6 +98,9 @@ class LeadService:
         required_conditions: list[dict[str, Any]] | None = None,
         expected_revision: int | None = None,
     ) -> LeadRow:
+        await lock_exploration(self._s, session_id)
+        if required_conditions is not None:
+            await self._validate_conditions(session_id, required_conditions)
         score, parts = compute_priority(
             impact=impact or 0,
             evidence_strength=evidence_strength or 0,
@@ -103,6 +117,13 @@ class LeadService:
             row = await self.get(lead_id)
             if row is None or row.session_id != session_id:
                 raise ApiError(ErrorCode.NOT_FOUND, f"线索不存在：{lead_id}")
+            visited = {row.id}
+            while row.merged_into_id is not None:
+                target = await self.get(row.merged_into_id)
+                if target is None or target.session_id != session_id or target.id in visited:
+                    raise ApiError(ErrorCode.CONFLICT, "线索别名关系不可解析")
+                visited.add(target.id)
+                row = target
             if expected_revision is not None and int(row.revision) != int(expected_revision):
                 raise ApiError(
                     ErrorCode.CONFLICT,
@@ -116,7 +137,8 @@ class LeadService:
             if scored:
                 row.priority = score
                 row.priority_rationale = parts
-            row.next_action = next_action or row.next_action
+            if next_action is not None:
+                row.next_action = next_action
             row.evidence_refs = _merge(row.evidence_refs, evidence_refs)
             if required_conditions is not None:
                 row.required_conditions = normalize_conditions(required_conditions)
@@ -143,10 +165,7 @@ class LeadService:
 
     async def merge(self, session_id: UUID, source_id: UUID, target_id: UUID) -> LeadRow:
         """同会话串行合并，保留原记录状态；引用并集传播到最终目标。"""
-        await self._s.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": f"lead-merge:{session_id}"},
-        )
+        await lock_exploration(self._s, session_id)
         source = await self.get(source_id)
         if source is None or source.session_id != session_id:
             raise ValueError("源线索不属于当前会话")
@@ -221,6 +240,16 @@ class LeadService:
         row = await self.get(lead_id)
         if row is None:
             raise ApiError(ErrorCode.NOT_FOUND, f"线索不存在：{lead_id}")
+        await lock_exploration(self._s, row.session_id)
+        await self._s.refresh(row)
+        for raw in evidence_refs or []:
+            artifact = await self._s.get(ArtifactRow, UUID(raw))
+            if artifact is None or artifact.session_id != row.session_id or artifact.availability != "available" or artifact.source_operation_id is None:
+                raise ApiError(ErrorCode.VALIDATION_FAILED, "判断证据必须来自当前会话真实工具工件")
+        for raw in operation_refs or []:
+            operation = await self._s.get(ToolOperationRow, UUID(raw))
+            if operation is None or operation.session_id != row.session_id or operation.status not in {"succeeded", "failed", "cancelled"} or operation.tool_name in {"record_lead", "record_weakness", "propose_finding", "update_plan", "propose_completion"}:
+                raise ApiError(ErrorCode.VALIDATION_FAILED, "判断操作依据必须是当前会话已有结果的真实尝试")
         if parsed is Actionability.NO_NEW_ACTION and not (unknowns or []):
             raise ApiError(
                 ErrorCode.VALIDATION_FAILED,
@@ -258,13 +287,55 @@ class LeadService:
         for link in links:
             finding = await self._s.get(FindingRow, link.finding_id)
             revisions.append((str(link.finding_id), int(finding.revision) if finding else None))
+            revisions.append((f"link:{link.id}:{link.role}:{link.relation_state}:{link.source_weakness_revision}", int(link.revision)))
+        owner = await self._s.get(SessionRow, row.session_id, populate_existing=True)
+        identity_ids = set(row.identity_refs or [])
+        if owner and owner.active_identity_id:
+            identity_ids.add(str(owner.active_identity_id))
+        conditions = list(row.required_conditions or [])
+        for condition in conditions:
+            if condition.get("identity_id"):
+                identity_ids.add(str(condition["identity_id"]))
+            for field, model in (("weakness_id", FindingRow), ("producer_lead_id", LeadRow)):
+                if condition.get(field):
+                    dependency = await self._s.get(model, UUID(condition[field]))
+                    revisions.append((f"{field}:{condition[field]}:{getattr(dependency, 'status', None)}", int(dependency.revision) if dependency else None))
+        identities = []
+        for raw in sorted(identity_ids):
+            try:
+                identity = await self._s.get(IdentityRow, UUID(raw), populate_existing=True)
+            except ValueError:
+                identity = None  # 旧身份标签仍保留，但不伪造身份实体。
+            identities.append((raw, identity.auth_revision if identity else None))
+        environment = hashlib.sha256(json.dumps({
+            "identities": identities,
+            "active": str(owner.active_identity_id) if owner else None,
+            "scope": owner.scope_snapshot if owner else {},
+            "asset_id": str(row.asset_id) if row.asset_id else None,
+        }, sort_keys=True).encode()).hexdigest()
         return actionability_basis_fingerprint(
             hypothesis=row.hypothesis,
             next_action=row.next_action,
             required_conditions=list(row.required_conditions or []),
             basis_revisions=revisions,
-            identity_state="|".join(sorted(str(item) for item in (row.identity_refs or []))) or None,
+            identity_state=environment,
         )
+
+    async def _validate_conditions(self, session_id: UUID, conditions: list[dict[str, Any]]) -> None:
+        owner = await self._s.get(SessionRow, session_id)
+        for condition in conditions:
+            for field, model in (("weakness_id", FindingRow), ("producer_lead_id", LeadRow), ("asset_id", AssetRow), ("identity_id", IdentityRow)):
+                if not condition.get(field):
+                    continue
+                try:
+                    dependency = await self._s.get(model, UUID(condition[field]))
+                except ValueError as exc:
+                    raise ApiError(ErrorCode.VALIDATION_FAILED, f"条件引用 {field} 必须为对象 ID") from exc
+                valid = dependency is not None and (
+                    dependency.project_id == owner.project_id if isinstance(dependency, IdentityRow) and owner else getattr(dependency, "session_id", None) == session_id
+                )
+                if not valid:
+                    raise ApiError(ErrorCode.VALIDATION_FAILED, f"条件引用 {field} 不属于当前会话/项目")
 
     async def is_actionability_stale(self, row: LeadRow) -> bool:
         stored = dict(row.actionability_assessment or {})
@@ -293,6 +364,8 @@ class LeadService:
         row = await self.get(lead_id)
         if row is None:
             raise ApiError(ErrorCode.NOT_FOUND, f"线索不存在：{lead_id}")
+        await lock_exploration(self._s, row.session_id)
+        await self._validate_conditions(row.session_id, conditions)
         before = list(row.required_conditions or [])
         row.required_conditions = normalize_conditions(conditions)
         if row.required_conditions != before:
@@ -303,7 +376,7 @@ class LeadService:
 
     async def get(self, lead_id: UUID) -> LeadRow | None:
         return (
-            await self._s.execute(select(LeadRow).where(LeadRow.id == lead_id))
+            await self._s.execute(select(LeadRow).where(LeadRow.id == lead_id).execution_options(populate_existing=True))
         ).scalar_one_or_none()
 
     async def set_status(
@@ -319,6 +392,9 @@ class LeadService:
         row = await self.get(lead_id)
         if row is None:
             raise ApiError(ErrorCode.NOT_FOUND, f"线索不存在：{lead_id}")
+
+        await lock_exploration(self._s, row.session_id)
+        await self._s.refresh(row)
 
         if status in LEAD_STATUSES_REQUIRE_REASON and not (reason or row.blocked_reason):
             raise ApiError(
@@ -369,7 +445,7 @@ class LeadService:
             selection = (
                 select(LeadRow)
                 .where(LeadRow.session_id == session_id)
-                .order_by(LeadRow.created_at, LeadRow.id)
+                .order_by(LeadRow.id)
                 .limit(batch)
             )
             if cursor is not None:
@@ -419,6 +495,8 @@ def _merge_conditions(
     merged: dict[str, dict[str, Any]] = {}
     for item in list(left or []) + list(right or []):
         key = str(item.get("condition_key") or "")
+        if key in merged and merged[key] != item:
+            raise ApiError(ErrorCode.CONFLICT, "同名条件的身份、来源或成立状态不同，不能合并丢弃；请分别保留线索并共用计划步骤。")
         if key and key not in merged:
             merged[key] = dict(item)
     return sorted(merged.values(), key=lambda item: str(item["condition_key"]))

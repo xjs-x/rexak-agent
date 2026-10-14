@@ -35,6 +35,7 @@ from agent_workbench.contracts.enums import (
     LeadStatus,
     ToolEffectClass,
 )
+from agent_workbench.contracts.events import EventType
 from agent_workbench.contracts.weaknesses import (
     ActionabilityAssessment,
     WeaknessRelationRef,
@@ -44,6 +45,7 @@ from agent_workbench.domain.findings import CoverageService, FindingService
 from agent_workbench.domain.leads import LeadService, lead_summary
 from agent_workbench.domain.observations import record_observation_ref
 from agent_workbench.domain.weakness_relations import refute_links, upsert_links
+from agent_workbench.observability.events import append_event
 from agent_workbench.tools.operation import OperationRegistry, PreparedOperation
 from agent_workbench.tools.params import coerce_str_list
 from agent_workbench.tools.runtime import Toolbox
@@ -310,6 +312,7 @@ async def record_lead(
             `{"condition_key": "可选", "description": "...", "weakness_id": "可选",
               "producer_lead_id": "可选（另一条线索预期产出该条件）", "satisfied": false}`。
             引用另一条线索只表示**依赖意图**，不伪造一个已经存在的弱点。
+            只有确实需要用户或环境提供时才设置 external=true；可由探索获取的条件保持 false。
         actionability_json: 当前能否推进的判断：
             `{"state": "ready|needs_condition|no_new_action|needs_review", "note": "短说明",
               "evidence_refs": ["工件 ID"], "operation_refs": ["操作 ID"],
@@ -380,12 +383,17 @@ async def record_lead(
                 "evidence_strength": evidence_strength,
                 "feasibility": feasibility,
                 "information_gain": information_gain,
-                "expected_revision": expected_revision,
-                "source_weaknesses": [item.model_dump() for item in basis_refs],
-                "result_weaknesses": [item.model_dump() for item in result_refs],
-                "refuted_weaknesses": refuted,
-                "required_conditions": conditions,
-                "actionability": actionability.model_dump() if actionability is not None else None,
+                **({
+                    "expected_revision": expected_revision,
+                    "source_weaknesses": [item.model_dump() for item in basis_refs],
+                    "result_weaknesses": [item.model_dump() for item in result_refs],
+                    "refuted_weaknesses": refuted,
+                    "required_conditions": conditions,
+                    "actionability": actionability.model_dump() if actionability is not None else None,
+                } if any(value is not None for value in (
+                    expected_revision, source_weaknesses_json, result_weaknesses_json,
+                    refuted_weaknesses_json, required_conditions_json, actionability_json,
+                )) else {}),
             },
         )
         if operation.row.result_snapshot is not None:
@@ -437,7 +445,7 @@ async def record_lead(
             next_action=next_action,
             evidence_refs=[str(item) for item in evidence_refs],
             lead_id=UUID(lead_id) if lead_id else None,
-            required_conditions=conditions or None,
+            required_conditions=conditions if required_conditions_json is not None else None,
             expected_revision=expected_revision,
         )
         if target_status is not None:
@@ -509,6 +517,13 @@ async def record_lead(
         }
         operation.row.result_snapshot = result
         operation.row.status = "succeeded"
+
+        if relation_payload:
+            for link in [*relation_payload["links"], *relation_payload["refuted"]]:
+                if link.get("changed"):
+                    await append_event(db, session_id=toolbox.session_id, run_id=toolbox.run_id,
+                        event_type=EventType.RELATION_CHANGED,
+                        payload={key: link.get(key) for key in ("link_id", "revision", "lead_id", "finding_id", "role", "relation_state")})
 
     runtime.context.note_progress(f"lead:{payload['lead_id']}:{payload['status']}")
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -631,6 +646,7 @@ async def record_observation(
         result = {"ok": True, "observation": payload}
         receipt.row.result_snapshot = result
         receipt.row.status = "succeeded"
+
 
     runtime.context.note_progress(f"obs:{ref}")
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -965,6 +981,17 @@ async def _write_weakness(
         result = {"ok": True, result_key: payload}
         receipt.row.result_snapshot = result
         receipt.row.status = "succeeded"
+        if write.content_changed:
+            await append_event(db, session_id=toolbox.session_id, run_id=toolbox.run_id,
+                event_type=EventType.WEAKNESS_CHANGED,
+                payload={"weakness_id": str(row.id), "revision": write.revision,
+                    "changed_condition_keys": [*write.added_condition_keys, *write.revised_condition_keys, *write.removed_condition_keys]})
+        if review is not None:
+            await append_event(db, session_id=toolbox.session_id, run_id=toolbox.run_id,
+                event_type=EventType.WEAKNESS_REVIEWED,
+                payload={"weakness_id": str(row.id), "basis_fingerprint": (row.connection_review or {}).get("basis_fingerprint"),
+                    "linked_lead_ids": write.linked_lead_ids,
+                    "disposition": "linked" if write.linked_lead_ids else "no_supported_connection"})
 
     runtime.context.note_progress(f"{result_key}:{payload['weakness_id']}:{payload['revision']}")
     return json.dumps(result, ensure_ascii=False, sort_keys=True)

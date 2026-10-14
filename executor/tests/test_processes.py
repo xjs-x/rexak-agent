@@ -267,16 +267,12 @@ def test_unknown_pid_identity_is_not_treated_as_alive() -> None:
     assert pid_is_alive(os.getpid(), expected_start_ticks=None) is False
 
 
-def test_minimal_environment_excludes_management_secrets() -> None:
+def test_minimal_environment_excludes_management_secrets(monkeypatch) -> None:
     """命令环境不继承 Executor/控制端的管理秘密。"""
-    os.environ["EXECUTOR_TOKEN"] = "super-secret"
-    os.environ["WORKBENCH_ACCESS_TOKEN"] = "another-secret"
-    os.environ["XIAOMI_API_KEY"] = "model-key"
-    try:
-        env = minimal_environment()
-    finally:
-        for name in ("EXECUTOR_TOKEN", "WORKBENCH_ACCESS_TOKEN", "XIAOMI_API_KEY"):
-            os.environ.pop(name, None)
+    monkeypatch.setenv("EXECUTOR_TOKEN", "fixture-executor-key")
+    monkeypatch.setenv("WORKBENCH_ACCESS_TOKEN", "fixture-control-key")
+    monkeypatch.setenv("XIAOMI_API_KEY", "fixture-model-key")
+    env = minimal_environment()
 
     for blocked in ("EXECUTOR_TOKEN", "WORKBENCH_ACCESS_TOKEN", "XIAOMI_API_KEY"):
         assert blocked not in env, f"{blocked} 不得进入命令环境"

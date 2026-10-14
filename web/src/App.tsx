@@ -47,6 +47,8 @@ const eventTypes = [
   "tool.output",
   "tool.completed",
   "lead.updated",
+  "weakness.changed", "weakness.presented", "weakness.reviewed",
+  "relation.changed", "condition.review_due", "completion.review",
   "finding.updated",
   "coverage.updated",
   "usage.updated",
@@ -1185,9 +1187,9 @@ export default function App() {
               </section>}
               {tab === "plan" && <div className="stack">
                 <section className="panel"><div className="panel-head"><div><h2>当前计划</h2><p>版本 {plan?.revision ?? "—"} · 从图状态读取；步骤可以随探索修订。</p></div><button onClick={() => void api.plan(project.sessionId).then(setPlan).catch((cause) => setNotice(String(cause)))}>刷新</button></div>
-                  {plan?.steps.length ? plan.steps.map((step) => <article key={step.step_id} className="record"><div className="record-title"><strong>{step.step_id} · {step.description}</strong><span className={`pill status-${step.status}`}>{label(step.status)}</span></div><p>{step.rationale || "暂无说明"}</p>{step.lead_id && <small>关联线索：{step.lead_id}</small>}</article>) : <p className="empty">尚无计划步骤</p>}
+                  {plan?.steps.length ? plan.steps.map((step) => <article key={step.step_id} className="record"><div className="record-title"><strong>{step.step_id} · {step.description}</strong><span className={`pill status-${step.status}`}>{label(step.status)}</span></div><p>{step.rationale || "暂无说明"}</p><small>类型：{step.kind === "coverage" ? "覆盖检查" : step.kind === "followup" ? "链条推进" : "混合任务"} · 关联线索：{[...new Set([...(step.lead_ids ?? []), ...(step.lead_id ? [step.lead_id] : [])])].join("、") || "未记录"}</small></article>) : <p className="empty">尚无计划步骤</p>}
                 </section>
-                <section className="panel"><div className="panel-head"><div><h2>步骤与线索关系</h2><p>只显示计划中明确填写的 lead_id 关联；位置和连线不表示依赖或执行顺序。</p></div></div>{plan && <PlanGraph plan={plan} leads={leads} />}</section>
+                <section className="panel"><div className="panel-head"><div><h2>步骤与线索关系</h2><p>显示每个步骤服务的全部线索；位置和连线只表示任务关联。</p></div></div>{plan && <PlanGraph plan={plan} leads={leads} />}</section>
               </div>}
               {tab === "findings" && <div className="stack">
                 <section className="panel"><div className="panel-head"><div><h2>弱点</h2><p>弱点是后续决策的来源，不等于漏洞数量：独立缺陷、使能条件与未判定项分开标注。待验证结果不计入已确认数量。</p></div></div>
@@ -1210,6 +1212,7 @@ export default function App() {
                   <article className="record">
                     <div className="record-title"><strong>{weaknessDetail.weakness.title}</strong><span className="pill">{label(weaknessDetail.weakness.weakness_kind)}</span></div>
                     <p>{weaknessDetail.weakness.description || "暂无说明"}</p>
+                    <p className="fineprint">以下条件是带来源的判断；新增条件和组合关系不会继承原弱点的确认状态。</p>
                     {(weaknessDetail.weakness.provided_conditions ?? []).length
                       ? <ul>{weaknessDetail.weakness.provided_conditions?.map((condition) => <li key={condition.key}><small>{condition.key}</small> {condition.statement}{condition.limitations ? `（限制：${condition.limitations}）` : ""}</li>)}</ul>
                       : <p className="fineprint">尚未记录条件：没有条件就不能说它“提供了”什么。</p>}

@@ -39,6 +39,13 @@ _PROJECTION_FIELDS = (
     "current_focus",
     "review_cursor",
     "last_review_turn",
+    "work_assessment",
+    "presented_weakness_ids",
+    "weakness_review_cursor",
+    "weakness_review_signature",
+    "last_weakness_revisions",
+    "last_recall_keys",
+    "last_identity_signature",
     "segment_yield_reason",
 )
 

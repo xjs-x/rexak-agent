@@ -162,8 +162,9 @@ async def test_completion_uses_complete_review_inventory_instead_of_score(databa
     async with database.transaction() as db:
         await LeadService(db).update_conditions(
             lead.id,
-            [{"description": "需要一个已登录账号", "satisfied": False}],
+            [{"description": "需要一个已登录账号", "satisfied": False, "external": True}],
         )
+        await LeadService(db).assess_actionability(lead.id, state="needs_condition", note="需用户提供测试账号")
     async with database.session() as db:
         waiting = await FinishGate(db).evaluate(
             session_id=context.toolbox.session_id,

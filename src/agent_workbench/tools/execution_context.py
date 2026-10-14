@@ -31,6 +31,7 @@ def context_from_state(
     *,
     same_batch_plan_update: bool = False,
     weakness_revisions: dict[str, int] | None = None,
+    weakness_bindings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     focus = state.get("current_focus") or {}
     step = focus_step(state)
@@ -55,6 +56,8 @@ def context_from_state(
         context["source_weakness_revisions"] = {
             str(key): int(value) for key, value in weakness_revisions.items()
         }
+    if weakness_bindings:
+        context["source_weakness_bindings"] = list(weakness_bindings)
     if same_batch_plan_update:
         context["same_batch_plan_update"] = True
         context["association_note"] = (
@@ -66,6 +69,8 @@ def context_from_state(
 def weakness_revisions_for_focus(toolbox: Any) -> dict[str, int]:
     """当前主线一跳关系里引用的来源弱点版本（只读投影）。"""
     view = getattr(toolbox, "working_context", None) or {}
+    if "execution_sources" in view:
+        return {str(key): int(value) for key, value in view["execution_sources"].items()}
     route = ((view.get("judgment") or {}).get("current_route")) or []
     out: dict[str, int] = {}
     for item in route:

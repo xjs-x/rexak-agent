@@ -20,10 +20,12 @@ export function PlanGraph({ plan, leads }: Props) {
     const edges: Edge[] = [];
     const leadById = new Map(leads.map((lead) => [lead.id, lead]));
     const leadPositions = new Map<string, number>();
-    plan.steps.forEach((step, index) => {
-      if (!step.lead_id) return;
-      if (!leadPositions.has(step.lead_id)) leadPositions.set(step.lead_id, index);
-      edges.push({ id: `step-lead:${step.step_id}:${step.lead_id}`, source: `step:${step.step_id}`, target: `lead:${step.lead_id}` });
+    plan.steps.forEach(step => {
+      const ids = [...new Set([...(step.lead_ids ?? []), ...(step.lead_id ? [step.lead_id] : [])])];
+      ids.forEach(leadId => {
+        if (!leadPositions.has(leadId)) leadPositions.set(leadId, leadPositions.size);
+        edges.push({ id: `step-lead:${step.step_id}:${leadId}`, source: `step:${step.step_id}`, target: `lead:${leadId}` });
+      });
     });
     for (const [leadId, index] of leadPositions) {
       const lead = leadById.get(leadId);

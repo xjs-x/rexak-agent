@@ -24,15 +24,18 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agent_workbench.agent.state import plan_step_lead_ids
 from agent_workbench.domain.exploration_review import (
     current_route,
+    derive_actionability,
     recall_by_condition_change,
     sort_key_for_recall,
 )
 from agent_workbench.domain.findings import FindingService
-from agent_workbench.domain.leads import lead_summary
+from agent_workbench.domain.leads import LeadService, lead_summary
 from agent_workbench.persistence.tables import (
     FindingRow,
+    IdentityRow,
     LeadRow,
     LeadWeaknessLinkRow,
     ToolJobRow,
@@ -110,9 +113,10 @@ async def assemble_working_context(
 
     # 计划步骤已绑定的线索：关系检索优先于关键词。
     plan_lead_ids = [
-        str(step.get("lead_id"))
+        raw
         for step in (state.get("plan") or [])
-        if step.get("lead_id") and step.get("status") not in {"done", "dropped"}
+        if step.get("status") not in {"done", "dropped"}
+        for raw in plan_step_lead_ids(step)
     ]
     for raw in plan_lead_ids:
         if len(selected) >= limit - 1:
@@ -249,7 +253,36 @@ async def assemble_working_context(
     consumption = await _assemble_weakness_consumption(
         db, session_id, state, focus=focus, selected=selected
     )
+    for item in [*selected, *consumption["related_leads"]]:
+        row = await db.get(LeadRow, UUID(item["lead_id"]))
+        if row is not None:
+            resolution = derive_actionability(row, stale=bool(row.actionability_assessment) and await LeadService(db).is_actionability_stale(row))
+            item["actionability"] = resolution.state
+            if resolution.note:
+                item["actionability_note"] = resolution.note
+    step = _focus_step(state, focus)
+    route_leads = set((step or {}).get("lead_ids") or [])
+    if focus.get("lead_id"):
+        route_leads.add(focus["lead_id"])
+    source_versions = {}
+    source_bindings = []
+    if route_leads:
+        sources = (await db.execute(select(LeadWeaknessLinkRow, FindingRow.revision)
+            .join(FindingRow, FindingRow.id == LeadWeaknessLinkRow.finding_id)
+            .where(LeadWeaknessLinkRow.session_id == session_id,
+                LeadWeaknessLinkRow.lead_id.in_([UUID(raw) for raw in route_leads]),
+                LeadWeaknessLinkRow.role == "basis", LeadWeaknessLinkRow.relation_state != "refuted"))).all()
+        for link, current_revision in sources:
+            key = str(link.finding_id)
+            if link.source_weakness_revision is not None:
+                source_versions[key] = min(source_versions.get(key, int(link.source_weakness_revision)), int(link.source_weakness_revision))
+            source_bindings.append({"lead_id": str(link.lead_id), "weakness_id": key,
+                "source_revision": link.source_weakness_revision, "current_revision": int(current_revision),
+                "link_id": str(link.id), "relation_state": link.relation_state})
     return {
+        # 派发绑定专用，不注入模型请求；涵盖步骤全部线索，不受可见一跳展示上限限制。
+        "execution_sources": source_versions,
+        "execution_source_bindings": source_bindings,
         "goal": {
             "objective": state.get("objective"),
             "constraints": state.get("user_constraints") or [],
@@ -316,10 +349,8 @@ async def _assemble_weakness_consumption(
                 select(FindingRow)
                 .where(
                     FindingRow.session_id == session_id,
-                    FindingRow.status != "disproved",
                 )
                 .order_by(FindingRow.created_at, FindingRow.id)
-                .limit(MAX_WEAKNESS_CANDIDATES * 40)
             )
         )
         .scalars()
@@ -345,13 +376,15 @@ async def _assemble_weakness_consumption(
         linked_lead_ids = links_by_finding.get(key, [])
         has_relation = key in links_by_finding
         # 尚未建立任何关系、也尚未判断用途的新弱点，必须有进入待分析列表的机会。
-        needs_review = not service.review_is_current(row)
+        needs_review = row.status != "disproved" and not service.review_is_current(row)
         if needs_review:
             pending_review_ids.append(key)
-        if previous is None:
+        if previous is None and needs_review:
             new_ids.append(row.id)
-        elif int(previous) != int(row.revision):
+        elif previous is not None and int(previous) != int(row.revision):
             revised_ids.append(row.id)
+        if not needs_review and (previous is None or int(previous) == int(row.revision)) and not (set(linked_lead_ids) & focus_lead_ids):
+            continue
         if previous is None or int(previous) != int(row.revision):
             changed_conditions.append(
                 {
@@ -365,8 +398,6 @@ async def _assemble_weakness_consumption(
                     "status": row.status,
                 }
             )
-        if not needs_review and previous is not None and int(previous) == int(row.revision):
-            continue
         # 定性优先级：当前主线相关 > 可能解除其他路线阻塞 > 其他待分析项。
         if set(linked_lead_ids) & focus_lead_ids:
             rank = 0
@@ -413,18 +444,27 @@ async def _assemble_weakness_consumption(
         "done",
         "dropped",
         "blocked",
-    }
-    identity_signature = str(state.get("active_identity_id") or "")
-    identity_changed = bool(identity_signature) and identity_signature != str(
+    } or any(step.get("status") == "blocked" for step in state.get("plan") or [])
+    active_identity = state.get("active_identity_id")
+    identity = await db.get(IdentityRow, UUID(str(active_identity))) if active_identity else None
+    identity_signature = f"{active_identity or ''}:{identity.auth_revision if identity else 0}"
+    identity_changed = identity_signature != str(
         state.get("last_identity_signature") or ""
     )
     recall = await recall_by_condition_change(
         db,
         session_id,
-        new_weakness_ids=new_ids[:10],
-        revised_weakness_ids=revised_ids[:10],
+        new_weakness_ids=new_ids,
+        revised_weakness_ids=[key for key in revised_ids if next(row.status for row in rows if row.id == key) != "disproved"],
+        refuted_weakness_ids=[row.id for row in rows if row.status == "disproved" and row.id in revised_ids],
         identity_changed=identity_changed,
         mainline_blocked=mainline_blocked,
+        identity_signature=identity_signature,
+        seen_keys={str(item) for item in (state.get("last_recall_keys") or [])},
+        completed_operation_ids=list((await db.execute(select(ToolOperationRow.operation_id).where(
+            ToolOperationRow.session_id == session_id, ToolOperationRow.job_id.is_not(None),
+            ToolOperationRow.status.in_(("succeeded", "failed", "cancelled")),
+        ).order_by(ToolOperationRow.updated_at.desc(), ToolOperationRow.operation_id))).scalars()),
         exclude_lead_ids={
             UUID(item["lead_id"]) for item in selected if item.get("lead_id")
         },
@@ -485,7 +525,7 @@ async def _assemble_weakness_consumption(
     return {
         "changed_weaknesses": selected_weaknesses,
         "weakness_candidate_count": len(candidates),
-        "weakness_scan_bounded": len(rows) >= MAX_WEAKNESS_CANDIDATES * 40,
+        "weakness_scan_bounded": False,
         "related_leads": related_leads,
         "condition_changes": changed_conditions[:8],
         "current_route": [item.model_dump() for item in route],
@@ -500,7 +540,7 @@ async def _assemble_weakness_consumption(
         "consumption_commit": {
             "presented_weakness_ids": [item["weakness_id"] for item in selected_weaknesses],
             "recall_keys": [item["dedupe_key"] for item in related_leads if item.get("dedupe_key")],
-            "weakness_revisions": {str(row.id): int(row.revision) for row in rows},
+            "weakness_revisions": {item["weakness_id"]: item["revision"] for item in selected_weaknesses},
             "identity_signature": identity_signature,
         },
         "presentation_budget": {

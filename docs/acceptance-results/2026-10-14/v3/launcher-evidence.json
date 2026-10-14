@@ -1,0 +1,14 @@
+{
+  "console_status": 200,
+  "openapi_status": 200,
+  "bundle_status": 200,
+  "bundle_path": "/console/assets/index-BGYcBp0R.js",
+  "weakness_route_present": true,
+  "relations_route_present": true,
+  "multi_lead_ui_present": true,
+  "weakness_review_event_present": true,
+  "original_cmd_entry_used": true,
+  "desktop_target": "C:/xjs/rexak-agent/start-workbench.cmd",
+  "real_model_call_performed": false,
+  "runner_started_for_check": false
+}

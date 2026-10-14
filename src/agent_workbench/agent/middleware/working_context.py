@@ -16,6 +16,8 @@ from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.focus import focus_signature, resolve_focus
 from agent_workbench.agent.state import AgentGraphState, merge_unique
 from agent_workbench.agent.working_context import assemble_working_context
+from agent_workbench.contracts.events import EventType
+from agent_workbench.observability.events import append_event
 
 #: 召回去重键的保留上限（防止 checkpoint 无限增长）。
 MAX_RECALL_KEYS = 60
@@ -80,7 +82,7 @@ class WorkingContextMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 [str(item) for item in presented],
             )[-200:]
         recall_keys = [
-            str(item)
+            str(item["dedupe_key"])
             for item in (consumption.get("related_leads") or [])
             if item.get("dedupe_key")
         ]
@@ -88,9 +90,27 @@ class WorkingContextMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             existing = [str(item) for item in (state.get("last_recall_keys") or [])] if state else []
             update["last_recall_keys"] = merge_unique(existing, recall_keys)[-MAX_RECALL_KEYS:]
         if commit.get("weakness_revisions"):
-            update["last_weakness_revisions"] = {
-                str(key): int(value) for key, value in commit["weakness_revisions"].items()
-            }
-        if commit.get("identity_signature") is not None:
+            revisions = dict(state.get("last_weakness_revisions") or {}) if state else {}
+            actual_ids = {str(item) for item in presented or []}
+            revisions.update({
+                str(key): int(value) for key, value in commit["weakness_revisions"].items() if str(key) in actual_ids
+            })
+            update["last_weakness_revisions"] = revisions
+        if commit.get("identity_signature") is not None and any(item.get("trigger") == "identity_changed" for item in consumption.get("related_leads") or []):
             update["last_identity_signature"] = str(commit.get("identity_signature") or "")
+        if presented or recall_keys:
+            messages = state.get("messages") or []
+            last = messages[-1] if messages else None
+            metadata = getattr(last, "response_metadata", {}) or {}
+            async with context.toolbox.db.transaction() as db:
+                for key in presented or []:
+                    await append_event(db, session_id=context.toolbox.session_id, run_id=context.toolbox.run_id,
+                        event_type=EventType.WEAKNESS_PRESENTED,
+                        payload={"weakness_id": str(key), "revision": (commit.get("weakness_revisions") or {}).get(str(key)),
+                            "model_call_id": metadata.get("workbench_model_call_id"), "message_id": getattr(last, "id", None)})
+                for item in consumption.get("related_leads") or []:
+                    if item.get("dedupe_key"):
+                        await append_event(db, session_id=context.toolbox.session_id, run_id=context.toolbox.run_id,
+                            event_type=EventType.CONDITION_REVIEW_DUE,
+                            payload={key: item.get(key) for key in ("lead_id", "revision", "trigger", "dedupe_key", "relation_ids")})
         return update or None

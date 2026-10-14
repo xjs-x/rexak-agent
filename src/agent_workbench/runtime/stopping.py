@@ -93,6 +93,9 @@ class FinishGate:
         plan: Sequence[Mapping[str, Any]] | None = None,
         review_cursor: str | None = None,
     ) -> CompletionDecision:
+        from agent_workbench.domain.exploration_lock import lock_exploration
+
+        await lock_exploration(self._s, session_id)
         if proposal is None or proposal.get("reason") not in {
             "goal_answered",
             "exploration_converged",
@@ -187,7 +190,7 @@ class FinishGate:
             if item.actionability == "needs_condition"
         ]
         external = [str(item) for item in (proposal.get("missing_conditions") or [])]
-        if waiting or external:
+        if inventory.waiting_count:
             details: list[str] = []
             for item in waiting:
                 missing = (item.detail or {}).get("missing_conditions") or []
@@ -205,7 +208,7 @@ class FinishGate:
                     "waiting_items": details,
                     "missing_conditions": external,
                 },
-                blocked_count=len(waiting),
+                blocked_count=inventory.waiting_count,
             )
 
         # 7) 开放探索收尾：覆盖缺口复查（受阻项保留在报告里，不能靠改状态消除）

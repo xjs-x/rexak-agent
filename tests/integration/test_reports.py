@@ -141,7 +141,7 @@ async def test_report_versions_export_only_verified_evidence(
                 "missing_conditions": ["测试账号"],
             },
         )
-    assert missing_login.decision == "wait_user"
+    assert missing_login.decision == "continue", "仅结束申请里的缺失条件不能代替领域条件依据"
     second = await create_report_snapshot(database, store, session_id)
     assert second.version == 2
     async with database.session() as db:

@@ -17,7 +17,8 @@ METHODS_DIR = Path(__file__).resolve().parent / "methods"
 
 #: 资料集版本。新增/修改 md 文件时必须同步递增，并写入 run 的 prompt_version 快照。
 #: v3：新增 `weakness-chains.md`（弱点关系驱动的持续探索）。
-METHODS_BUNDLE_VERSION = "3"
+#: v4：明确外部条件与可由探索获取的条件，以及 no_new_action 的已有尝试依据。
+METHODS_BUNDLE_VERSION = "4"
 
 
 @dataclass(frozen=True, slots=True)

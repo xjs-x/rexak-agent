@@ -89,7 +89,7 @@ async def test_one_blocked_route_does_not_block_an_actionable_one(database, uniq
         leads = LeadService(db)
         blocked = await leads.upsert(session_id=context.toolbox.session_id, hypothesis="需要账号")
         await leads.update_conditions(
-            blocked.id, [{"description": "需要一个有效账号", "satisfied": False}]
+            blocked.id, [{"description": "需要一个有效账号", "satisfied": False, "external": True}]
         )
         await leads.assess_actionability(
             blocked.id, state=str(Actionability.NEEDS_CONDITION), note="缺账号"
@@ -110,7 +110,7 @@ async def test_all_routes_waiting_on_external_conditions_yields_wait_user(databa
         leads = LeadService(db)
         lead = await leads.upsert(session_id=context.toolbox.session_id, hypothesis="需要账号")
         await leads.update_conditions(
-            lead.id, [{"description": "需要一个有效账号", "satisfied": False}]
+            lead.id, [{"description": "需要一个有效账号", "satisfied": False, "external": True}]
         )
         await leads.assess_actionability(
             lead.id, state=str(Actionability.NEEDS_CONDITION), note="缺账号"
