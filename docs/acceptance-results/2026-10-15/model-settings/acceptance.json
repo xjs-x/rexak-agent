@@ -1,0 +1,68 @@
+{
+  "captured_at_utc": "2026-10-15T08:14:12.419234+00:00",
+  "repository": "C:/xjs/rexak-agent",
+  "base_commit": "12b7029",
+  "source_hash_normalization": "UTF-8 file bytes with CRLF converted to LF",
+  "source_sha256": {
+    "scripts/start_workbench.py": "df3e89692ea4a224aecb23d142024ca5c37b92168ba2da3394287b503ec55250",
+    "src/agent_workbench/config/catalog.py": "345adb73c6e0e758b63981df6640de56bea8cfa42dc708a758fdd682978d96d8",
+    "src/agent_workbench/config/model_settings.py": "1f0de5b212cc955b663646275ae3c6a6618ed31f9baf0b5d74487400280cc173",
+    "src/agent_workbench/config/secrets.py": "886ecbe292a0a596f74bd3886787459614b3f674580ed5857e8d9fd352ae148d",
+    "src/agent_workbench/config/settings.py": "aeb3ab8dfc9f0708e6e6239adfe9772ced6ef6431969f27cb4377ebcdcc2c7f2",
+    "src/agent_workbench/models/provider.py": "2b8880459ccdc3ad643561829744b47573089c3495f22d112c3a070a8c9fbda4",
+    "src/agent_workbench/models/bailian.py": "093763f6b847436e85e5f98a7e1b266abf8e61f9050bfedcb4bcb63c26a7d8ed",
+    "src/agent_workbench/runtime/runner.py": "b7760fd7f482500000a5c0bf9f5515d5c6ac4f241c9e4d1775dbd2d6414100f0",
+    "src/agent_workbench/api/routes.py": "eff4aa2278667441d5e58c0412e1247dad3dd4051d1cc7bcd32d2d46539c477a",
+    "src/agent_workbench/api/app.py": "51e9d952dffa978b6ae80b436a56d21c5d6369dcbb7f354fd89d639383557ff8",
+    "src/agent_workbench/contracts/models.py": "3080ec9d5b49b6f7334b765357c3f524af9ef237751d58741c3b2b53410c5b71",
+    "web/src/App.tsx": "61404a7b6ef3ccb7be3c90180d74f96799bc9c370707eea7fd02aeac12a8d7cc",
+    "web/src/ModelConfiguration.tsx": "828ad64ffa9bb4fc00a2c12ac60d607096fddd4eb053b60df2e9d85ccb122d61",
+    "web/src/api/client.ts": "3c9b19b42931f0a234c0a27e18024cd77ea2222da8b2f7cf7c47a09db16f7b6c",
+    "web/src/api/generated/schema.d.ts": "08b7466ff503456de7017253c290f611fcd24c90e3c250f0bfd4e24d7bdbbb3b",
+    "web/src/style.css": "c654365b1ace1aaa44eb5fe091c0cce692c362a82f138182a99aacaa33edc764"
+  },
+  "tests": {
+    "passed": 549,
+    "skipped": 40,
+    "failures": 0,
+    "errors": 0,
+    "real_model_deselected": 1
+  },
+  "original_desktop_entry": {
+    "shortcut": "Rexak Agent.lnk",
+    "target": "C:/xjs/rexak-agent/start-workbench.cmd",
+    "working_directory": "C:/xjs/rexak-agent",
+    "api_only_live_ui_checked": true,
+    "normal_api_and_runner_isolated_startup_checked": true,
+    "windows_sigbreak_shutdown_leaves_no_children": true
+  },
+  "ui_checks": [
+    "global settings available before creating task",
+    "four requested models in composer",
+    "xiaomi and bailian output/input budgets displayed",
+    "unsaved key cleared when switching provider",
+    "composer model selection changes without creating task"
+  ],
+  "main_working_database_migrated": false,
+  "main_credentials_modified": false,
+  "main_target_runs_started": false,
+  "real_model_call_performed": false,
+  "real_target_testing_performed": false,
+  "backup": {
+    "path": "data/backups/model-web-2026-10-15/20261015T075720790056Z",
+    "verified_files": 2639
+  },
+  "gates": {
+    "ruff": "passed",
+    "pyright_errors": 0,
+    "encoding_checked_files": 344,
+    "utf8_without_bom": "passed",
+    "frontend_build": "passed",
+    "post_launcher_stop_change_targeted_tests_passed": 27
+  },
+  "web_build_sha256": {
+    "index.html": "062d7b174c34a910d7a009b6cfb58306cadcf9e1a9467cc9decd6a782e949c09",
+    "assets/index-B5CBZQQ0.css": "33014ee4f1617baedd504ea547f31caf688be7e11dd5e74d0123b251f8dd7402",
+    "assets/index-gF7SLHsv.js": "bba84f92a34afcae4b6a1f174878bef57a130f40c3b00960789e8fa6937b333c"
+  }
+}

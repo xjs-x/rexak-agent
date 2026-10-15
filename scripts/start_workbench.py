@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import getpass
 import shlex
 import signal
 import socket
@@ -23,7 +22,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from agent_workbench.config.settings import Settings, get_settings  # noqa: E402
-from agent_workbench.models.provider import resolve_provider_profile  # noqa: E402
 from agent_workbench.platform_compat import (  # noqa: E402
     child_process_env,
     configure_local_loopback,
@@ -198,32 +196,7 @@ def model_environment(settings: Settings, env: dict[str, str]) -> dict[str, str]
         "XIAOMI_BASE_URL": settings.xiaomi_base_url,
         "DASHSCOPE_MODEL": settings.dashscope_model,
         "DASHSCOPE_BASE_URL": settings.dashscope_base_url,
-        "DASHSCOPE_CONTEXT_LIMIT": str(settings.dashscope_context_limit),
-        "WORKBENCH_LAUNCHER_MODEL_KEY_CONFIGURED": "false",
     }
-
-
-def select_model(settings: Settings) -> tuple[str, str]:
-    print(
-        "选择本次启动使用的模型：\n"
-        f"  1. 小米（{settings.xiaomi_model}）\n"
-        f"  2. 阿里云百炼（{settings.dashscope_model}）",
-        flush=True,
-    )
-    default = "2" if settings.default_provider == "bailian" else "1"
-    while True:
-        choice = input(f"请输入 1 或 2（回车默认 {default}）：").strip() or default
-        if choice in {"1", "2"}:
-            break
-        print("请选择 1 或 2。", flush=True)
-    provider = "xiaomi" if choice == "1" else "bailian"
-    # 先检查地址，避免收取 Key 后才发现必需配置缺失。
-    resolve_provider_profile(provider, settings=settings)
-    label = "小米" if provider == "xiaomi" else "阿里云百炼"
-    key = getpass.getpass(f"请输入{label} API Key（输入不显示，仅本次使用）：").strip()
-    if not key:
-        raise RuntimeError("未输入模型 Key，未启动 API 和 Runner")
-    return provider, key
 
 
 def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds: float) -> None:
@@ -240,12 +213,7 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
         check_existing_runner()
         if not (ROOT / "web/dist/index.html").is_file():
             raise RuntimeError("控制台尚未构建，请先构建 web 前端")
-        key = None
-        provider = settings.default_provider
-        if not api_only and not check_only:
-            provider, key = select_model(settings)
-            env["WORKBENCH_DEFAULT_PROVIDER"] = provider
-            print(f"本次模型：{provider} / {settings.model_for_provider(provider)}", flush=True)
+        print("模型与 API Key 请在 Web 设置中配置，配置会在本机保存。", flush=True)
         print("检查数据库和 Kali 执行端……", flush=True)
         run_check(
             ["docker", "compose", "up", "-d", "--wait", "postgres"],
@@ -259,8 +227,6 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
         print("数据库、SSH、Executor 检查通过。", flush=True)
         if check_only:
             return
-        if not api_only:
-            env["WORKBENCH_LAUNCHER_MODEL_KEY_CONFIGURED"] = "true"
         children: list[subprocess.Popen[bytes]] = []
         try:
             with contextlib.ExitStack() as stack:
@@ -284,10 +250,7 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
                 api = spawn("api", env)
                 wait_api(api, url)
                 if not api_only:
-                    runner_env = {**env, MODEL_KEYS[provider]: str(key)}
-                    runner = spawn("runner", runner_env)
-                    runner_env.pop(MODEL_KEYS[provider])
-                    key = None
+                    runner = spawn("runner", env)
                     deadline = time.monotonic() + 60
                     while time.monotonic() < deadline:
                         if runner.poll() is not None:
@@ -319,6 +282,10 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
 def main() -> int:
     configure_stdio_utf8()
     configure_local_loopback()
+    if sys.platform == "win32":
+        # 默认 SIGBREAK 会立即结束父进程，绕过 launch 的 finally 并遗留 API/Runner。
+        # 与窗口中的 Ctrl+C 一样先清理本次创建的子进程。
+        signal.signal(signal.SIGBREAK, _request_stop)
     parser = argparse.ArgumentParser()
     parser.add_argument("--api-only", action="store_true", help="只启动控制台，不执行模型任务")
     parser.add_argument("--check-only", action="store_true", help="只检查依赖，不启动 API/Runner")
@@ -348,6 +315,10 @@ def main() -> int:
         )
         return 1
     return 0
+
+
+def _request_stop(_signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt
 
 
 if __name__ == "__main__":

@@ -115,7 +115,12 @@ def create_app() -> FastAPI:
             message="请求参数校验失败",
             retryable=False,
             request_id=getattr(request.state, "request_id", None),
-            details={"errors": exc.errors()[:20]},
+            details={
+                "errors": [
+                    {"type": error["type"], "loc": error["loc"], "msg": error["msg"]}
+                    for error in exc.errors()[:20]
+                ]
+            },
         )
         return JSONResponse(status_code=422, content=body.model_dump(mode="json"))
 

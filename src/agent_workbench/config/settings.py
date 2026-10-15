@@ -58,9 +58,9 @@ class Settings(BaseSettings):
 
     # ---------- 上下文与并发（可调资源初值）----------
     context_trigger_ratio: float = 0.6
-    output_reserve_tokens: int = 8192
-    #: 恢复尝试时可用的更大输出额度。**默认不提高**（None 表示沿用请求额度）。
-    #: 8,192 -> 16,384 只是一个待实验的配置组合，不是任何供应商的默认或最佳值。
+    # 兼容旧配置文件；内置模型的请求预算以官方版本化档案为准，不再读取这两个旧字段。
+    output_reserve_tokens: int | None = Field(default=None, exclude=True)
+    #: 兼容旧环境变量；请求与恢复输出额度均以模型官方档案为准。
     recovery_output_limit_tokens: int | None = Field(default=None, gt=0)
     #: 单次逻辑模型决策允许的自动恢复次数（初次请求之外），不是任务尝试总数限制。
     max_response_recoveries: int = Field(default=2, ge=0, le=8)
@@ -109,9 +109,10 @@ class Settings(BaseSettings):
     dashscope_api_key: str | None = Field(default=None, alias="DASHSCOPE_API_KEY", repr=False)
     dashscope_base_url: str = Field(default="", alias="DASHSCOPE_BASE_URL")
     dashscope_model: str = Field(default="deepseek-v4.1-flash", alias="DASHSCOPE_MODEL")
-    # 本机单次请求预算，保守初值；不是对供应商最大上下文能力的声明。
-    dashscope_context_limit: int = Field(default=131072, alias="DASHSCOPE_CONTEXT_LIMIT", gt=0)
-    launcher_model_key_configured: bool = False
+    # 兼容旧部署变量，内置百炼模型已改用官方档案，不再读取此保守初值。
+    dashscope_context_limit: int | None = Field(
+        default=None, alias="DASHSCOPE_CONTEXT_LIMIT", gt=0, exclude=True
+    )
 
     def model_for_provider(self, provider_id: str | None = None) -> str:
         provider = provider_id or self.default_provider

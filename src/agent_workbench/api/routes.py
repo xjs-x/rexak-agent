@@ -37,6 +37,7 @@ from agent_workbench.api.redaction import redact_event_payload
 from agent_workbench.api.sse import SSE_HEADERS, event_stream
 from agent_workbench.api.tool_activity import router as tool_activity_router
 from agent_workbench.config.catalog import PriceCatalog
+from agent_workbench.config.model_settings import read_preferences
 from agent_workbench.config.settings import get_settings
 from agent_workbench.contracts.conversation import ConversationBody, ConversationPage
 from agent_workbench.contracts.diagnostics import ModelCallPage, OperationPage, SpanPage
@@ -49,7 +50,11 @@ from agent_workbench.contracts.identity import (
     ScopeUpdate,
     SessionCreate,
 )
-from agent_workbench.contracts.models import ModelSettingsRead
+from agent_workbench.contracts.models import (
+    ModelSettingsRead,
+    ModelSettingsUpdate,
+    SessionSnapshotRead,
+)
 from agent_workbench.contracts.plan import (
     CurrentFocusRead,
     PlanRead,
@@ -65,6 +70,11 @@ from agent_workbench.domain.run_state import (
     set_run_status,
 )
 from agent_workbench.domain.scope import validate_scope
+from agent_workbench.models.provider import (
+    ModelBinding,
+    ProviderConfigurationError,
+    resolve_provider_profile,
+)
 from agent_workbench.observability.costs import summarize_costs
 from agent_workbench.observability.events import append_event, latest_seq, read_events_after
 from agent_workbench.persistence.repositories import (
@@ -253,6 +263,18 @@ async def create_session(
     supplied_scope = (
         payload.scope if mode_explicit else payload.scope.model_copy(update={"mode": "instruction"})
     )
+    settings = get_settings()
+    preferences = read_preferences(settings)
+    selected_provider = payload.provider_id or preferences.default_provider
+    selected_model = payload.model_name or (
+        preferences.default_model
+        if selected_provider == preferences.default_provider
+        else get_settings().model_for_provider(selected_provider)
+    )
+    try:
+        profile = resolve_provider_profile(selected_provider, selected_model, settings)
+    except ProviderConfigurationError as exc:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from None
     initial_scope = scope_from_instructions(supplied_scope, [payload.initial_objective])
     _validate_scope_or_422(initial_scope)
     settings = get_settings()
@@ -273,8 +295,8 @@ async def create_session(
             title=payload.title,
             scope_snapshot=initial_scope.model_dump(),
             policy_snapshot=payload.policy.model_dump(),
-            provider_id=payload.provider_id or settings.default_provider,
-            model_name=payload.model_name or settings.model_for_provider(payload.provider_id),
+            provider_id=selected_provider,
+            model_name=selected_model,
         )
 
         created_identities: dict[str, IdentityRow] = {}
@@ -310,6 +332,9 @@ async def create_session(
                 "scope_revision": payload.scope.revision,
                 "policy_revision": payload.policy.revision,
                 "created_from_session_create": True,
+                "model_binding": ModelBinding(
+                    profile=profile, request_timeout_seconds=settings.model_request_timeout_seconds
+                ).to_snapshot(),
                 "scope_mode_explicit": mode_explicit,
             },
         )
@@ -415,6 +440,8 @@ async def post_message(
     request: Request,
     content: Annotated[str, Body(embed=True)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+    provider_id: Annotated[str | None, Body()] = None,
+    model_name: Annotated[str | None, Body()] = None,
 ) -> dict[str, Any]:
     """**只写入指令并返回 202**，不在请求处理函数里驱动 Agent。"""
     auth = get_auth()
@@ -439,14 +466,49 @@ async def post_message(
             or project.owner_id != settings.owner_id
         ):
             raise ApiError(ErrorCode.NOT_FOUND, "任务不存在或已删除")
+        from agent_workbench.domain.run_state import find_active_run
+
+        active = await find_active_run(session, session_id)
+        preferences = read_preferences(settings)
+        selected_provider = provider_id or (
+            active.provider_id if active else preferences.default_provider
+        )
+        selected_model = model_name or (
+            active.model_name
+            if active
+            else (
+                preferences.default_model
+                if selected_provider == preferences.default_provider
+                else settings.model_for_provider(selected_provider)
+            )
+        )
+        if active and (selected_provider, selected_model) != (
+            active.provider_id,
+            active.model_name,
+        ):
+            raise ApiError(
+                ErrorCode.CONFLICT, "当前阶段固定模型；请继续当前模型，或新建聊天选择其他模型"
+            )
+        config: dict[str, object] = {"created_from": "message"}
+        if active is None:
+            try:
+                profile = resolve_provider_profile(selected_provider, selected_model, settings)
+            except ProviderConfigurationError as exc:
+                raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from None
+            config["model_binding"] = ModelBinding(
+                profile=profile, request_timeout_seconds=settings.model_request_timeout_seconds
+            ).to_snapshot()
         receipt = await submit_message(
             session,
             session_id=session_id,
             content=content,
             idempotency_key=idempotency_key,
-            provider_id=settings.default_provider,
-            model_name=settings.model_for_provider(),
-            config_snapshot={"created_from": "message"},
+            provider_id=selected_provider,
+            model_name=selected_model,
+            config_snapshot=config,
+            payload={"provider_id": provider_id, "model_name": model_name}
+            if provider_id or model_name
+            else None,
         )
         if receipt.created and receipt.run_id:
             run = await session.get(RunRow, receipt.run_id)
@@ -686,7 +748,7 @@ async def session_plan(session_id: UUID, request: Request) -> PlanRead:
     )
 
 
-@router.get("/sessions/{session_id}/snapshot", tags=["read"])
+@router.get("/sessions/{session_id}/snapshot", response_model=SessionSnapshotRead, tags=["read"])
 async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]:
     """**一致读**的业务快照 + `event_cursor`。
 
@@ -749,6 +811,8 @@ async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]
         "runs": [
             {
                 "id": str(row.id),
+                "provider_id": row.provider_id,
+                "model_name": row.model_name,
                 "status": row.status,
                 "completion_reason": row.completion_reason,
                 "objective": row.objective,
@@ -1413,13 +1477,7 @@ async def get_weakness(session_id: UUID, weakness_id: UUID, request: Request) ->
         lead_ids = [link.lead_id for link in links]
         leads = (
             list(
-                (
-                    await db.execute(
-                        select(LeadRow).where(LeadRow.id.in_(lead_ids))
-                    )
-                )
-                .scalars()
-                .all()
+                (await db.execute(select(LeadRow).where(LeadRow.id.in_(lead_ids)))).scalars().all()
             )
             if lead_ids
             else []
@@ -1541,9 +1599,7 @@ async def list_weaknesses(
             for row in rows[:limit]
             if row.connection_review and not service.review_is_current(row)
         }
-        unreviewed_ids = {
-            str(row.id) for row in rows[:limit] if not service.review_is_current(row)
-        }
+        unreviewed_ids = {str(row.id) for row in rows[:limit] if not service.review_is_current(row)}
     has_more = len(rows) > limit
     return {
         "weaknesses": [
@@ -2071,50 +2127,79 @@ def _report_metadata(row: ReportVersionRow) -> dict[str, Any]:
 async def get_model_settings(request: Request) -> dict[str, Any]:
     get_auth().require_session(request)
     from agent_workbench.config.catalog import default_provider_profiles
-    from agent_workbench.config.secrets import build_secret_store
+    from agent_workbench.config.model_settings import read_model_key, read_preferences
     from agent_workbench.domain.prices import current_price_catalog
-    from agent_workbench.models.provider import resolve_provider_profile
     from agent_workbench.persistence.db import get_database
 
     settings = get_settings()
-    store = build_secret_store()
-    profiles = {
-        key: resolve_provider_profile(key[0], settings=settings)
-        if key[0] == "xiaomi" or settings.dashscope_base_url
-        else profile
-        for key, profile in default_provider_profiles().items()
-    }
+    preferences = read_preferences(settings)
     async with get_database().session() as db:
         catalog = await current_price_catalog(db)
-    return {
-        "default_provider": settings.default_provider,
-        "default_model": settings.model_for_provider(),
-        "profiles": [
+    profiles = []
+    for profile in default_provider_profiles().values():
+        endpoint = preferences.endpoints.get(profile.provider_id) or (
+            settings.xiaomi_base_url
+            if profile.provider_id == "xiaomi"
+            else settings.dashscope_base_url
+        )
+        profiles.append(
             {
-                "provider_id": profile.provider_id,
-                "model_name": profile.model_name,
-                "base_url": profile.base_url,
-                "secret_ref": profile.secret_ref,
-                # 只暴露"是否已配置"，绝不返回密钥本身
-                "secret_configured": store.exists(profile.secret_ref)
-                or (
-                    settings.launcher_model_key_configured
-                    and profile.provider_id == settings.default_provider
+                **profile.model_dump(),
+                "base_url": endpoint,
+                "secret_configured": bool(read_model_key(profile.provider_id, settings)),
+                "request_output_limit": profile.effective_output_limit,
+                "allowed_input_tokens": int(
+                    profile.input_budget_tokens * (1 - profile.budget_safety_margin_ratio)
                 ),
-                "context_limit": profile.context_limit,
-                "output_reserve": profile.output_reserve,
-                "supports_tools": profile.supports_tools,
-                "supports_streaming": profile.supports_streaming,
-                "supports_images": profile.supports_images,
-                "supports_usage": profile.supports_usage,
-                "token_estimation_method": profile.token_estimation_method,
-                "profile_version": profile.profile_version,
             }
-            for profile in profiles.values()
-        ],
+        )
+    return {
+        "default_provider": preferences.default_provider,
+        "default_model": preferences.default_model,
+        "profiles": profiles,
         "price_catalog_version": catalog.version,
-        "effective_scope": "价格修改只影响**之后启动的 run**；活动 run 保持启动时的价格快照。",
+        "effective_scope": "模型选择用于新阶段；当前阶段及暂停继续保留原模型。Key 在本机保存，新的运行阶段或暂停后继续会读取新 Key。",
     }
+
+
+@router.put("/settings/models", response_model=ModelSettingsRead, tags=["settings"])
+async def update_model_settings(request: Request, payload: ModelSettingsUpdate) -> dict[str, Any]:
+    auth = get_auth()
+    auth.check_origin(request)
+    ticket = auth.require_session(request)
+    auth.require_csrf(request, ticket)
+    from agent_workbench.config.catalog import default_provider_profiles
+    from agent_workbench.config.model_settings import (
+        read_preferences,
+        save_preferences,
+        validate_endpoint,
+        write_model_key,
+    )
+
+    if (payload.provider_id, payload.model_name) not in default_provider_profiles():
+        raise ApiError(ErrorCode.VALIDATION_FAILED, "请选择列表中的模型")
+    try:
+        endpoint = validate_endpoint(payload.provider_id, payload.base_url)
+    except ValueError as exc:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from None
+    key = payload.api_key.get_secret_value().strip() if payload.api_key is not None else None
+    if key is not None and (not key or any(char.isspace() for char in key)):
+        raise ApiError(ErrorCode.VALIDATION_FAILED, "API Key 不能为空或包含空白字符")
+    if payload.delete_api_key and key is not None:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, "删除 Key 时不能同时填写新 Key")
+    from agent_workbench.config.model_settings import configuration_lock
+
+    with configuration_lock:
+        settings = get_settings()
+        preferences = read_preferences(settings)
+        preferences.endpoints[payload.provider_id] = endpoint
+        if payload.set_default:
+            preferences.default_provider = payload.provider_id
+            preferences.default_model = payload.model_name
+        if key is not None or payload.delete_api_key:
+            write_model_key(payload.provider_id, key, settings)
+        save_preferences(preferences, settings)
+    return await get_model_settings(request)
 
 
 @router.get("/settings/prices", response_model=PriceCatalog, tags=["settings"])

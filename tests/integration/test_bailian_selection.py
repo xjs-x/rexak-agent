@@ -26,10 +26,11 @@ async def test_selected_provider_drives_new_runs_and_fixed_runtime_binding(
         update={
             "default_provider": "bailian",
             "dashscope_base_url": "https://fixture.invalid/compatible-mode/v1",
-            "launcher_model_key_configured": True,
         }
     )
     monkeypatch.setattr("agent_workbench.api.routes.get_settings", lambda: cfg)
+    from agent_workbench.config.model_settings import write_model_key
+    write_model_key("bailian", "fixture-bailian-persisted", cfg)
     with TestClient(create_app()) as client:
         csrf = client.post("/api/session").json()["csrf_token"]
         headers = {"X-Workbench-CSRF": csrf}
@@ -128,5 +129,5 @@ def test_pending_xiaomi_run_does_not_use_bailian_key(monkeypatch):
     run = RunRow(provider_id="xiaomi", model_name="mimo-v2.6-pro", config_snapshot={})
     error = AgentRunner(settings=cfg)._precheck_configuration(run)
     assert error is not None
-    assert "XIAOMI_API_KEY" in error[1]
+    assert "model:xiaomi" in error[1]
     assert "fixture-bailian" not in error[1]

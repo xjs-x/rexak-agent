@@ -114,8 +114,8 @@ async def test_actual_sdk_stream_preserves_reasoning_and_returns_it_on_next_tool
         assert len(requests) == 2
         assert requests[0]["model"] == profile.model_name
         assert requests[0]["stream_options"]["include_usage"] is True
-        output_parameter = "max_tokens" if provider == "bailian" else "max_completion_tokens"
-        assert requests[0][output_parameter] == profile.effective_output_limit
+        assert "max_tokens" not in requests[0]
+        assert requests[0]["max_completion_tokens"] == profile.effective_output_limit
 
 
 def test_bailian_profile_and_nonstream_reasoning_are_provider_specific():
@@ -125,8 +125,8 @@ def test_bailian_profile_and_nonstream_reasoning_are_provider_specific():
     )
     profile = resolve_provider_profile(settings=cfg)
     assert profile.model_name == "deepseek-v4.1-flash"
-    assert profile.secret_ref == "env:DASHSCOPE_API_KEY"
-    assert profile.provider_extra["context_limit_source"] == "local_conservative_request_budget"
+    assert profile.secret_ref == "model:bailian"
+    assert profile.provider_extra["context_limit_source"] == "provider_documentation"
     assert profile.supports_tools == "unknown"
     model = ReasoningChatOpenAI(
         api_key=SecretStr("fixture-only"),

@@ -55,7 +55,7 @@ uv sync --frozen --all-packages --group dev
 # 2) 配置
 Copy-Item .env.example .env
 #    编辑 .env：数据库、控制端令牌、执行岛地址与 SSH 密钥路径
-#    密钥不要写进 .env 提交；使用 XIAOMI_API_KEY 环境变量或 WORKBENCH_SECRET_STORE_PATH 指向的文件
+#    模型和 API Key 在启动后的 Web 模型设置中配置并保存，不写入仓库。
 
 # 3) 启动 PostgreSQL（首次）
 docker compose up -d postgres
@@ -64,19 +64,30 @@ docker compose up -d postgres
 uv run workbench db-init
 
 # 5) 自检：进程、数据库、模型、执行岛
-uv run workbench doctor
+uv run workbench doctor --skip-model
 uv run workbench doctor --skip-model --target-url http://127.0.0.1:8899/ --scope-file deploy/scope-local-fixture.json
 ```
 
 第二条命令从执行岛探测 DNS 与 HTTP；此处的 `127.0.0.1` 是执行岛本机。
 目标映射、登录状态与已验证能力边界见 [P3–P5 部署说明](docs/p3-p5-deployment.md)。
 
-启动服务（三个终端，或各用 `-d`）：
+日常使用保留唯一启动入口：双击桌面 **Rexak Agent**，或在本项目目录运行：
 
 ```powershell
-uv run workbench api        # 控制端 API + SSE，默认 127.0.0.1:8770
-uv run workbench runner     # Agent Runner；需要有效 run lease 才会推进任务
-uv run workbench-executor   # 在**执行岛**上运行，只监听回环地址
+.\start-workbench.cmd
+```
+
+启动器检查数据库和 Kali Executor，启动 API、Runner 并打开控制台，不再在终端要求选择模型或输入 Key。
+在左侧“模型设置”填写供应商 Base URL 与 API Key，保存后下次启动仍可用。输入框上方可选择小米三款模型或百炼 `deepseek-v4.1-flash`。
+Windows Key 用当前用户 DPAPI 加密保存；同一供应商共用 Key，接口不返回原值。运行阶段固定模型与接入地址；新聊天或新阶段可切换，暂停继续保留原模型。
+官方额度、旧任务预算升级和验收边界见[模型配置与预算说明](docs/model-settings.md)。
+
+以下命令仅供维护和调试，日常无需分别启动：
+
+```powershell
+uv run workbench api
+uv run workbench runner
+uv run workbench-executor   # 仅在 Kali 执行岛运行
 ```
 
 前端开发：
@@ -139,7 +150,7 @@ pnpm lint; pnpm typecheck; pnpm test; pnpm build; pnpm test:e2e
 真实基础设施与模型：
 
 ```powershell
-uv run workbench doctor
+uv run workbench doctor --skip-model
 uv run python evals/runner.py --suite smoke --provider xiaomi
 uv run python evals/runner.py --suite acceptance --provider xiaomi --trials 3
 ```

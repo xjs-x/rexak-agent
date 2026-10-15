@@ -1,0 +1,42 @@
+{
+  "normal_launcher_entry": "scripts/start_workbench.py --no-browser",
+  "isolated_database": true,
+  "real_model_call_performed": false,
+  "real_target_testing_performed": false,
+  "api_and_runner_ready_without_terminal_input": true,
+  "profiles": [
+    {
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro",
+      "context_limit": 1048576,
+      "request_output_limit": 131072,
+      "allowed_input_tokens": 825753
+    },
+    {
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-flash",
+      "context_limit": 1048576,
+      "request_output_limit": 131072,
+      "allowed_input_tokens": 825753
+    },
+    {
+      "provider_id": "xiaomi",
+      "model_name": "mimo-v2.6-pro-ultraspeed",
+      "context_limit": 1048576,
+      "request_output_limit": 131072,
+      "allowed_input_tokens": 825753
+    },
+    {
+      "provider_id": "bailian",
+      "model_name": "deepseek-v4.1-flash",
+      "context_limit": 1000000,
+      "request_output_limit": 393216,
+      "allowed_input_tokens": 546105
+    }
+  ],
+  "web_key_persisted_and_resolved_by_separate_process": true,
+  "unconfigured_run_waited_without_model_call_or_operation": true,
+  "web_console_status": 200,
+  "launcher_exit_code": 0,
+  "isolated_database_removed": true
+}

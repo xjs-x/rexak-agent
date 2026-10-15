@@ -6,9 +6,8 @@
 - 加密密钥与密文不能一起放进同一份数据库备份；
 - 执行岛只按需取得目标测试凭据，模型 API Key 永远不下发。
 
-首版实现为"环境变量 + 本机受限权限 JSON 文件"两路解析。文件权限在写入时收紧到
-当前用户可读（POSIX 0600 / Windows 仅当前用户 ACL）。控制端优先使用操作系统凭据存储
-属后续增强项，此处不声称已经做到。
+目标凭据兼容环境变量与本机 JSON 文件。模型凭据由 `model_settings` 管理：
+Windows 用当前用户 DPAPI 加密，POSIX 用 0600 本机文件；模型 Key 与运行数据隔离。
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ import os
 import stat
 import sys
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from agent_workbench.config.settings import get_settings
 
@@ -72,6 +71,21 @@ class EnvSecretStore:
         if not key:
             raise SecretNotFoundError(secret_ref)
 
+        if scheme == "model" or (
+            scheme == "env" and key in {"XIAOMI_API_KEY", "DASHSCOPE_API_KEY"}
+        ):
+            from agent_workbench.config.model_settings import read_model_key
+
+            provider = (
+                key if scheme == "model" else "xiaomi" if key == "XIAOMI_API_KEY" else "bailian"
+            )
+            if provider not in {"xiaomi", "bailian"}:
+                raise SecretNotFoundError(secret_ref)
+            value = read_model_key(provider)
+            if value:
+                return value
+            raise SecretNotFoundError(secret_ref)
+
         if scheme == "env":
             value = os.environ.get(key)
             if value:
@@ -97,7 +111,7 @@ class EnvSecretStore:
         return f"{value[:4]}…{value[-4:]}(len={len(value)})"
 
 
-def write_secret_file(path: Path, payload: dict[str, str]) -> None:
+def write_secret_file(path: Path, payload: dict[str, Any]) -> None:
     """写入密钥文件并收紧权限。
 
     Windows 上不声称等价于 POSIX 0600；此处使用 `os.chmod` 的只读语义并在调用方文档中

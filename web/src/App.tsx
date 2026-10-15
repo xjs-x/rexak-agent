@@ -24,6 +24,7 @@ import {
   type WeaknessDetail,
   type WeaknessItem,
 } from "./api/client";
+import { ModelConfiguration } from "./ModelConfiguration";
 import { PlanGraph } from "./PlanGraph";
 import { ToolActivityGroup } from "./ToolActivity";
 
@@ -444,6 +445,8 @@ export default function App() {
   const [toolError, setToolError] = useState("");
   const [spans, setSpans] = useState<SpanItem[]>([]);
   const [reports, setReports] = useState<ReportItem[]>([]);
+  const [showModelSettings, setShowModelSettings] = useState(false);
+  const [selectedModel, setSelectedModel] = useState("");
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [priceCatalog, setPriceCatalog] = useState<PriceCatalog | null>(null);
   const [priceProfileIndex, setPriceProfileIndex] = useState(0);
@@ -474,6 +477,18 @@ export default function App() {
   const [targetUrl, setTargetUrl] = useState("");
 
   const currentRun = latestRun(snapshot);
+  const modelLocked = !!project.sessionId && !!currentRun && !["completed", "cancelled", "failed"].includes(currentRun.status);
+  const selectedModelKey = modelLocked ? `${currentRun.provider_id}/${currentRun.model_name}` : selectedModel || (modelSettings ? `${modelSettings.default_provider}/${modelSettings.default_model}` : "");
+  const chosenModel = modelSettings?.profiles.find((item) => `${item.provider_id}/${item.model_name}` === selectedModelKey);
+  const modelSelection = chosenModel ? { provider_id: chosenModel.provider_id, model_name: chosenModel.model_name } : undefined;
+  const onModelSaved = (settings: ModelSettings) => {
+    setModelSettings(settings);
+    setSelectedModel(`${settings.default_provider}/${settings.default_model}`);
+  };
+  useEffect(() => {
+    if (!project.ready) return;
+    void api.modelSettings().then(setModelSettings).catch((cause) => setNotice(String(cause)));
+  }, [project.ready, showModelSettings]);
   const modelProgress = events.filter((event) => event.run_id === currentRun?.id && event.type === "run.status" && event.payload?.scope === "model_request").at(-1);
   const modelProgressLabel = modelProgress && modelProgress.payload?.phase !== "finished"
     ? modelPhaseLabels[String(modelProgress.payload?.phase)] : null;
@@ -835,7 +850,7 @@ export default function App() {
     }
     const projectId = await ensureProject();
     const created = await api.createSession(projectId, {
-      project_id: projectId, title, initial_objective: content,
+      project_id: projectId, title, initial_objective: content, ...modelSelection,
       scope: { mode, revision: 1, rules: target ? [{
         scheme: mode === "instruction" ? "any" : target.protocol === "https:" ? "https" : "http",
         host: target.hostname.replace(/^\[|\]$/g, ""),
@@ -852,6 +867,7 @@ export default function App() {
   const submitSession = async () => {
     const title = sessionTitle.trim();
     const initialObjective = objective.trim();
+    if (!chosenModel?.secret_configured || !chosenModel.base_url) { setShowModelSettings(true); return; }
     if (!title || !initialObjective) return setNotice("请填写任务名称和测试目标");
     await runAction(async () => {
       await createChat(initialObjective, title, targetUrl, runMode);
@@ -864,9 +880,10 @@ export default function App() {
 
   const sendMessage = async () => {
     if (busy || !message.trim() || !project.ready) return;
+    if (!chosenModel?.secret_configured || !chosenModel.base_url) { setShowModelSettings(true); return; }
     const content = message.trim();
     const accepted = await runAction(async () => {
-      if (project.sessionId) await api.message(project.sessionId, content);
+      if (project.sessionId) await api.message(project.sessionId, content, modelSelection);
       else await createChat(content, content.slice(0, 30));
     }, "", false);
     if (accepted) {
@@ -1120,6 +1137,7 @@ export default function App() {
           ))}
           {project.projectId && project.sessions.length === 0 && <p className="empty-side">这个项目还没有任务。</p>}
         </div>
+        <button className="side-item model-settings-entry" disabled={!project.ready} onClick={() => setShowModelSettings(true)}>⚙ 模型设置</button>
         <div className="sidebar-foot">本地个人工作台<br />结果以证据和复测为准</div>
       </aside>
 
@@ -1272,8 +1290,7 @@ export default function App() {
                 </article>) : <p className="empty">还没有报告版本</p>}
               </section>}
               {tab === "settings" && <div className="stack"><section className="panel"><div className="panel-head"><h2>模型配置</h2></div><p className="fineprint">{modelSettings?.effective_scope.replaceAll("**", "") ?? "读取配置中…"}</p>
-                {modelSettings && <p>本次启动的新任务模型：{modelSettings.default_provider} / {modelSettings.default_model}</p>}
-                {modelSettings?.profiles.map((item) => <div className="settings-row" key={`${item.provider_id}/${item.model_name}`}><div><strong>{item.provider_id} / {item.model_name}</strong><small>请求上下文预算 {item.context_limit.toLocaleString()} · 配置版本 {item.profile_version}</small></div><span className={`pill ${item.secret_configured ? "status-confirmed" : "status-blocked"}`}>{item.secret_configured ? "密钥已配置" : "缺少密钥"}</span></div>)}
+                <ModelConfiguration settings={modelSettings} onSaved={onModelSaved} />
                 <p className="fineprint">价格目录版本：{modelSettings?.price_catalog_version ?? "未知"}。活动阶段继续使用启动时的配置快照。</p>
               </section><section className="panel"><div className="panel-head"><div><h2>模型价格</h2><p>填写供应商实际价格；未配置时费用保持“未定价”。</p></div><button disabled={busy} onClick={() => void api.priceCatalog().then(setPriceCatalog).catch((cause) => setNotice(String(cause)))}>刷新版本</button></div>
                 <div className="price-grid">
@@ -1295,10 +1312,14 @@ export default function App() {
           <textarea aria-label="消息" placeholder="发送消息，描述测试目标或补充要求…" value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendMessage(); }
           }} />
+          <div className="composer-model"><select aria-label="对话模型" title={modelLocked ? "当前阶段固定模型；新聊天可切换模型" : "选择下一阶段的模型"} value={selectedModelKey} disabled={modelLocked || !modelSettings} onChange={(event) => setSelectedModel(event.target.value)}>
+            {modelSettings?.profiles.map((item) => <option key={`${item.provider_id}/${item.model_name}`} value={`${item.provider_id}/${item.model_name}`}>{item.model_name}{item.secret_configured ? "" : " · 待配置 Key"}</option>)}
+          </select><button onClick={() => setShowModelSettings(true)} aria-label="打开模型设置">设置</button><small>{modelLocked ? "本阶段模型" : chosenModel?.secret_configured ? "Key 已配置" : "请先配置 Key"}</small></div>
           <div className="composer-footer"><button className="composer-plus" title="创建测试任务" aria-label="设置测试任务" onClick={() => setShowSessionForm(true)}>＋</button><span>{project.sessionId && usage ? `${usage.call_count} 次请求 · ${Object.entries(usage.by_currency).map(([currency, value]) => `${value.known_cost} ${currency}`).join(" / ") || "费用未定价"}${usage.unknown_usage_calls ? " · 存在未知用量" : ""}` : "Enter 发送，Shift+Enter 换行"}</span><button className="send-button" aria-label="发送消息" disabled={busy || !project.ready || !message.trim()} onClick={() => void sendMessage()}>↑</button></div>
         </div><p className="composer-note">测试结论以证据和复测为准</p></div>
       </main>
 
+      {showModelSettings && <div className="modal-backdrop" onMouseDown={() => setShowModelSettings(false)}><div className="modal model-settings-modal" role="dialog" aria-modal="true" aria-label="模型设置" onMouseDown={(event) => event.stopPropagation()}><div className="panel-head"><h2>模型设置</h2><button aria-label="关闭模型设置" onClick={() => setShowModelSettings(false)}>关闭</button></div><ModelConfiguration settings={modelSettings} onSaved={onModelSaved} /></div></div>}
       {showProjectForm && <div className="modal-backdrop" onMouseDown={() => setShowProjectForm(false)}><div className="modal" role="dialog" aria-modal="true" aria-label="新建项目" onMouseDown={(event) => event.stopPropagation()}><h2>新建项目</h2><p>同一目标的任务、经验与报告会归在这个项目中。</p>
         <label>项目名称<input value={projectName} onChange={(event) => setProjectName(event.target.value)} autoFocus /></label><label>目标说明<textarea value={projectDescription} onChange={(event) => setProjectDescription(event.target.value)} /></label>
         <div className="modal-actions"><button onClick={() => setShowProjectForm(false)}>取消</button><button className="primary" disabled={busy} onClick={() => void submitProject()}>创建项目</button></div></div></div>}

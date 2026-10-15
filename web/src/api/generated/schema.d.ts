@@ -654,7 +654,8 @@ export interface paths {
         };
         /** Get Model Settings */
         get: operations["get_model_settings_api_settings_models_get"];
-        put?: never;
+        /** Update Model Settings */
+        put: operations["update_model_settings_api_settings_models_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -787,6 +788,10 @@ export interface components {
         Body_post_message_api_sessions__session_id__messages_post: {
             /** Content */
             content: string;
+            /** Provider Id */
+            provider_id?: string | null;
+            /** Model Name */
+            model_name?: string | null;
         };
         /** Body_resume_run_api_runs__run_id__resume_post */
         Body_resume_run_api_runs__run_id__resume_post: {
@@ -1054,6 +1059,14 @@ export interface components {
             context_limit: number;
             /** Output Reserve */
             output_reserve: number;
+            /** Request Output Limit */
+            request_output_limit: number;
+            /** Allowed Input Tokens */
+            allowed_input_tokens: number;
+            /** Max Output Tokens */
+            max_output_tokens: number;
+            /** Documentation Url */
+            documentation_url?: string | null;
             /**
              * Supports Tools
              * @enum {string}
@@ -1094,6 +1107,27 @@ export interface components {
             price_catalog_version: string;
             /** Effective Scope */
             effective_scope: string;
+        };
+        /** ModelSettingsUpdate */
+        ModelSettingsUpdate: {
+            /** Provider Id */
+            provider_id: string;
+            /** Model Name */
+            model_name: string;
+            /** Base Url */
+            base_url: string;
+            /** Api Key */
+            api_key?: string | null;
+            /**
+             * Delete Api Key
+             * @default false
+             */
+            delete_api_key: boolean;
+            /**
+             * Set Default
+             * @default true
+             */
+            set_default: boolean;
         };
         /** OperationPage */
         OperationPage: {
@@ -1283,6 +1317,29 @@ export interface components {
              */
             settings_version: string;
         };
+        /** RunSummaryRead */
+        RunSummaryRead: {
+            /** Id */
+            id: string;
+            /** Provider Id */
+            provider_id: string;
+            /** Model Name */
+            model_name: string;
+            /** Status */
+            status: string;
+            /** Completion Reason */
+            completion_reason: string | null;
+            /** Objective */
+            objective: string;
+            /** Control Version */
+            control_version: number;
+            /** Stop Reason */
+            stop_reason?: string | null;
+            /** Owner Generation */
+            owner_generation: number;
+            /** Created At */
+            created_at: string;
+        };
         /**
          * ScopeRule
          * @description 范围规则。
@@ -1371,6 +1428,29 @@ export interface components {
             provider_id?: string | null;
             /** Model Name */
             model_name?: string | null;
+        };
+        /** SessionSnapshotRead */
+        SessionSnapshotRead: {
+            /** Session */
+            session: {
+                [key: string]: unknown;
+            };
+            /** Runs */
+            runs: components["schemas"]["RunSummaryRead"][];
+            /** Leads */
+            leads: {
+                [key: string]: unknown;
+            }[];
+            /** Findings */
+            findings: {
+                [key: string]: unknown;
+            }[];
+            /** Coverage */
+            coverage: {
+                [key: string]: unknown;
+            };
+            /** Event Cursor */
+            event_cursor: number;
         };
         /** SpanPage */
         SpanPage: {
@@ -1945,9 +2025,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SessionSnapshotRead"];
                 };
             };
             /** @description Validation Error */
@@ -2748,6 +2826,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModelSettingsRead"];
+                };
+            };
+        };
+    };
+    update_model_settings_api_settings_models_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

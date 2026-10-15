@@ -21,15 +21,7 @@ export interface SessionItem {
   created_at: string;
 }
 
-export interface RunItem {
-  id: string;
-  status: string;
-  completion_reason: string | null;
-  objective: string;
-  control_version: number;
-  stop_reason?: string | null;
-  created_at: string;
-}
+export type RunItem = components["schemas"]["RunSummaryRead"];
 
 export interface Snapshot {
   session: {
@@ -357,6 +349,10 @@ export class ApiClient {
     return request(`/sessions/${sessionId}/spans?limit=100`);
   }
 
+  saveModelSettings(body: components["schemas"]["ModelSettingsUpdate"]): Promise<ModelSettings> {
+    return request("/settings/models", { method: "PUT", headers: { "Content-Type": "application/json", "X-Workbench-CSRF": this.csrf }, body: JSON.stringify(body) });
+  }
+
   modelSettings(): Promise<ModelSettings> {
     return request("/settings/models");
   }
@@ -377,8 +373,8 @@ export class ApiClient {
     return request(`/sessions/${sessionId}/reports`);
   }
 
-  message(sessionId: string, content: string): Promise<{ run_id: string | null }> {
-    return this.write(`/sessions/${sessionId}/messages`, { content }, crypto.randomUUID());
+  message(sessionId: string, content: string, model?: { provider_id: string; model_name: string }): Promise<{ run_id: string | null }> {
+    return this.write(`/sessions/${sessionId}/messages`, { content, ...model }, crypto.randomUUID());
   }
 
   control(runId: string, action: "pause" | "resume" | "cancel", acknowledgeUnknown = false): Promise<unknown> {

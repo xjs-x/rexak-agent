@@ -263,3 +263,16 @@ h1 { font-size: 16px; margin: 0; font-weight: 500; overflow: hidden; text-overfl
 .composer textarea::placeholder { color: var(--text-secondary); opacity: 1; }
 @media (max-width: 760px) { .tool-name { flex: 1; }.tool-group > summary { flex-wrap: wrap; }.tool-detail { margin-left: 0; } }
 @media (prefers-reduced-motion: reduce) { .tool-activity .tool-symbol { animation: none; } }
+
+.model-configuration { display: grid; gap: 14px; }
+.model-configuration label { display: grid; gap: 7px; }
+.model-configuration .checkbox-row { display: flex; align-items: center; gap: 8px; }
+.model-configuration .checkbox-row input { width: auto; }
+.model-settings-modal { width: min(660px, 94vw); max-height: 90vh; overflow-y: auto; }
+.model-limits { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 0; font-size: 13px; }
+.model-limits dd { margin: 0; font-variant-numeric: tabular-nums; }
+.model-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.composer-model { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 0 12px 8px; }
+.composer-model select { width: auto; max-width: 100%; border-radius: 18px; padding: 6px 12px; }
+.composer-model small { color: var(--muted, #777); }
+.model-settings-entry { margin: 8px 12px; }

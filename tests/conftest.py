@@ -29,6 +29,17 @@ from agent_workbench.platform_compat import configure_event_loop_policy
 configure_event_loop_policy()
 
 
+@pytest.fixture(autouse=True)
+def _isolated_model_configuration(tmp_path, monkeypatch):
+    # No test may read or overwrite the user's persisted model preferences or API keys.
+    from agent_workbench.config import model_settings
+
+    monkeypatch.setattr(model_settings, "preferences_path", lambda _cfg: tmp_path / "models.json")
+    monkeypatch.setattr(
+        model_settings, "model_secret_path", lambda _cfg=None: tmp_path / "model-secrets.json"
+    )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolated_test_environment(request):
     """数据库测试使用本次会话独占的空库和工件目录。

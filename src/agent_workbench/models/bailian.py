@@ -1,15 +1,7 @@
-"""百炼 Chat Completions 参数适配，保留官方框架的模型工具循环。"""
-
-from typing import Any
+"""百炼官方兼容协议适配；沿用官方框架的模型工具循环。"""
 
 from agent_workbench.models.openai_compatible import ReasoningChatOpenAI
 
 
 class BailianChatOpenAI(ReasoningChatOpenAI):
-    """百炼文档使用 max_tokens；避免 SDK 的参数改名改变请求语义。"""
-
-    def _get_request_payload(self, input_: Any, *, stop: list[str] | None = None, **kwargs: Any):
-        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-        if "max_completion_tokens" in payload:
-            payload["max_tokens"] = payload.pop("max_completion_tokens")
-        return payload
+    """沿用 max_completion_tokens，完整限制思考与回答；不再回退到旧 max_tokens。"""

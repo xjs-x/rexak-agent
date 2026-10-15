@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 from langchain_core.messages import BaseMessage
@@ -22,6 +21,7 @@ from langchain_openai.chat_models.base import _convert_message_to_dict
 from pydantic import SecretStr, ValidationError
 
 from agent_workbench.config.catalog import ProviderProfile, default_provider_profiles
+from agent_workbench.config.model_settings import read_preferences, validate_endpoint
 from agent_workbench.config.secrets import SecretStore, build_secret_store
 from agent_workbench.config.settings import Settings, get_settings
 from agent_workbench.models.bailian import BailianChatOpenAI
@@ -37,7 +37,7 @@ class ModelBinding:
     """一个 run 内固定的模型配置快照（§11.1：一个 run 固定模型配置快照）。"""
 
     profile: ProviderProfile
-    temperature: float = 0.0
+    temperature: float = 1.0
     max_retries: int = 0
     request_timeout_seconds: int = 120
     extra: dict[str, Any] | None = None
@@ -56,6 +56,8 @@ class ModelBinding:
             "max_input_tokens": self.profile.max_input_tokens,
             "budget_safety_margin_ratio": self.profile.budget_safety_margin_ratio,
             "profile_version": self.profile.profile_version,
+            "max_output_tokens": self.profile.max_output_tokens,
+            "documentation_url": self.profile.documentation_url,
             "token_estimation_method": self.profile.token_estimation_method,
             "supports_tools": self.profile.supports_tools,
             "supports_streaming": self.profile.supports_streaming,
@@ -73,7 +75,7 @@ class ModelBinding:
         try:
             return cls(
                 profile=ProviderProfile.model_validate(snapshot),
-                temperature=snapshot.get("temperature", 0.0),
+                temperature=snapshot.get("temperature", 1.0),
                 max_retries=snapshot.get("max_retries", 0),
                 request_timeout_seconds=snapshot["request_timeout_seconds"],
             )
@@ -86,78 +88,54 @@ def resolve_provider_profile(
     model_name: str | None = None,
     settings: Settings | None = None,
 ) -> ProviderProfile:
-    """解析供应商档案。默认小米，启动器可选择百炼。
-
-    base_url / model 允许被各供应商的环境变量覆盖，
-    以便无代码改动切换端点。
-    """
+    """读取 Web 偏好并解析官方预算档案；未保存 Web 偏好时兼容环境配置。"""
     cfg = settings or get_settings()
-    pid = provider_id or cfg.default_provider
-    profiles = default_provider_profiles()
+    preferences = read_preferences(cfg)
+    pid = provider_id or preferences.default_provider
+    if pid not in {"xiaomi", "bailian"}:
+        raise ProviderConfigurationError("请选择已列出的供应商与模型")
+    candidate = model_name or (
+        preferences.default_model
+        if pid == preferences.default_provider
+        else cfg.model_for_provider(pid)
+    )
+    profile = default_provider_profiles().get((pid, candidate))
+    if profile is None:
+        raise ProviderConfigurationError("请在 Web 设置中选择已列出的供应商与模型")
+    endpoint = preferences.endpoints.get(pid) or (
+        cfg.xiaomi_base_url if pid == "xiaomi" else cfg.dashscope_base_url
+    )
+    try:
+        endpoint = validate_endpoint(pid, endpoint)
+    except ValueError as exc:
+        raise ProviderConfigurationError(str(exc)) from None
+    return profile.model_copy(
+        update={
+            "base_url": endpoint,
+            "max_response_recoveries": cfg.max_response_recoveries,
+        }
+    )
 
-    if pid == "xiaomi":
-        candidate = model_name or cfg.xiaomi_model
-        fallback = next(value for (key, _), value in profiles.items() if key == "xiaomi")
-        profile = profiles.get(("xiaomi", candidate), fallback)
-        return ProviderProfile(
-            provider_id="xiaomi",
-            model_name=candidate,
-            base_url=cfg.xiaomi_base_url,
-            secret_ref="env:XIAOMI_API_KEY",
-            context_limit=profile.context_limit,
-            output_reserve=cfg.output_reserve_tokens,
-            request_output_limit=cfg.output_reserve_tokens,
-            recovery_output_limit=cfg.recovery_output_limit_tokens,
-            max_response_recoveries=cfg.max_response_recoveries,
-            budget_safety_margin_ratio=profile.budget_safety_margin_ratio,
-            supports_tools=profile.supports_tools,
-            supports_streaming=profile.supports_streaming,
-            supports_images=profile.supports_images,
-            supports_usage=profile.supports_usage,
-            token_estimation_method=profile.token_estimation_method,
-            provider_extra=profile.provider_extra,
-            profile_version=profile.profile_version,
-        )
 
-    if pid == "bailian":
-        candidate = model_name or cfg.dashscope_model
-        profile = profiles.get((pid, candidate))
-        if profile is None:
-            raise ProviderConfigurationError("百炼模型尚未配置，请使用 deepseek-v4.1-flash")
-        endpoint = cfg.dashscope_base_url.strip().rstrip("/")
-        url = urlsplit(endpoint)
-        if (
-            url.scheme != "https"
-            or not url.hostname
-            or url.username
-            or url.password
-            or url.query
-            or url.fragment
-            or not url.path.endswith("/compatible-mode/v1")
-            or "{" in endpoint
-            or "}" in endpoint
-        ):
-            raise ProviderConfigurationError(
-                "请配置百炼控制台的 HTTPS OpenAI 兼容 Base URL（DASHSCOPE_BASE_URL）"
+def upgrade_legacy_budget(profile: ProviderProfile) -> ProviderProfile:
+    """仅升级旧内置档案的错误预算；模型、端点、凭据引用和运行身份保持原样。"""
+    official = default_provider_profiles().get((profile.provider_id, profile.model_name))
+    if official is None or profile.profile_version != "1":
+        return profile
+    return profile.model_copy(
+        update={
+            key: getattr(official, key)
+            for key in (
+                "context_limit",
+                "max_input_tokens",
+                "output_reserve",
+                "request_output_limit",
+                "recovery_output_limit",
+                "max_output_tokens",
+                "profile_version",
+                "documentation_url",
             )
-        return profile.model_copy(
-            update={
-                "base_url": endpoint,
-                "context_limit": cfg.dashscope_context_limit,
-                "output_reserve": cfg.output_reserve_tokens,
-                "request_output_limit": cfg.output_reserve_tokens,
-                "recovery_output_limit": cfg.recovery_output_limit_tokens,
-                "max_response_recoveries": cfg.max_response_recoveries,
-            }
-        )
-
-    if model_name is not None:
-        profile = profiles.get((pid, model_name))
-        if profile is not None:
-            return profile
-
-    raise ProviderConfigurationError(
-        f"未配置的供应商/模型：provider_id={pid!r} model_name={model_name!r}"
+        }
     )
 
 

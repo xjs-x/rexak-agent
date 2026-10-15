@@ -51,6 +51,8 @@ class ProviderProfile(BaseModel):
     token_estimation_method: TokenEstimationMethod = "unknown"
     provider_extra: dict[str, object] = Field(default_factory=dict)
     profile_version: str = "1"
+    max_output_tokens: int | None = Field(default=None, gt=0)
+    documentation_url: str | None = None
 
     @property
     def effective_output_limit(self) -> int:
@@ -107,30 +109,45 @@ def default_provider_profiles() -> dict[tuple[str, str], ProviderProfile]:
     不允许按模型名字声称支持工具调用或流式。
     """
 
-    return {
-        ("xiaomi", "mimo-v2.6-pro"): ProviderProfile(
+    profiles = {
+        ("xiaomi", name): ProviderProfile(
             provider_id="xiaomi",
-            model_name="mimo-v2.6-pro",
+            model_name=name,
             base_url="https://api.xiaomimimo.com/v1",
-            secret_ref="env:XIAOMI_API_KEY",
-            context_limit=131072,
-            output_reserve=8192,
+            secret_ref="model:xiaomi",
+            context_limit=1_048_576,
+            max_input_tokens=1_048_576,
+            output_reserve=131_072,
+            request_output_limit=131_072,
+            recovery_output_limit=131_072,
+            max_output_tokens=131_072,
+            profile_version="official-2026-10-15",
+            documentation_url="https://mimo.mi.com/docs/en-US/api/chat",
             token_estimation_method="chars_div_4",
             provider_extra={"protocol": "openai-compatible"},
-        ),
-        ("bailian", "deepseek-v4.1-flash"): ProviderProfile(
-            provider_id="bailian",
-            model_name="deepseek-v4.1-flash",
-            base_url="",
-            secret_ref="env:DASHSCOPE_API_KEY",
-            context_limit=131072,
-            token_estimation_method="chars_div_4",
-            provider_extra={
-                "protocol": "openai-compatible",
-                "context_limit_source": "local_conservative_request_budget",
-            },
-        ),
+        )
+        for name in ("mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed")
     }
+    profiles[("bailian", "deepseek-v4.1-flash")] = ProviderProfile(
+        provider_id="bailian",
+        model_name="deepseek-v4.1-flash",
+        base_url="",
+        secret_ref="model:bailian",
+        context_limit=1_000_000,
+        max_input_tokens=1_000_000,
+        output_reserve=393_216,
+        request_output_limit=393_216,
+        recovery_output_limit=393_216,
+        max_output_tokens=393_216,
+        profile_version="official-2026-10-15",
+        documentation_url="https://help.aliyun.com/zh/model-studio/deepseek-v4-1-flash",
+        token_estimation_method="chars_div_4",
+        provider_extra={
+            "protocol": "openai-compatible",
+            "context_limit_source": "provider_documentation",
+        },
+    )
+    return profiles
 
 
 def default_price_catalog() -> PriceCatalog:

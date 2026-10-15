@@ -182,9 +182,23 @@ class AgentRunner:
           否则保持等待，避免空转（§4.2）。
         """
         async with self._db.session() as session:
-            from sqlalchemy import case, exists
+            from sqlalchemy import case, exists, true
 
+            from agent_workbench.config.model_settings import read_model_key
             from agent_workbench.runtime.selection import owned_run_ids
+
+            ready_provider = (
+                RunRow.provider_id.not_in(["xiaomi", "bailian"])
+                | RunRow.provider_id.in_(
+                    [
+                        provider
+                        for provider in ("xiaomi", "bailian")
+                        if read_model_key(provider, self._settings)
+                    ]
+                )
+                if self._production_scan
+                else true()
+            )
 
             interactive = (RunRow.config_snapshot["created_from"].as_string() == "message") | (
                 RunRow.config_snapshot["created_from_session_create"].as_boolean().is_(True)
@@ -218,6 +232,7 @@ class AgentRunner:
                         RunRow.id.in_(owned_run_ids(self._settings.owner_id)),
                         cancelling
                         | (enabled & ((RunRow.status == str(RunStatus.QUEUED)) | resumable)),
+                        cancelling | (RunRow.status == str(RunStatus.PAUSING)) | ready_provider,
                     )
                     .order_by(
                         case((cancelling, 0), (pending, 1), (interactive, 2), else_=3),
@@ -240,6 +255,7 @@ class AgentRunner:
             if self._production_scan:
                 queued_stmt = (
                     queued_stmt.where(
+                        ready_provider,
                         RunRow.id.in_(owned_run_ids(self._settings.owner_id)),
                         RunRow.session_id.in_(
                             select(SessionRow.id).where(SessionRow.status != "deleted")
@@ -271,6 +287,7 @@ class AgentRunner:
             )
             if self._production_scan:
                 resumable_stmt = resumable_stmt.where(
+                    (RunRow.status == str(RunStatus.PAUSING)) | ready_provider,
                     RunRow.id.in_(owned_run_ids(self._settings.owner_id)),
                     RunRow.session_id.in_(
                         select(SessionRow.id).where(SessionRow.status != "deleted")
@@ -949,6 +966,7 @@ class AgentRunner:
         from agent_workbench.models.provider import (
             ProviderConfigurationError,
             resolve_provider_profile,
+            upgrade_legacy_budget,
         )
 
         snapshot = (run.config_snapshot or {}).get("model_binding")
@@ -958,13 +976,26 @@ class AgentRunner:
                 binding.profile.provider_id != run.provider_id
                 or binding.profile.model_name != run.model_name
                 or binding.profile.secret_ref
-                != {
-                    "xiaomi": "env:XIAOMI_API_KEY",
-                    "bailian": "env:DASHSCOPE_API_KEY",
-                }.get(run.provider_id)
+                not in {
+                    f"model:{run.provider_id}",
+                    {"xiaomi": "env:XIAOMI_API_KEY", "bailian": "env:DASHSCOPE_API_KEY"}.get(
+                        run.provider_id
+                    ),
+                }
             ):
                 raise ProviderConfigurationError("模型绑定快照与任务记录不一致")
-            return binding
+            from dataclasses import replace
+
+            profile = upgrade_legacy_budget(binding.profile)
+            return replace(
+                binding,
+                profile=profile,
+                temperature=(
+                    1.0
+                    if profile is not binding.profile and binding.temperature == 0.0
+                    else binding.temperature
+                ),
+            )
         return ModelBinding(
             profile=resolve_provider_profile(run.provider_id, run.model_name, self._settings),
             request_timeout_seconds=self._settings.model_request_timeout_seconds,
@@ -978,7 +1009,32 @@ class AgentRunner:
             ).scalar_one()
             binding = self._model_binding(current)
             config = dict(current.config_snapshot or {})
-            config.setdefault("model_binding", binding.to_snapshot())
+            previous = config.get("model_binding")
+            if previous is not None and previous != binding.to_snapshot():
+                config["model_budget_upgraded_from"] = {
+                    key: previous.get(key)
+                    for key in (
+                        "profile_version",
+                        "context_limit",
+                        "request_output_limit",
+                        "output_reserve",
+                        "temperature",
+                    )
+                }
+                await append_event(
+                    db,
+                    session_id=run.session_id,
+                    run_id=run.id,
+                    event_type=EventType.RUN_STATUS,
+                    payload={
+                        "scope": "model_budget",
+                        "reason": "official_profile_upgrade",
+                        "previous": config["model_budget_upgraded_from"],
+                        "context_limit": binding.profile.context_limit,
+                        "request_output_limit": binding.profile.effective_output_limit,
+                    },
+                )
+            config["model_binding"] = binding.to_snapshot()
             current.config_snapshot = config
             run.config_snapshot = dict(config)
         return binding
@@ -1011,8 +1067,8 @@ class AgentRunner:
         except SecretNotFoundError as exc:
             return (
                 ErrorCode.PROVIDER_ERROR,
-                f"模型凭据未配置：{exc}。请在环境变量或本机密钥存储中提供，"
-                "然后重新提交任务。这不是目标网站的阴性结论。",
+                f"模型凭据未配置：{exc}。请在 Web 设置中保存对应的 API Key，"
+                "然后继续或重新提交任务。这不是目标网站的阴性结论。",
             )
         return None
 
@@ -1354,7 +1410,8 @@ class AgentRunner:
         try:
             async with self._db.session() as session:
                 decision = await FinishGate(session).evaluate(
-                    session_id=run.session_id, proposal=proposal,
+                    session_id=run.session_id,
+                    proposal=proposal,
                     plan=list(values.get("plan") or []),
                     review_cursor=values.get("weakness_review_cursor"),
                 )
