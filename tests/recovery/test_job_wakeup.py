@@ -161,14 +161,14 @@ async def test_pending_jobs_listed_for_waiting_run(database, unique_name) -> Non
     assert [str(item.job_id) for item in pending] == [str(job_id)]
 
 
-async def test_job_tool_lookup_cannot_cross_run(database, unique_name) -> None:
+async def test_job_tool_lookup_cannot_cross_session(database, unique_name) -> None:
     _session_a, run_a, job_a = await _waiting_run_with_job(database, f"{unique_name}-a")
     _session_b, run_b, job_b = await _waiting_run_with_job(database, f"{unique_name}-b")
     toolbox: Any = SimpleNamespace(run_id=run_a.id, db=database)
 
     assert await _resolve_job_id(toolbox, str(job_a)) == job_a
     assert await _resolve_job_id(toolbox, str(job_a)[:8]) == job_a
-    with pytest.raises(ValueError, match="当前 run 中找不到 job"):
+    with pytest.raises(ValueError, match="当前会话中找不到"):
         await _resolve_job_id(toolbox, str(job_b))
     with pytest.raises(ValueError, match="找不到 job"):
         await _resolve_job_id(toolbox, str(job_b)[:8])

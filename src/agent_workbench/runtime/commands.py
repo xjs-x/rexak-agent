@@ -139,25 +139,43 @@ async def submit_message(
                     await set_run_status(session, run_id=active.id, target=RunStatus.QUEUED)
         from agent_workbench.domain.instruction_scope import sync_instruction_scope
 
-        await sync_instruction_scope(
-            session,
-            session_id=session_id,
-            run_id=run_id,
-            content=content,
-            control_changed=active is not None,
-        )
+        if not (payload or {}).get("source"):
+            await sync_instruction_scope(
+                session,
+                session_id=session_id,
+                run_id=run_id,
+                content=content,
+                control_changed=active is not None,
+            )
         await append_event(
             session,
             session_id=session_id,
             run_id=run_id,
             event_type=EventType.MESSAGE_COMPLETED,
             payload={
-                "role": "user",
+                "role": "system" if (payload or {}).get("source") else "user",
                 "command_id": str(result.row.id),
                 "status": "queued",
                 "created_run": created_run,
             },
         )
+        # 无委托/暂停期间积压的执行事件：在**下次对话**以聚合摘要注入。
+        # 摘要命令优先级低于用户消息，保证先读用户指令再看事件。
+        if not (payload or {}).get("source"):
+            from agent_workbench.runtime.execution_events import (
+                inject_pending_summary_for_new_input,
+            )
+
+            try:
+                await inject_pending_summary_for_new_input(
+                    session, session_id=session_id, run_id=run_id
+                )
+            except Exception:
+                from agent_workbench.observability.logging import get_logger
+
+                get_logger("agent_workbench.commands").warning(
+                    "execution_summary_injection_failed", session_id=str(session_id)
+                )
 
     return CommandReceipt(
         command_id=result.row.id,

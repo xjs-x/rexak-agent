@@ -1,0 +1,51 @@
+{
+  "view": {
+    "resource_id": "6d1a9710-696d-4f2a-8497-26009750dd8d",
+    "session_id": "f46e2f7d-e547-4ba1-9005-30686a629780",
+    "run_id": "bec1dd60-ce3c-4d04-a16a-1ed1e0911964",
+    "kind": "command",
+    "state": "exited",
+    "interaction_state": "not_applicable",
+    "mode": "",
+    "purpose": "",
+    "created_at": "2026-10-16T01:29:07.819439+00:00",
+    "started_at": "2026-10-16T01:29:08.367268+00:00",
+    "exited_at": "2026-10-16T01:29:08.483226+00:00",
+    "closed_at": null,
+    "exit_code": 0,
+    "termination_reason": "exited_normally",
+    "deadline_at": null,
+    "output_limit_action": "preserve_process",
+    "output_bytes": 4096,
+    "dropped_bytes": 295916,
+    "output_limit_bytes": 4096,
+    "cancel_requested": false,
+    "cancel_confirmed": false,
+    "last_checked_at": "2026-10-16T01:29:08.636089+00:00",
+    "watch_hits": 0,
+    "notes": []
+  },
+  "page": {
+    "resource_id": "6d1a9710-696d-4f2a-8497-26009750dd8d",
+    "stream": "stdout",
+    "cursor": "",
+    "next_cursor": "djJ8NmQxYTk3MTAtNjk2ZC00ZjJhLTg0OTctMjYwMDk3NTBkZDhkfHN0ZG91dHw2NA",
+    "byte_start": 0,
+    "byte_end": 64,
+    "text": "0123456789abcdef\n0123456789abcdef\n0123456789abcdef\n0123456789abc",
+    "byte_count": 64,
+    "at_current_end": false,
+    "process_exited": true,
+    "truncated": true,
+    "missing_ranges": [
+      {
+        "start": 4096,
+        "end": 300012,
+        "reason": "采集额度超限：该区间输出在源流中存在但未被保存"
+      }
+    ],
+    "encoding_error": null,
+    "artifact_refs": [],
+    "note": ""
+  }
+}

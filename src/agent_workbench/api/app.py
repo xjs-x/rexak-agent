@@ -164,9 +164,12 @@ def create_app() -> FastAPI:
         )
         return JSONResponse(status_code=500, content=body.model_dump(mode="json"))
 
+    from agent_workbench.api.execution import router as execution_router
     from agent_workbench.api.routes import router
 
     app.include_router(router)
+    # 执行底座：会话资源 / 输出 / 值班 / 环境（不驱动 Agent，不把 stdout 塞 SSE）
+    app.include_router(execution_router)
 
     # ------------------------------------------------------------------ #
     # 最小观察器（P2）与 P7 基础控制台

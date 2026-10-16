@@ -1,0 +1,20 @@
+{
+  "screen": {
+    "resource_id": "ec323566-1d86-45b8-b833-bff382435c27",
+    "stream": "screen",
+    "cursor": null,
+    "next_cursor": null,
+    "byte_start": 0,
+    "byte_end": 0,
+    "text": "BBB 中文宽字符$                                                                                     \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    \n                                                                                                    ",
+    "byte_count": 0,
+    "at_current_end": true,
+    "process_exited": false,
+    "truncated": false,
+    "missing_ranges": [],
+    "encoding_error": null,
+    "artifact_refs": [],
+    "note": "",
+    "view": "screen"
+  }
+}

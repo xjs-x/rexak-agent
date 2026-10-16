@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-10-16T02:16:01.064868+00:00",
+  "mode": "deployed-readonly",
+  "results": [
+    {
+      "id": "H03",
+      "name": "已部署服务只读核对",
+      "status": "PASS",
+      "reason": "",
+      "duration": 0.0,
+      "evidence_paths": [
+        "docs\\acceptance-results\\2026-10-16\\execution-runtime\\deployed-readonly\\logs\\H03-deployed-readonly.json"
+      ]
+    }
+  ],
+  "summary": {
+    "pass": 1,
+    "fail": 0,
+    "not_run": 0
+  },
+  "notes": []
+}

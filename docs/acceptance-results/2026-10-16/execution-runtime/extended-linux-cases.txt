@@ -1,0 +1,8 @@
+[ ok ] B03 独立命令不隐式继承目录和环境（7.24s）
+[ ok ] C06 同 operation 复用；不同参数 409（3.59s）
+[ ok ] E05 session 日志预算不足时拒绝新建，不淘汰已有（11.24s）
+[ ok ] E08 资源上限只拒绝新建（22.07s）
+
+结果：PASS 4 / FAIL 0 / NOT_RUN 0 -> /tmp/rexak-execution-accept-ctHmeaoE/extended-cases/results.json
+
+Exit 0

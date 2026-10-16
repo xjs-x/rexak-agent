@@ -190,6 +190,10 @@ class AgentGraphState(AgentState):
     #: 派发工具前必须与数据库当前值比较，不一致 => 该响应已过期，工具不得执行（§4.3）。
     #: 不能"用当前值对比当前值"，那就是没有检查。
     dispatch_control_version: NotRequired[int | None]
+    # 持久化交付回执，独立于可压缩的 messages；只保留最近一批。
+    execution_delivery_batch_id: NotRequired[str | None]
+    execution_delegation_id: NotRequired[str | None]
+    execution_delegation_revision: NotRequired[int | None]
     work_summary: NotRequired[WorkSummary]
     plan: NotRequired[list[PlanStep]]
     plan_revision: NotRequired[int]

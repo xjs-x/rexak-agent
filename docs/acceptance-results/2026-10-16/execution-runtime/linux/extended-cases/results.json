@@ -1,0 +1,58 @@
+{
+  "generated_at": "2026-10-16T02:33:00.369586+00:00",
+  "mode": "isolated",
+  "results": [
+    {
+      "id": "B03",
+      "name": "独立命令不隐式继承目录和环境",
+      "status": "PASS",
+      "reason": "",
+      "duration": 7.236,
+      "evidence_paths": [
+        "linux/extended-cases/logs/B03-独立命令不隐式继承目录和环境.json"
+      ]
+    },
+    {
+      "id": "C06",
+      "name": "同 operation 复用；不同参数 409",
+      "status": "PASS",
+      "reason": "",
+      "duration": 3.587,
+      "evidence_paths": [
+        "linux/extended-cases/logs/C06-同_operation_复用_不同参数_409.json"
+      ]
+    },
+    {
+      "id": "E05",
+      "name": "session 日志预算不足时拒绝新建，不淘汰已有",
+      "status": "PASS",
+      "reason": "",
+      "duration": 11.244,
+      "evidence_paths": [
+        "linux/extended-cases/logs/E05-session_日志预算不足时拒绝新建_不淘汰已有.json"
+      ]
+    },
+    {
+      "id": "E08",
+      "name": "资源上限只拒绝新建",
+      "status": "PASS",
+      "reason": "",
+      "duration": 22.073,
+      "evidence_paths": [
+        "linux/extended-cases/logs/E08-资源上限只拒绝新建.json"
+      ]
+    }
+  ],
+  "summary": {
+    "pass": 4,
+    "fail": 0,
+    "not_run": 0
+  },
+  "notes": [
+    "本次只运行：B03,C06,E05,E08",
+    "fixture Executor 版本 0.1.0，执行模式 trusted",
+    "fixture Executor 版本 0.1.0，执行模式 trusted",
+    "fixture Executor 版本 0.1.0，执行模式 trusted",
+    "fixture Executor 版本 0.1.0，执行模式 trusted"
+  ]
+}

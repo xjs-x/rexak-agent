@@ -16,13 +16,17 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import os
 import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+import regex as regex_engine
 
 DEFAULT_MAX_READ_BYTES = 256 * 1024
 DEFAULT_MAX_WRITE_BYTES = 4 * 1024 * 1024
@@ -289,8 +293,27 @@ class WorkspaceFileSystem:
         replace_all: bool = False,
     ) -> dict[str, object]:
         """按内容替换。**必须**提供 expected_version，避免覆盖并发改动。"""
-        if not old_text:
-            raise WorkspaceError("invalid_edit", "old_text 不能为空")
+        return self.edit_file_batch(
+            relative,
+            edits=[
+                {"old_text": old_text, "new_text": new_text, "replace_all": replace_all}
+            ],
+            expected_version=expected_version,
+        )
+
+    def edit_file_batch(
+        self,
+        relative: str,
+        *,
+        edits: list[dict[str, object]],
+        expected_version: str,
+    ) -> dict[str, object]:
+        """批量编辑：**先在内存中校验全部替换**，任一失败不写文件；
+        全部成功后写临时文件并原子替换（保留版本冲突与唯一匹配规则）。"""
+        if not edits:
+            raise WorkspaceError("invalid_edit", "edits 不能为空")
+        if len(edits) > 100:
+            raise WorkspaceError("invalid_edit", "单次批量编辑最多 100 项")
 
         current = self.file_version(relative)
         if current == "absent":
@@ -311,19 +334,40 @@ class WorkspaceFileSystem:
                 f"文件不是合法 UTF-8，无法按文本编辑（首个非法位置 {exc.start}）",
             ) from exc
 
-        occurrences = text.count(old_text)
-        if occurrences == 0:
-            raise WorkspaceError("pattern_not_found", "old_text 在文件中不存在")
-        if occurrences > 1 and not replace_all:
-            raise WorkspaceError(
-                "pattern_ambiguous",
-                f"old_text 出现 {occurrences} 次；请扩大上下文使其唯一，或显式 replace_all=true",
-            )
+        total_replacements = 0
+        for index, edit in enumerate(edits):
+            old_text = str(edit.get("old_text") or "")
+            new_text = str(edit.get("new_text") or "")
+            replace_all = bool(edit.get("replace_all", False))
+            if not old_text:
+                raise WorkspaceError("invalid_edit", f"第 {index + 1} 项 old_text 不能为空")
+            occurrences = text.count(old_text)
+            if occurrences == 0:
+                raise WorkspaceError(
+                    "pattern_not_found", f"第 {index + 1} 项的 old_text 在文件中不存在"
+                )
+            if occurrences > 1 and not replace_all:
+                raise WorkspaceError(
+                    "pattern_ambiguous",
+                    f"第 {index + 1} 项的 old_text 出现 {occurrences} 次；"
+                    "请扩大上下文使其唯一，或显式 replace_all=true",
+                )
+            text = text.replace(old_text, new_text, -1 if replace_all else 1)
+            total_replacements += occurrences if replace_all else 1
 
-        updated = text.replace(old_text, new_text, -1 if replace_all else 1)
-        payload = updated.encode("utf-8")
+        payload = text.encode("utf-8")
         if len(payload) > self._max_write_bytes:
             raise WorkspaceError("content_too_large", "编辑后内容超过写入上限")
+        if payload == raw:
+            # 全部命中但没有产生变化：仍算成功，但版本不变，如实说明。
+            return {
+                "path": relative,
+                "version": current,
+                "previous_version": current,
+                "replacements": total_replacements,
+                "byte_size": len(raw),
+                "no_change": True,
+            }
 
         tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -331,6 +375,8 @@ class WorkspaceFileSystem:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+            if self.file_version(relative) != expected_version:
+                raise WorkspaceError("version_conflict", "写入前版本再次变化，拒绝覆盖并发改动")
             tmp.replace(target)
         finally:
             tmp.unlink(missing_ok=True)
@@ -339,8 +385,261 @@ class WorkspaceFileSystem:
             "path": relative,
             "version": self.file_version(relative),
             "previous_version": current,
-            "replacements": occurrences if replace_all else 1,
+            "replacements": total_replacements,
             "byte_size": len(payload),
+        }
+
+    # ---------------- 检索与枚举 ----------------
+
+    def _bounded_files(self, base: Path) -> tuple[list[Path], bool]:
+        """有界枚举且不跟随目录软链接；目录项也计入扫描预算。"""
+        pending = [base]
+        files: list[Path] = []
+        seen = 0
+        real_root = self._real_root()
+        while pending:
+            current = pending.pop()
+            entries = []
+            with os.scandir(current) as iterator:
+                for entry in iterator:
+                    seen += 1
+                    if seen > 20000:
+                        return sorted(files), True
+                    entries.append(entry)
+            for entry in sorted(entries, key=lambda item: item.name):
+                candidate = Path(entry.path)
+                if entry.is_symlink():
+                    real = candidate.resolve(strict=True)
+                    if real != real_root and real_root not in real.parents:
+                        raise WorkspaceError("path_escape", "枚举结果经软链接指向工作区之外")
+                    if candidate.is_file():
+                        files.append(candidate)
+                elif entry.is_dir(follow_symlinks=False):
+                    pending.append(candidate)
+                elif entry.is_file(follow_symlinks=False):
+                    files.append(candidate)
+        return sorted(files), False
+
+    def glob_files(
+        self,
+        pattern: str,
+        *,
+        root: str = ".",
+        cursor: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, object]:
+        """工作区内 glob：支持 `**`，确定性排序与分页，拒绝路径/软链接逃逸。"""
+        if not pattern or pattern.startswith(("/", "\\")):
+            raise WorkspaceError("invalid_path", "pattern 必须是非空相对模式")
+        if ".." in Path(pattern).parts:
+            raise WorkspaceError("invalid_path", "pattern 不得包含 '..'")
+        if len(pattern) > 512:
+            raise WorkspaceError("invalid_path", "pattern 过长")
+        base = self.resolve(root or ".", must_exist=True)
+        if not base.is_dir():
+            raise WorkspaceError("not_a_directory", f"不是目录：{root}")
+        real_root = self._real_root()
+        entries: list[dict[str, object]] = []
+        scanned = 0
+        scan_limited = False
+        candidates, scan_limited = self._bounded_files(base)
+        for candidate in candidates:
+            relative = candidate.relative_to(base)
+            matched = relative.match(pattern) or (
+                pattern.startswith("**/") and relative.match(pattern[3:])
+            )
+            if "/" not in pattern and len(relative.parts) > 1:
+                matched = False
+            if not matched:
+                continue
+            scanned += 1
+            try:
+                real = candidate.resolve(strict=True)
+            except OSError:
+                continue
+            if real != real_root and real_root not in real.parents:
+                raise WorkspaceError("path_escape", "glob 结果经软链接指向工作区之外")
+            if not candidate.is_file():
+                continue
+            stat = candidate.stat()
+            entries.append(
+                {
+                    "path": candidate.relative_to(self._root).as_posix(),
+                    "byte_size": int(stat.st_size),
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+                }
+            )
+        entries.sort(key=lambda item: str(item["path"]))
+        start = 0
+        if cursor:
+            for index, item in enumerate(entries):
+                if str(item["path"]) > cursor:
+                    start = index
+                    break
+            else:
+                start = len(entries)
+        bounded = max(1, min(int(limit), 1000))
+        page = entries[start : start + bounded]
+        next_cursor = str(page[-1]["path"]) if len(entries) > start + len(page) else None
+        return {
+            "action": "glob",
+            "pattern": pattern,
+            "root": root or ".",
+            "entries": page,
+            "count": len(page),
+            "total_matched": len(entries),
+            "next_cursor": next_cursor,
+            "scan_limited": scan_limited,
+        }
+
+    def search_files(
+        self,
+        pattern: str,
+        *,
+        paths: list[str] | None = None,
+        regex: bool = False,
+        case_sensitive: bool = True,
+        context_lines: int = 0,
+        cursor: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, object]:
+        """有界文本检索：返回路径/行号/上下文；二进制与非法编码显式说明。
+
+        不无界扫描、不静默改码；扫描预算用尽时如实报告 `scan_limited`。
+        """
+        if not pattern or len(pattern) > 512:
+            raise WorkspaceError("invalid_search", "pattern 必须非空且不超过 512 字符")
+        bounded_context = max(0, min(int(context_lines), 10))
+        bounded_limit = max(1, min(int(limit), 1000))
+        compiled = None
+        if regex:
+            try:
+                compiled = regex_engine.compile(pattern, 0 if case_sensitive else regex_engine.IGNORECASE)
+            except regex_engine.error as exc:
+                raise WorkspaceError("invalid_search", f"正则非法：{exc}") from exc
+        needle = pattern if case_sensitive else pattern.lower()
+
+        targets: list[Path] = []
+        enumeration_limited = False
+        for item in paths or ["."]:
+            target = self.resolve(item, must_exist=True)
+            files, limited = self._bounded_files(target) if target.is_dir() else ([target], False)
+            targets.extend(files[:max(0, 20000-len(targets))])
+            enumeration_limited |= limited or len(targets) >= 20000
+            if enumeration_limited:
+                break
+        targets = sorted(set(targets))
+        signature = hashlib.sha256(json.dumps(
+            [pattern, paths or ["."], regex, case_sensitive, bounded_context], ensure_ascii=False
+        ).encode()).hexdigest()
+        resume_path, resume_line = "", 0
+        if cursor:
+            try:
+                saved = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                if saved["query"] != signature:
+                    raise ValueError("游标不属于当前检索")
+                resume_path, resume_line = str(saved["path"]), int(saved["line"])
+            except (ValueError, KeyError, TypeError) as exc:
+                raise WorkspaceError("invalid_cursor", "检索游标无效或查询已改变") from exc
+        matches: list[dict[str, object]] = []
+        scanned_files = 0
+        scanned_bytes = 0
+        scan_limited = enumeration_limited
+        skipped: list[dict[str, str]] = []
+        last_path, last_line = resume_path, resume_line
+        exhausted = True
+        for target in targets:
+            if scanned_files > 2000 or len(matches) >= bounded_limit * 4:
+                scan_limited = True
+                exhausted = False
+                break
+            try:
+                relative = target.relative_to(self._root).as_posix()
+            except ValueError:
+                raise WorkspaceError("path_escape", "检索目标越界") from None
+            real = target.resolve(strict=True)
+            real_root = self._real_root()
+            if real != real_root and real_root not in real.parents:
+                raise WorkspaceError("path_escape", "检索目标经软链接指向工作区之外")
+            if relative < resume_path:
+                continue
+            scanned_files += 1
+            try:
+                size = target.stat().st_size
+            except OSError:
+                continue
+            if size > 2 * 1024 * 1024:
+                skipped.append({"path": relative, "reason": "文件超过 2 MiB 检索上限"})
+                continue
+            try:
+                if scanned_bytes + size > 8 * 1024 * 1024:
+                    scan_limited, exhausted = True, False
+                    break
+                with target.open("rb") as handle:
+                    raw = handle.read(2 * 1024 * 1024 + 1)
+                scanned_bytes += len(raw)
+                if len(raw) > 2 * 1024 * 1024:
+                    skipped.append({"path": relative, "reason": "读取期间文件增长超过 2 MiB"})
+                    continue
+            except OSError as exc:
+                skipped.append({"path": relative, "reason": f"读取失败：{type(exc).__name__}"})
+                continue
+            if b"\x00" in raw[:8192]:
+                skipped.append({"path": relative, "reason": "二进制文件（含 NUL 字节）"})
+                continue
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                skipped.append(
+                    {"path": relative, "reason": f"不是合法 UTF-8（首个非法位置 {exc.start}）"}
+                )
+                continue
+            lines = text.splitlines()
+            for index, line in enumerate(lines):
+                if relative == resume_path and index + 1 <= resume_line:
+                    continue
+                try:
+                    hit = (compiled.search(line, timeout=0.01) is not None if compiled is not None
+                           else needle in (line if case_sensitive else line.lower()))
+                except TimeoutError as exc:
+                    raise WorkspaceError("invalid_search", "正则检索超过单行时间边界") from exc
+                last_path, last_line = relative, index + 1
+                if not hit:
+                    continue
+                window = lines[
+                    max(0, index - bounded_context) : index + bounded_context + 1
+                ]
+                matches.append(
+                    {
+                        "path": relative,
+                        "line": index + 1,
+                        "text": line[:2000],
+                        "context": [item[:2000] for item in window],
+                    }
+                )
+                if len(matches) >= bounded_limit:
+                    break
+            if len(matches) >= bounded_limit:
+                break
+        if len(matches) >= bounded_limit:
+            exhausted = False
+        next_cursor = base64.urlsafe_b64encode(json.dumps({
+            "query": signature, "path": last_path, "line": last_line
+        }).encode()).decode() if not exhausted and (last_path, last_line) != (resume_path, resume_line) else None
+        return {
+            "action": "search",
+            "pattern": pattern,
+            "regex": regex,
+            "case_sensitive": case_sensitive,
+            "matches": matches,
+            "count": len(matches),
+            "next_cursor": next_cursor,
+            "scan_limited": scan_limited,
+            "skipped": skipped[:50],
+            "note": (
+                "扫描预算或结果上限已触发时会明确报告 scan_limited；"
+                "二进制/非法编码文件不会被静默改码。"
+            ),
         }
 
 

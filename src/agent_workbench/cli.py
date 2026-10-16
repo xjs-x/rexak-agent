@@ -455,8 +455,14 @@ async def _probe_executor(
         "free_bytes": health.free_bytes,
         "browser_available": caps.browser_available,
         "network_isolation": caps.network_isolation,
+        "execution_mode": caps.execution_mode,
+        "command_available": caps.execution_capable("command"),
         "target_probe": target_probe,
-        "note": ("network_isolation=unavailable 时通用命令的无人值守模式必须保持关闭。"),
+        "note": (
+            "命令能力按执行端声明的 trusted 模式和依赖开放；可信执行不承诺系统级网络隔离。"
+            if caps.execution_mode == "trusted" else
+            "命令能力当前未启用可信执行；HTTP、浏览器与文件能力分别核对。"
+        ),
     }
 
 

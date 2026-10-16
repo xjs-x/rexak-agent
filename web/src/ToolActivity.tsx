@@ -6,15 +6,24 @@ const titles: Record<string, string> = {
   browser_text: "读取页面正文", browser_click: "点击页面", browser_fill: "填写页面",
   browser_screenshot: "保存页面截图", read_artifact: "读取工件", list_files: "查看文件",
   read_file: "读取文件", write_file: "写入文件", edit_file: "修改文件",
+  edit_file_batch: "批量修改文件", glob_files: "查找文件", search_files: "检索文件内容",
   get_job: "检查后台任务", read_job_output: "读取任务输出", search_memory: "检索记忆",
   update_plan: "更新计划", propose_finding: "记录候选发现", propose_completion: "检查阶段结果",
   search_history: "检索历史", record_lead: "更新线索", record_observation: "记录观察",
   propose_memory: "记录经验候选", record_memory_usage: "记录经验使用反馈",
+  run_command: "运行命令", run_script: "运行脚本", start_monitor: "启动监视",
+  shell_open: "打开终端", shell_send: "终端输入", shell_read: "读取终端", shell_resize: "调整终端尺寸",
+  shell_list: "列出终端", shell_close: "关闭终端", list_jobs: "查看执行资源",
+  wait_for_resources: "等待资源条件", get_execution_environment: "查看执行环境",
+  set_execution_duty: "建立值班", list_execution_duties: "查看值班", cancel_execution_duty: "取消值班",
+  list_execution_templates: "查看执行模板", get_execution_template: "读取执行模板",
+  register_execution_template: "登记执行模板", run_execution_template: "运行执行模板",
 };
 const states: Record<string, string> = {
   preparing: "正在处理", accepted: "等待结果", received: "已受理", starting: "正在启动",
   running: "正在执行", succeeded: "已完成", completed: "已返回", failed: "失败",
   cancelled: "已取消", interrupted: "已打断等待", unknown: "状态待核对",
+  exited: "已退出", closed: "已关闭",
 };
 
 function elapsed(item: ToolActivityItem): string {

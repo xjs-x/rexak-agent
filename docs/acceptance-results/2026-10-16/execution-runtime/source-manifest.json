@@ -1,0 +1,546 @@
+{
+  "baseline": "a3d9df06fa804374fc24c77c5f2140fe7e79146c",
+  "scope": "changed staged non-acceptance files; excludes report files and both manifests",
+  "files": [
+    {
+      "path": "README.md",
+      "git_blob": "0d8c35d2b2551562c75321f6ba452f6506b3e28b",
+      "sha256": "b4b1cdd4d8c2413a72d5720433903379e41d936c51b91f783e7cf3f0bf3f9e6f",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "deploy/executor-requirements.txt",
+      "git_blob": "4398487e64ea90bbd75fb8c42d6239c1a38576c2",
+      "sha256": "19cdc29fb756ff764a96d03af407d70dd30c0ded125ebbf3277805354bd74dc0",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "deploy/rexak-executor.service",
+      "git_blob": "1ce46a38c9380e82ed9b9e31bb5c0b272f964d55",
+      "sha256": "3bf2410c8765897e2fe4c4c9a40bb3be5c4fa6b8fff4c7d2e24b264d9bfe4b6c",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "docs/decisions/0006-execution-runtime.md",
+      "git_blob": "ac0868d8cb0dfea2d3508bb3f754bda3ab48db09",
+      "sha256": "dca205d1d367d71343d5772cb0f9fda6519b93325e7810bc54e023e02c8138c1",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "docs/execution-runtime.md",
+      "git_blob": "e893bcf57a6446dff24e294caa4cd773ec3535e9",
+      "sha256": "c402af36cc684fa7d14a6e51dba336b05981fec77dcfc5b30c0f17746b22987d",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "docs/implementation-status.md",
+      "git_blob": "fc0a5d7f62a8e53837f78a0bbd8d569bcf853551",
+      "sha256": "ae61c109659bcebda5debf4170149c148df61c2cbfba0241aff79dcb451c2f5a",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "docs/plans/artex-command-runtime-migration.md",
+      "git_blob": "ba8294637763e8519c3de4a803baca4fbf32744b",
+      "sha256": "d81fd9ec053cc16a7354874368e43bf0a7608b55cc9478ba9a14340da66532e9",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "docs/plans/execution-runtime-acceptance.md",
+      "git_blob": "35dceac97472473cbaa89f4a287c91bf53b7c759",
+      "sha256": "fefbd87ea76ad84a3bb1af5c9c31c521bfdc622b923020ce8364348d5803f667",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "docs/plans/execution-runtime-handoff-prompt.md",
+      "git_blob": "31678718f0af844122c91b53c469efff7fe4240d",
+      "sha256": "abe51d5eb5b3c9d602830a1b2d501cbed05cc8e8e7e616e3f98a5ae660b0e261",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "docs/plans/execution-runtime-implementation-spec.md",
+      "git_blob": "80df3147eac71a47b6e26ee12658207df3b1c7ad",
+      "sha256": "a17fa5048544360b6c705e3f63293e17e65cdfea28f87695a01e91f018b55158",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "evals/fixtures/target_app.py",
+      "git_blob": "f92da503339753b5cee3e9182933d10947fc8df0",
+      "sha256": "5c2ce820d0c4151a3bd5ed889f9bd4be913bb50de9c924fb0499aa7b69142f00",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/pyproject.toml",
+      "git_blob": "b86245c21b250e25251c2b03f98f32ab0bce2f72",
+      "sha256": "0b68f310dd96d84e4700322220d6725e5751980f18047c8c7c0d63c80ce5d993",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/_generated/__init__.py",
+      "git_blob": "550ce2bb135696e67f118bf6ae9a9953bbf83b2b",
+      "sha256": "96a4960423ffedf30c3e800d4a6e315c1773c9700b4bd535330b96c9702364d4",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/_generated/contracts/__init__.py",
+      "git_blob": "550ce2bb135696e67f118bf6ae9a9953bbf83b2b",
+      "sha256": "96a4960423ffedf30c3e800d4a6e315c1773c9700b4bd535330b96c9702364d4",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/_generated/contracts/execution_runtime.py",
+      "git_blob": "0d06aed829773cf528dbb0c3a68540bb93ef0b0f",
+      "sha256": "559b91498f1ce2a8d14813c814e53ee23922e7ba64bccc2c3d0f3b21402105c6",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/api.py",
+      "git_blob": "148f2a4f0ba3c76c968bc1ccde375502d00aa862",
+      "sha256": "3b829ddf7d6fbd324a33bd230eddaf942263c39a80d0402ace858175df88bfde",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/command_runtime.py",
+      "git_blob": "eb70528c98fc71d8f553285b9941fd98dac1d4ea",
+      "sha256": "ee56cab8e9e049f0b767209018f635b5266a4fb4735567e9a63dca7a06681156",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/execution_api.py",
+      "git_blob": "20ab217521559ed4ddd5158334c9fede288a33ff",
+      "sha256": "0720b4a15781b2abef67714e0219279e9b51cc87a80922c9300050eb31205198",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/execution_environment.py",
+      "git_blob": "97126a316d51c4fb0d2c764bbf91adc2919d1f35",
+      "sha256": "dd3719f6c443a479909b19279ca93c929fa63125fa4acd73e5d6370eeb313e35",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/filesystem.py",
+      "git_blob": "f6a9ca15afb81867f599067fcdf52c9ab1021a18",
+      "sha256": "6450be317395e9d5af1d5ef857955c5a206ba596f7da711820e14ad5237c6993",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/job_worker.py",
+      "git_blob": "f6680239154805fbd53807b4e99018b4c90387b5",
+      "sha256": "bcd0d60bad9dc0e96d9f97e57526fe32819d29e6c22cc1ef80a7c4d3c555633e",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/ledger.py",
+      "git_blob": "2f25be0d43a894a58e77d7951d7924e76f57ba83",
+      "sha256": "d44e699fa7ba8c172519527470c2c2f102860163c0ea5da7cac8b93177a76991",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/output_store.py",
+      "git_blob": "463af7f7dad33235560a5b9c0466f1464d971062",
+      "sha256": "11fd21e06f471dda60da85b1b6d7781346603a009ea34d8746819346cf02126a",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/processes.py",
+      "git_blob": "1d500d6238dd7ddf9f475e9c05ffeb2fcd035383",
+      "sha256": "1f098445e4ba1a49a0e5490b29dd6543904e3eaa294f43d28d7f2f557a42d80c",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/settings.py",
+      "git_blob": "a115c813c5c54eb5661276967d8f40965b29a2b9",
+      "sha256": "10ed4da5a2606caaa4618a81b6b68004db3b01c576c4489f23b6afcd9094473e",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/terminals.py",
+      "git_blob": "5d82407c96a41c379abe124935d473fbbaab641f",
+      "sha256": "0c1e4757c00439727c341952ba9a606c95a36fb66f034ac5f5f468619821be97",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/src/workbench_executor/watch.py",
+      "git_blob": "6e2b9ca168152480caf2b97c03daec42a74f87c8",
+      "sha256": "26c329d4ecc09173fcec832d477db7c530b1233ce6720699f6ae38f07dd76102",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/tests/test_execution_jobs_linux.py",
+      "git_blob": "c2a9b3ee75c1d3f7f80d5882b0a9edebfab77858",
+      "sha256": "10f48ad48bf5ccde9c7e3e7a66e0882ba592527430e346dfe4c8d5dda346ec02",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/tests/test_execution_ledger.py",
+      "git_blob": "1759fd029e647ede07847891a620984c18c32bee",
+      "sha256": "5f670f91d4e50d05ecaf5a5a1ad6d6138071120c036f8f63b964a6b2636b30d1",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/tests/test_execution_recovery_windows.py",
+      "git_blob": "0436855c98e769572a83c57da13083f1a616721d",
+      "sha256": "91f004a58d85c6c72454571b647289449027b33fa5652bf36dbc4d6b2777b74d",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/tests/test_filesystem_execution.py",
+      "git_blob": "2f43d35e601eb42bd81ce7f2fd5061f1f58bef86",
+      "sha256": "f13371ed37f5eb215555ee95fc200a6ee8863c6d133faa4e3ae0d23415de06a0",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/tests/test_output_store.py",
+      "git_blob": "6cbb8210c2f792c6c648237488770d47ea58ed6d",
+      "sha256": "e62c1d35eaedaddcdda05b57c0683f39548e29de35a4cf634f606b1494f68af8",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/tests/test_terminal_output_pages.py",
+      "git_blob": "8571f80373ed63be3853fe769c08ec46dd58968d",
+      "sha256": "6afd87e4f5b53f48a84d153c3f3d001e5e06dbf32edbd8cf15bf2cd1c99e6ac3",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/tests/test_terminals_input.py",
+      "git_blob": "4ef6afe321bb846328326e098e330e45159e03bd",
+      "sha256": "fcceb8becd7444d13e8af948a8eb883e3f0a6c4c63cbd36ee85e117fa2d93a1b",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/tests/test_terminals_linux.py",
+      "git_blob": "676e967fea7e7c75e64e557b98101be09b96f6a2",
+      "sha256": "c19e5a9e07f45e4f54a19bc8e8aec889801a1d16d5be978b8a9e116ee7cffc16",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/tests/test_watch_rules.py",
+      "git_blob": "c859cee5b46c63b804a45372433cf03bde6ea4cb",
+      "sha256": "4085cb37e62b8bf8e373800a9a261897c6641575d58aaa53a21056856c49a65a",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "executor/tests/test_worker_spec_hash.py",
+      "git_blob": "46ddbe8ed4f25d015d73018a7692f2c3dafe11ed",
+      "sha256": "8e558b341d1e9acd9c74af47d5bb968e82f5a7d8cd690a86a4bc360524acdfe7",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "migrations/versions/e5a1c3d7b902_execution_runtime.py",
+      "git_blob": "0b3c72b8bf0de5c9ae1b0e304c1c6bf768f36008",
+      "sha256": "23b05f33072e140349a88b07cd7440fc72dcc77f9f314ba377d22e2b4311a0ef",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "scripts/accept_execution_runtime.py",
+      "git_blob": "782911fbc086c643b92450556eb80fc91adc6761",
+      "sha256": "091cd059bcd981933c0c78d882538698dbe70558e95d4328f7e5951a207e40ca",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "scripts/accept_execution_runtime_rollback.py",
+      "git_blob": "14e34900eec0f60a4665c17123e886a2734628b2",
+      "sha256": "6437262fc00ab8f8805a771aa642392bd8d4dfbf20a44ea3d20a295f06e91f73",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "scripts/accept_execution_runtime_ui.py",
+      "git_blob": "ffface4cc3dff5ea667e4b011f7cac2f94cb259b",
+      "sha256": "41a107d606a670181bd12fb5cea498d38d3b00b499c18111dd5dffe91c106c7b",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "scripts/deploy_executor.py",
+      "git_blob": "263f4e3c2cdbae298ec9642b230f5ffea6647ebb",
+      "sha256": "67511b2e87d15576e7cc175182d12eb1c1cba132ac604a2075db4152a29eeaf8",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "scripts/generate_executor_contracts.py",
+      "git_blob": "68f978ed3890595378cc0e0daba34a1cbb7bcbd5",
+      "sha256": "086de751907a7b94dc3f24aa42b23aef515fa9653f53b8ddabed7cc8fd6f4eff",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/agent/middleware/command_guard.py",
+      "git_blob": "c97cd9118663f235c7072c4ae4426072855dbdca",
+      "sha256": "25bb86f918c1691361a86e937c82825dc7ef636e774b4c2d0569b15828961c5a",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/agent/middleware/tool_dispatch.py",
+      "git_blob": "70cfd541c724bc02e052cc258058716f18548bd1",
+      "sha256": "94c0871188fd47d4cdcab99c77165de95069ca70f8ca39a9c282f2eb2da43fdb",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/agent/state.py",
+      "git_blob": "bf8a56c285e5136bd5ca0027d5e6bef5313aab83",
+      "sha256": "f8a336df3e28c42759bb80691eaa934d476d24dfbc462016a727429d273428c5",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/api/app.py",
+      "git_blob": "a58e4341848165fdb81ed1f9a45e3128b052292c",
+      "sha256": "064a318ee99998ec744f21eaa68808f7b3e18739aeee2d69a1afd4ab85d63b57",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/api/execution.py",
+      "git_blob": "671ec6de072aa868e2baba6472c75cb17f90e9f2",
+      "sha256": "fa605f5339d46ceb0e31c3cf6ec97d20e37bdd97f480d31d36cb72e3db29eeef",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/api/routes.py",
+      "git_blob": "57e12c4c17f4a4ca68d102583ae09b0dcec0a0be",
+      "sha256": "fdddd0edc31bb0e7d94a9bb00b6b7576dd0cf3f2e94a82c892166d701b7ef293",
+      "worktree_same_as_index": false
+    },
+    {
+      "path": "src/agent_workbench/cli.py",
+      "git_blob": "d787ad8f337831a1a6b1d7483454867c8091760e",
+      "sha256": "cdfe92a923e61b4ac32c5585bebaaf40211b65306c1a191a3f48dcdab1c3c8d7",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/contracts/execution_runtime.py",
+      "git_blob": "cdd92d7c6e45e1920da92570a34d4aac8be8cba5",
+      "sha256": "fd02925d2cbe5804f9dadcb420b1172593163f97835f5c6e76e066b915fc3d2d",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/contracts/tool.py",
+      "git_blob": "583eaa95aaebdb13a586bae2d235fe02961addc7",
+      "sha256": "c264d9919aabff0f93df0ae701a939cdfe86541dd1730acb64c7757a36727660",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/domain/execution_delegations.py",
+      "git_blob": "22aa8904282d550da1a6673cb381e1be479500cd",
+      "sha256": "5d8d821387a14bca6202c797b0a044f8b5911d78aad26830cabfc4098bd2762d",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/execution/client.py",
+      "git_blob": "b0651692be323fa1459305019ca50ce60bddaf9d",
+      "sha256": "06ad7fba2af3178a18cd40f16f71d2d779efd6864838b996d98bac68680097f6",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/persistence/repositories.py",
+      "git_blob": "1a05c051421aec78ee1a6fae33b08ad659f29394",
+      "sha256": "03b695d7ecfe532e5992437398a374058b22852bbcb75a955e0baa72740f5348",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/persistence/tables.py",
+      "git_blob": "d5552a784f77ca5f01fd93d9aa698e9f56b08528",
+      "sha256": "eb249c61e88e08b490423895f0449edf271c976fea2c0eb15b82b6228f5a9638",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/runtime/commands.py",
+      "git_blob": "4d4af93d6765c02d00c62f68db3e05e07c623c78",
+      "sha256": "4a5af99eab0a348c916ded7fd54fe6ec13a561459faa7d20a529b5d477210da8",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/runtime/execution_control.py",
+      "git_blob": "d7674fffe8986102b90f6eac4bade2258a98e9c3",
+      "sha256": "176c20ff3d16b8e3099f68d966c99f1bbb00fd13683fff217d92f8a4acecbdd8",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/runtime/execution_events.py",
+      "git_blob": "ee0a191a333448b6eff1f2168f21adf8e57810a4",
+      "sha256": "0cc8c415bc18839fcbcc111c083ebcf182f2e8fe8155d7f061980500e58b313c",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/runtime/jobs.py",
+      "git_blob": "f3ed913be5606ea5fb10732f28f9ad0638893ecd",
+      "sha256": "a8eeedcde61c737e6322fa2671e9ec13dafd24e74dd6c9aee5b2898de5695f36",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/runtime/recovery.py",
+      "git_blob": "a03bd665d0b6d67a32686f7a7ed551ed72f02f05",
+      "sha256": "8f4683e40f9124cfee36f61b5f0df2e23af98a64ef9307df6f7baebefecdb564",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/runtime/runner.py",
+      "git_blob": "f0336e9a0fdc095efc0bb5094172b5df3e8d4a07",
+      "sha256": "8b7f1a06ddc7dbc182d4374e27dd5d87205f1d4ea32c98b9ec85c90ff9318870",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/runtime/stopping.py",
+      "git_blob": "3ff6dc8f5905bcd850b2dfd19eadacc66f9afee3",
+      "sha256": "2f9bec5ab7dd959ebd00e2f4329286228dfe79123c275bd3e3e973fa4a43721a",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/tools/commands.py",
+      "git_blob": "28f2ef228117ab40eac76079c156b5c6794e16fa",
+      "sha256": "59be30ffef38c57cac7b3675b97972c153b818f8e8609549da12b35bddc899fa",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/tools/execution_dispatch.py",
+      "git_blob": "47c2bb01deb2a9f1c80926de775589cd354063aa",
+      "sha256": "cacd6adaff7fdd805d5b5bbdfdf524d66c8ad43875fb9c9b20234d515c7646e5",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/tools/execution_resources.py",
+      "git_blob": "6b31012643e19c4c7e0f0e15ff2cdcf928737b25",
+      "sha256": "a1caf981f83fc99149d08217abfa755da94aaa48f527de56aea99fa924cae062",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/tools/files.py",
+      "git_blob": "5783e0ee9ec03c2f46de2da176dfef01ebdb5006",
+      "sha256": "42bb630689eb47576852d30f76bf7bad674bc89743cd6f39fb8fcf293ebb6fbc",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/tools/jobs.py",
+      "git_blob": "705b6f66a4badcad4a21c364f56b0e784d58af01",
+      "sha256": "cbb0dfaf95b1a977b106205aea5927d001da69db80195f0d5a1d238de682e2e2",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/tools/registry.py",
+      "git_blob": "6995724aa0729d6af84145d63c667d8e481856c3",
+      "sha256": "01d42ed324d1c457914af195023f9bc87d4187049dbd909cd8c76d72e39970f5",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/tools/runtime.py",
+      "git_blob": "b1b6d211e0429e00f3949f9cdfb4cd06e57cc88c",
+      "sha256": "026ecac6d417771a2c99a3d66275383b79d3a01ad79bb0c1acc40a681717a951",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "src/agent_workbench/tools/terminals.py",
+      "git_blob": "42d4800add2d5bc43d30f6abdb7b4a8514e4cea2",
+      "sha256": "7f86c5067996ac8675051bc3b3a5a41f089caf3f88426cc03f49031df6f1df78",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/integration/test_execution_api.py",
+      "git_blob": "0f6dc24092d0e2693c947e990b413fedb7666f91",
+      "sha256": "8c2836981772eeb16e9fb5ffc5eae37ae0b16c0bb612dd03446b5404a1c7dcb7",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/integration/test_execution_delegations.py",
+      "git_blob": "c9f22a5bcd78e09f1a478f5f3fd3dd8597202206",
+      "sha256": "e72b5a996b5d4b3d95dcd486fae41a24e9a7566cd5cc7ee2ff11c953bcdd628a",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/integration/test_execution_delivery_recovery.py",
+      "git_blob": "e4e9f7f326b1356386cfc0df33e851cb41ce0065",
+      "sha256": "bcb85e8346522b28dc2a85d4b037f80ba06f411f4908fc7f9c2e951c75a9d922",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/integration/test_execution_final_controls.py",
+      "git_blob": "c8f37ea791d4bbb75e99cbb37fe657cfc72211bf",
+      "sha256": "79ab683449807c286a63ce7aef9d5566bf3b7560419682352751abf40887ba76",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/integration/test_execution_finish_gate.py",
+      "git_blob": "0c5cea8ba4e03d32be7bda3779349b82d12140f2",
+      "sha256": "bb64380af8e6773444d0a54d076277a03878ff61b67a4d9d31463752f8a828f5",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/integration/test_execution_tools.py",
+      "git_blob": "91d817911ceaf60f2ab5bb68cc5dd4b113ed6da5",
+      "sha256": "74a43799e428d2b89d76841b8a7d607b9787c4e2d118ca22722fbb2bc20146bb",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/recovery/test_job_wakeup.py",
+      "git_blob": "041fc01c867cce15b7063df5d125eae8575555e0",
+      "sha256": "c855bd98a18ead4ff5cd30746fa4cd2403655295ae649536b03b3ddc48405b81",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/support/executor_fixtures.py",
+      "git_blob": "ee15ff09307595b85fe1fa1de3252eeadf49b223",
+      "sha256": "63c405ee643abd868ff830a2e32ca3cee2b4e4e9dc6ddc507220776e2bdd6591",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/unit/test_execution_contracts.py",
+      "git_blob": "d078fb4ae683e6b1684414ca030652db6d80e8bf",
+      "sha256": "238cb41e0357bc2f81bb1b7e3c31e73808d9e09d81b9e3501c04041f3e74f4b6",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/unit/test_execution_delegations_unit.py",
+      "git_blob": "6fb18291f9b25e5d28af1060cec619f1fbb7768e",
+      "sha256": "0a0e01f1a2843638e2466b87cb1fc4648bfd90d55a7c4c13097593a3ba366397",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/unit/test_execution_gating.py",
+      "git_blob": "cbb315b94aa747c0b757585f32910cab91a534ae",
+      "sha256": "0a2baead54d75f60c8120c6db8398a56081c972c6fd4363738085bb68df87d3c",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "tests/unit/test_execution_summary.py",
+      "git_blob": "3df8b70a52d7bfe2b39be8fda22ae9a8b25dcd62",
+      "sha256": "13fb941d4ee503d8ee6190a8a5d85d5af801849ea2a8f0e0ce94c1caeb70f8b1",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "uv.lock",
+      "git_blob": "2c5af47d626f1fc5b1a3354e251109e44c7a7705",
+      "sha256": "93f56b96af4172005ad0b5b50d202a33d5cf8dc336d035d256792228a4943bf2",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "web/src/App.tsx",
+      "git_blob": "d7e0e00bcece628e7a5bea1122e38df0008070f8",
+      "sha256": "648bb4ab830cb638fa8bf06b6489f34710bc8561c1f1324b9c9615da9813b94d",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "web/src/ExecutionPanel.tsx",
+      "git_blob": "019ed9711f535a6220680f5ac1cddfe27e94de28",
+      "sha256": "5cbc100513a36fca562105b48aa710b6ccc419e6ec7513fe0a3d1eb390565d4b",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "web/src/ToolActivity.tsx",
+      "git_blob": "c9f19b0404218934705516285d7e438fd4b6b67a",
+      "sha256": "32522cfe9ce26eb17fa7135087f4ccfd3b6bf5332b89d36031a5a342c77d8597",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "web/src/api/client.ts",
+      "git_blob": "e3e29d21d7cdc6645a7ff5bfa3e108b0b73b509a",
+      "sha256": "b4715c6b8fc8c6c4bc4ba40fd96b53bc3e3269671ea53b2d42d2374e6d3c55c3",
+      "worktree_same_as_index": false
+    },
+    {
+      "path": "web/src/api/generated/schema.d.ts",
+      "git_blob": "e23b851e9e6c54f93b02f7a2e43d890026af38bd",
+      "sha256": "6ecf53acbfd07b4ba238a900addfe466d03f9279124a37214ddf132ab94451ed",
+      "worktree_same_as_index": true
+    },
+    {
+      "path": "web/src/style.css",
+      "git_blob": "860da96949b8f35c47ad88b64c04a1e2ebe70ba6",
+      "sha256": "e3a30e4d7a797f3682707bd5331497a4bef0f64c0aabcae134525c91313fbe55",
+      "worktree_same_as_index": true
+    }
+  ]
+}

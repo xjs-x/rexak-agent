@@ -16,6 +16,7 @@ from typing import Any, NamedTuple
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +30,14 @@ from agent_workbench.contracts.errors import ApiError
 from agent_workbench.persistence.tables import (
     ArtifactRow,
     CommandRow,
+    ExecutionDelegationRow,
+    ExecutionDeliveryBatchRow,
+    ExecutionEventCursorRow,
+    ExecutionEventReceiptRow,
+    ExecutionResourceRow,
+    ExecutionTemplateRow,
+    ExecutionTemplateVersionRow,
+    ExecutionWaitSetRow,
     ModelCallRow,
     ProjectRow,
     SessionRow,
@@ -713,6 +722,632 @@ class ModelCallRepository:
                     select(ModelCallRow)
                     .where(ModelCallRow.run_id == run_id)
                     .order_by(ModelCallRow.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+# --------------------------------------------------------------------------- #
+# 执行底座（V4）：资源投影 / wait-set / 委托 / 事件 / delivery / 模板
+# --------------------------------------------------------------------------- #
+
+
+class ExecutionResourceRepository:
+    """会话资源在控制端的只读投影。**不**声明为真实执行状态。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._s = session
+
+    async def upsert(
+        self,
+        *,
+        resource_id: UUID,
+        session_id: UUID,
+        executor_id: str,
+        kind: str,
+        state: str,
+        interaction_state: str = "not_applicable",
+        mode: str = "",
+        purpose: str = "",
+        origin_run_id: UUID | None = None,
+        origin_operation_id: UUID | None = None,
+        exit_code: int | None = None,
+        termination_reason: str | None = None,
+        output_limit_action: str = "preserve_process",
+        quota: dict[str, Any] | None = None,
+        detail: dict[str, Any] | None = None,
+        sync_status: str = "in_sync",
+    ) -> ExecutionResourceRow:
+        # 同一逻辑操作的并发回执可能同时首次投影。插入与逐行更新都在当前事务内串行。
+        await self._s.execute(pg_insert(ExecutionResourceRow).values(
+            resource_id=resource_id, session_id=session_id, executor_id=executor_id,
+            kind=kind, state=state,
+        ).on_conflict_do_nothing(index_elements=[ExecutionResourceRow.resource_id]))
+        row = (await self._s.execute(select(ExecutionResourceRow).where(
+            ExecutionResourceRow.resource_id == resource_id
+        ).with_for_update().execution_options(populate_existing=True))).scalar_one()
+        if row.session_id != session_id or row.executor_id != executor_id:
+            raise ApiError(ErrorCode.CONFLICT, "执行资源投影归属冲突，拒绝覆盖")
+        checked_at = _utcnow()
+        row.executor_id = executor_id
+        row.kind = kind
+        row.state = state
+        row.interaction_state = interaction_state
+        if mode:
+            row.mode = mode
+        if purpose:
+            row.purpose = purpose
+        if origin_run_id is not None and row.origin_run_id is None:
+            row.origin_run_id = origin_run_id
+        if origin_operation_id is not None and row.origin_operation_id is None:
+            row.origin_operation_id = origin_operation_id
+        row.exit_code = exit_code
+        row.termination_reason = termination_reason
+        row.output_limit_action = output_limit_action
+        if quota is not None:
+            row.quota = quota
+        if detail is not None:
+            row.detail = {**(row.detail or {}), **detail}
+        row.sync_status = sync_status
+        row.last_checked_at = checked_at
+        await self._s.flush()
+        return row
+
+    async def get(self, resource_id: UUID) -> ExecutionResourceRow | None:
+        return (
+            await self._s.execute(
+                select(ExecutionResourceRow).where(
+                    ExecutionResourceRow.resource_id == resource_id
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def list_for_session(
+        self,
+        session_id: UUID,
+        *,
+        active_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[ExecutionResourceRow]:
+        stmt = select(ExecutionResourceRow).where(ExecutionResourceRow.session_id == session_id)
+        if active_only:
+            stmt = stmt.where(
+                ExecutionResourceRow.state.in_(["starting", "running", "unknown"])
+            )
+        stmt = (
+            stmt.order_by(ExecutionResourceRow.created_at.desc()).limit(limit).offset(offset)
+        )
+        return (await self._s.execute(stmt)).scalars().all()
+
+    async def active_for_session(self, session_id: UUID) -> Sequence[ExecutionResourceRow]:
+        return (
+            (
+                await self._s.execute(
+                    select(ExecutionResourceRow).where(
+                        ExecutionResourceRow.session_id == session_id,
+                        ExecutionResourceRow.state.in_(["starting", "running", "unknown"]),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def mark_close_requested(self, resource_id: UUID) -> None:
+        await self._s.execute(
+            update(ExecutionResourceRow)
+            .where(ExecutionResourceRow.resource_id == resource_id)
+            .values(close_state="close_requested", updated_at=_utcnow())
+        )
+
+    async def apply_close_result(
+        self, resource_id: UUID, *, confirmed: bool, state: str, detail: dict[str, Any] | None = None
+    ) -> None:
+        values: dict[str, Any] = {
+            "close_confirmed": confirmed,
+            "close_state": "closed" if confirmed else "close_requested",
+            "state": state,
+            "updated_at": _utcnow(),
+            "last_checked_at": _utcnow(),
+        }
+        if detail is not None:
+            row = await self.get(resource_id)
+            merged = dict(row.detail if row is not None else {})
+            merged.update(detail)
+            values["detail"] = merged
+        await self._s.execute(
+            update(ExecutionResourceRow)
+            .where(ExecutionResourceRow.resource_id == resource_id)
+            .values(**values)
+        )
+
+
+class ExecutionWaitSetRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._s = session
+
+    async def create(
+        self,
+        *,
+        session_id: UUID,
+        run_id: UUID | None,
+        resource_ids: list[str],
+        event_types: list[str],
+        match: str,
+        creator_operation_id: UUID | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> ExecutionWaitSetRow:
+        row = ExecutionWaitSetRow(
+            id=uuid4(),
+            session_id=session_id,
+            run_id=run_id,
+            resource_ids=list(resource_ids),
+            event_types=list(event_types),
+            match=match,
+            status="open",
+            creator_operation_id=creator_operation_id,
+            detail=detail or {},
+        )
+        self._s.add(row)
+        await self._s.flush()
+        return row
+
+    async def get(self, wait_set_id: UUID) -> ExecutionWaitSetRow | None:
+        return (
+            await self._s.execute(
+                select(ExecutionWaitSetRow).where(ExecutionWaitSetRow.id == wait_set_id)
+            )
+        ).scalar_one_or_none()
+
+    async def open_for_run(self, run_id: UUID) -> Sequence[ExecutionWaitSetRow]:
+        return (
+            (
+                await self._s.execute(
+                    select(ExecutionWaitSetRow).where(
+                        ExecutionWaitSetRow.run_id == run_id,
+                        ExecutionWaitSetRow.status == "open",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def open_for_session(self, session_id: UUID) -> Sequence[ExecutionWaitSetRow]:
+        return (
+            (
+                await self._s.execute(
+                    select(ExecutionWaitSetRow).where(
+                        ExecutionWaitSetRow.session_id == session_id,
+                        ExecutionWaitSetRow.status == "open",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def mark_satisfied(self, wait_set_id: UUID, *, detail: dict[str, Any] | None = None) -> None:
+        values: dict[str, Any] = {
+            "status": "satisfied",
+            "satisfied_at": _utcnow(),
+            "last_checked_at": _utcnow(),
+        }
+        if detail is not None:
+            row = await self.get(wait_set_id)
+            merged = dict(row.detail if row is not None else {})
+            merged.update(detail)
+            values["detail"] = merged
+        await self._s.execute(
+            update(ExecutionWaitSetRow).where(ExecutionWaitSetRow.id == wait_set_id).values(**values)
+        )
+
+    async def cancel_for_run(self, run_id: UUID, *, reason: str) -> int:
+        result = await self._s.execute(
+            update(ExecutionWaitSetRow)
+            .where(
+                ExecutionWaitSetRow.run_id == run_id,
+                ExecutionWaitSetRow.status == "open",
+            )
+            .values(status="cancelled", updated_at=_utcnow(), detail={"reason": reason})
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
+
+
+class ExecutionDelegationRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._s = session
+
+    async def create(
+        self,
+        *,
+        session_id: UUID,
+        resource_ids: list[str],
+        event_filters: list[str],
+        goal: str,
+        mode: str,
+        authorization_source: str,
+        authorization_quote: str,
+        authorization_command_id: UUID | None,
+        created_by_run_id: UUID | None,
+    ) -> ExecutionDelegationRow:
+        row = ExecutionDelegationRow(
+            id=uuid4(),
+            session_id=session_id,
+            resource_ids=list(resource_ids),
+            event_filters=list(event_filters),
+            goal=goal,
+            mode=mode,
+            status="active",
+            revision=1,
+            authorization_source=authorization_source,
+            authorization_command_id=authorization_command_id,
+            authorization_quote=authorization_quote,
+            created_by_run_id=created_by_run_id,
+        )
+        self._s.add(row)
+        await self._s.flush()
+        return row
+
+    async def get(self, delegation_id: UUID) -> ExecutionDelegationRow | None:
+        return (
+            await self._s.execute(
+                select(ExecutionDelegationRow).where(ExecutionDelegationRow.id == delegation_id)
+            )
+        ).scalar_one_or_none()
+
+    async def list_for_session(
+        self, session_id: UUID, *, include_cancelled: bool = True
+    ) -> Sequence[ExecutionDelegationRow]:
+        stmt = select(ExecutionDelegationRow).where(
+            ExecutionDelegationRow.session_id == session_id
+        )
+        if not include_cancelled:
+            stmt = stmt.where(ExecutionDelegationRow.status == "active")
+        return (
+            (await self._s.execute(stmt.order_by(ExecutionDelegationRow.created_at.desc())))
+            .scalars()
+            .all()
+        )
+
+    async def active_for_session(self, session_id: UUID) -> Sequence[ExecutionDelegationRow]:
+        return (
+            (
+                await self._s.execute(
+                    select(ExecutionDelegationRow).where(
+                        ExecutionDelegationRow.session_id == session_id,
+                        ExecutionDelegationRow.status == "active",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def cancel(self, delegation_id: UUID, *, reason: str) -> ExecutionDelegationRow | None:
+        """取消委托：递增 revision + 置 cancelled。**不向资源发送 kill**。"""
+        row = await self.get(delegation_id)
+        if row is None:
+            return None
+        await self._s.execute(
+            select(SessionRow).where(SessionRow.id == row.session_id).with_for_update()
+        )
+        await self._s.refresh(row)
+        if row.status == "active":
+            row.status = "cancelled"
+            row.revision = int(row.revision) + 1
+            row.cancelled_at = _utcnow()
+            row.cancel_reason = reason
+            batches = (await self._s.execute(
+                select(ExecutionDeliveryBatchRow).where(
+                    ExecutionDeliveryBatchRow.delegation_id == delegation_id,
+                    ExecutionDeliveryBatchRow.status.in_(["prepared", "injected"]),
+                )
+            )).scalars().all()
+            for batch in batches:
+                batch.status = "cancelled"
+                if batch.message_command_id is not None:
+                    await self._s.execute(
+                        update(CommandRow).where(
+                            CommandRow.id == batch.message_command_id,
+                            CommandRow.status == "queued",
+                        ).values(status="superseded")
+                    )
+                await self._s.execute(
+                    update(ExecutionEventReceiptRow).where(
+                        ExecutionEventReceiptRow.consumed_by_batch == batch.id
+                    ).values(consumed_by_batch=None)
+                )
+            await self._s.flush()
+        return row
+
+    async def complete_once(self, delegation_id: UUID) -> None:
+        row = await self.get(delegation_id)
+        if row is None or row.mode != "once":
+            return
+        row.status = "completed"
+        row.revision = int(row.revision) + 1
+        await self._s.flush()
+
+    async def touch_triggered(self, delegation_id: UUID) -> None:
+        row = await self.get(delegation_id)
+        if row is None:
+            return
+        row.last_triggered_at = _utcnow()
+        row.triggered_count = int(row.triggered_count) + 1
+        await self._s.flush()
+
+
+class ExecutionEventReceiptRepository:
+    """Executor 事件的幂等接收投影。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._s = session
+
+    async def insert_if_new(
+        self,
+        *,
+        executor_id: str,
+        event_id: str,
+        session_id: UUID | None,
+        resource_id: str | None,
+        operation_id: str | None,
+        type: str,
+        occurred_at: datetime,
+        sequence: int,
+        availability: str,
+        payload: dict[str, Any],
+    ) -> tuple[ExecutionEventReceiptRow, bool]:
+        existing = (
+            await self._s.execute(
+                select(ExecutionEventReceiptRow).where(
+                    ExecutionEventReceiptRow.executor_id == executor_id,
+                    ExecutionEventReceiptRow.event_id == event_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing, False
+        row = ExecutionEventReceiptRow(
+            executor_id=executor_id,
+            event_id=event_id,
+            session_id=session_id,
+            resource_id=resource_id,
+            operation_id=operation_id,
+            type=type,
+            occurred_at=occurred_at,
+            sequence=sequence,
+            availability=availability,
+            payload=payload,
+        )
+        try:
+            async with self._s.begin_nested():
+                self._s.add(row)
+                await self._s.flush()
+        except IntegrityError:
+            existing = (
+                await self._s.execute(
+                    select(ExecutionEventReceiptRow).where(
+                        ExecutionEventReceiptRow.executor_id == executor_id,
+                        ExecutionEventReceiptRow.event_id == event_id,
+                    )
+                )
+            ).scalar_one()
+            return existing, False
+        return row, True
+
+    async def list_unconsumed(
+        self, session_id: UUID, *, limit: int = 200
+    ) -> Sequence[ExecutionEventReceiptRow]:
+        return (
+            (
+                await self._s.execute(
+                    select(ExecutionEventReceiptRow)
+                    .where(
+                        ExecutionEventReceiptRow.session_id == session_id,
+                        ExecutionEventReceiptRow.consumed_by_batch.is_(None),
+                    )
+                    .order_by(ExecutionEventReceiptRow.id)
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def mark_consumed(self, receipt_ids: Sequence[int], batch_id: UUID) -> None:
+        if not receipt_ids:
+            return
+        await self._s.execute(
+            update(ExecutionEventReceiptRow)
+            .where(ExecutionEventReceiptRow.id.in_(list(receipt_ids)))
+            .values(consumed_by_batch=batch_id)
+        )
+
+
+class ExecutionEventCursorRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._s = session
+
+    async def get(self, executor_id: str) -> int:
+        row = (
+            await self._s.execute(
+                select(ExecutionEventCursorRow).where(
+                    ExecutionEventCursorRow.executor_id == executor_id
+                )
+            )
+        ).scalar_one_or_none()
+        return int(row.last_seq) if row is not None else 0
+
+    async def put(self, executor_id: str, last_seq: int) -> None:
+        row = (
+            await self._s.execute(
+                select(ExecutionEventCursorRow).where(
+                    ExecutionEventCursorRow.executor_id == executor_id
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            self._s.add(ExecutionEventCursorRow(executor_id=executor_id, last_seq=last_seq))
+        else:
+            row.last_seq = max(int(row.last_seq), int(last_seq))
+        await self._s.flush()
+
+
+class ExecutionDeliveryBatchRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._s = session
+
+    async def create(
+        self,
+        *,
+        session_id: UUID,
+        run_id: UUID | None,
+        delegation_id: UUID | None,
+        event_receipt_ids: list[int],
+        summary: dict[str, Any],
+        message_id: str,
+        batch_id: UUID | None = None,
+    ) -> ExecutionDeliveryBatchRow:
+        row = ExecutionDeliveryBatchRow(
+            id=batch_id or uuid4(),
+            session_id=session_id,
+            run_id=run_id,
+            delegation_id=delegation_id,
+            event_receipt_ids=list(event_receipt_ids),
+            summary=summary,
+            status="prepared",
+            message_id=message_id,
+        )
+        self._s.add(row)
+        await self._s.flush()
+        return row
+
+    async def get(self, batch_id: UUID) -> ExecutionDeliveryBatchRow | None:
+        return (
+            await self._s.execute(
+                select(ExecutionDeliveryBatchRow).where(ExecutionDeliveryBatchRow.id == batch_id)
+            )
+        ).scalar_one_or_none()
+
+    async def get_by_message_id(self, message_id: str) -> ExecutionDeliveryBatchRow | None:
+        return (
+            await self._s.execute(
+                select(ExecutionDeliveryBatchRow).where(
+                    ExecutionDeliveryBatchRow.message_id == message_id
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def list_open_for_session(self, session_id: UUID) -> Sequence[ExecutionDeliveryBatchRow]:
+        return (
+            (
+                await self._s.execute(
+                    select(ExecutionDeliveryBatchRow).where(
+                        ExecutionDeliveryBatchRow.session_id == session_id,
+                        ExecutionDeliveryBatchRow.status.in_(["prepared", "injected"]),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def mark_injected(self, batch_id: UUID, *, command_id: UUID) -> None:
+        await self._s.execute(
+            update(ExecutionDeliveryBatchRow)
+            .where(ExecutionDeliveryBatchRow.id == batch_id)
+            .values(status="injected", message_command_id=command_id, updated_at=_utcnow())
+        )
+
+    async def mark_delivered(self, batch_id: UUID) -> None:
+        await self._s.execute(
+            update(ExecutionDeliveryBatchRow)
+            .where(ExecutionDeliveryBatchRow.id == batch_id)
+            .values(status="delivered", delivered_at=_utcnow(), updated_at=_utcnow())
+        )
+
+
+class ExecutionTemplateRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._s = session
+
+    async def get_by_name(self, session_id: UUID, name: str) -> ExecutionTemplateRow | None:
+        return (
+            await self._s.execute(
+                select(ExecutionTemplateRow).where(
+                    ExecutionTemplateRow.session_id == session_id,
+                    ExecutionTemplateRow.name == name,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def create_template(
+        self, *, session_id: UUID, name: str, description: str, kind: str
+    ) -> ExecutionTemplateRow:
+        row = ExecutionTemplateRow(
+            id=uuid4(),
+            session_id=session_id,
+            name=name,
+            description=description,
+            kind=kind,
+            latest_revision=0,
+        )
+        self._s.add(row)
+        await self._s.flush()
+        return row
+
+    async def add_version(
+        self,
+        *,
+        template_id: UUID,
+        spec: dict[str, Any],
+        content_hash: str,
+        script_artifact_id: UUID | None,
+        created_by_run_id: UUID | None,
+    ) -> ExecutionTemplateVersionRow:
+        template = (
+            await self._s.execute(
+                select(ExecutionTemplateRow).where(ExecutionTemplateRow.id == template_id).with_for_update()
+            )
+        ).scalar_one()
+        revision = int(template.latest_revision) + 1
+        row = ExecutionTemplateVersionRow(
+            id=uuid4(),
+            template_id=template_id,
+            revision=revision,
+            content_hash=content_hash,
+            spec=spec,
+            script_artifact_id=script_artifact_id,
+            created_by_run_id=created_by_run_id,
+        )
+        self._s.add(row)
+        template.latest_revision = revision
+        await self._s.flush()
+        return row
+
+    async def get_version(
+        self, template_id: UUID, revision: int | None
+    ) -> ExecutionTemplateVersionRow | None:
+        stmt = select(ExecutionTemplateVersionRow).where(
+            ExecutionTemplateVersionRow.template_id == template_id
+        )
+        if revision is None:
+            stmt = stmt.order_by(ExecutionTemplateVersionRow.revision.desc()).limit(1)
+        else:
+            stmt = stmt.where(ExecutionTemplateVersionRow.revision == revision)
+        return (await self._s.execute(stmt)).scalar_one_or_none()
+
+    async def list_for_session(self, session_id: UUID) -> Sequence[ExecutionTemplateRow]:
+        return (
+            (
+                await self._s.execute(
+                    select(ExecutionTemplateRow)
+                    .where(ExecutionTemplateRow.session_id == session_id)
+                    .order_by(ExecutionTemplateRow.name)
                 )
             )
             .scalars()

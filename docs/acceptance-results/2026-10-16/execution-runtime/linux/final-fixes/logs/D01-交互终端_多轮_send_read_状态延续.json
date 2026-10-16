@@ -1,0 +1,41 @@
+{
+  "first": {
+    "schema_version": 1,
+    "operation_id": "26780ae4-c166-4bd8-b6ef-838d0c4884a7",
+    "action": "terminal_send",
+    "status": "succeeded",
+    "resource_id": "520d4b45-0c56-4695-9bdd-5439b7626e56",
+    "job_id": null,
+    "terminal_id": "520d4b45-0c56-4695-9bdd-5439b7626e56",
+    "process_state": "running",
+    "process_confirmed_exited": null,
+    "interaction_state": "available",
+    "wait_reason": "prompt",
+    "exit_code": null,
+    "termination_reason": null,
+    "resource": null,
+    "output": {
+      "resource_id": "520d4b45-0c56-4695-9bdd-5439b7626e56",
+      "stream": "stdout",
+      "cursor": null,
+      "next_cursor": "djJ8NTIwZDRiNDUtMGM1Ni00Njk1LTliZGQtNTQzOWI3NjI2ZTU2fHN0ZG91dHw0OQ",
+      "byte_start": 0,
+      "byte_end": 49,
+      "text": "$ echo INTERACTIVE_MARKER\r\nINTERACTIVE_MARKER\r\n$ ",
+      "byte_count": 49,
+      "at_current_end": true,
+      "process_exited": false,
+      "truncated": false,
+      "missing_ranges": [],
+      "encoding_error": null,
+      "artifact_refs": [],
+      "note": "PTY 输出为合流（stdout/stderr 不可分离）。"
+    },
+    "deduplicated": false,
+    "accepted_at": "2026-10-16T01:35:41.820822+00:00",
+    "executed_at": null,
+    "note": "本次发送操作成功；这不表示被控制的程序执行成功或已退出。",
+    "capabilities_note": null
+  },
+  "second_text": "echo SECOND_MARKER\r\nSECOND_MARKER\r\n$ "
+}

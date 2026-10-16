@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-10-16T02:16:36.247598+00:00",
+  "mode": "deployed-smoke",
+  "results": [
+    {
+      "id": "H05",
+      "name": "已部署冒烟（专属 session）",
+      "status": "PASS",
+      "reason": "",
+      "duration": 0.0,
+      "evidence_paths": [
+        "docs\\acceptance-results\\2026-10-16\\execution-runtime\\deployed-smoke\\logs\\H05-deployed-smoke.json"
+      ]
+    }
+  ],
+  "summary": {
+    "pass": 1,
+    "fail": 0,
+    "not_run": 0
+  },
+  "notes": []
+}

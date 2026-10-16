@@ -1,0 +1,45 @@
+{
+  "baseline": "a3d9df06fa804374fc24c77c5f2140fe7e79146c",
+  "files": {
+    ".workbuddy/memory/2026-10-09.md": {
+      "matches_initial_diff": true,
+      "sha256": "497581eb4094c05f2919738f5df586b33fd8bc62a41d8f6eb97f69b7a0ffd292"
+    },
+    ".workbuddy/memory/MEMORY.md": {
+      "matches_initial_diff": true,
+      "sha256": "66b170106b236d757359d2d0ae9cc2a4cd9c01b4dade3c6f7043bc4539d29c0d"
+    },
+    "tests/integration/test_web_model_settings.py": {
+      "matches_initial_diff": true,
+      "sha256": "429db6f59a48a97a4ded8b902d9f260ac00183b9263e7087af9953d14cb92796"
+    },
+    ".workbuddy/memory/2026-10-13.md": {
+      "matches_initial_sha256": true,
+      "sha256": "c000aab6a50a097eaf88b170a4dfb85e4444aaa4bd4ba31cf432bbe6d6ef8867"
+    },
+    ".workbuddy/memory/2026-10-14.md": {
+      "matches_initial_sha256": true,
+      "sha256": "7c4e1522c5672fef05cf12e326d0317f42b37c8738ce5a8f47160c34e049bca7"
+    },
+    ".workbuddy/memory/2026-10-15.md": {
+      "matches_initial_sha256": true,
+      "sha256": "47a05c0a7931c23f74df6d9e0078ea991702a485ce0b98ae552060a3f59d6424"
+    },
+    "docs/experiments/002-v1-three-targets-2026-10-13/REPORT.md": {
+      "matches_initial_sha256": true,
+      "sha256": "3cb7a2f265c48c68b63d60fb3ca31149072f73b4393ab462ff9f2d3b8c2afd73"
+    },
+    "docs/experiments/002-v1-three-targets-2026-10-13/review-evidence.json": {
+      "matches_initial_sha256": true,
+      "sha256": "a5f0df3a9bd4e671a64a5edf9dd9cfb298f23acb262b7f9682296fd3535311c3"
+    },
+    "docs/experiments/002-v1-three-targets-2026-10-13/review-evidence.sha256": {
+      "matches_initial_sha256": true,
+      "sha256": "430112e2c9bac7d8b73bbbb66e5d54d341e8bdc328677185af33e3ad80127cb5"
+    }
+  },
+  "shared_files": {
+    "src/agent_workbench/api/routes.py": "user create_local_session hunk excluded from index",
+    "web/src/api/client.ts": "user authentication retry and model-settings hunks excluded from index"
+  }
+}

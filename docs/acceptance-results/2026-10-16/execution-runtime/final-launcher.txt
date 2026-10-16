@@ -1,0 +1,6 @@
+模型与 API Key 请在 Web 设置中配置，配置会在本机保存。
+检查数据库和 Kali 执行端……
+数据库、SSH、Executor 检查通过。
+已启动：http://127.0.0.1:8770/console/
+保留此窗口；按 Ctrl+C 停止 API 和 Runner。
+本次启动的 API、Runner 已停止；数据库和 Kali Executor 保留运行。

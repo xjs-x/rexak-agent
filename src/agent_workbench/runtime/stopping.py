@@ -63,6 +63,10 @@ class CompletionDecision:
     blocked_count: int = 0
     #: 复查分页游标（由 checkpoint 保存）；为 None 表示已到末尾，下次从头再核对全量。
     review_next_cursor: str | None = None
+    #: **保留资源**（阶段结束仍存活、不等于未完成工作）：终端/监视器/后台任务。
+    retained_resources: list[str] = field(default_factory=list)
+    #: 持续值班状态（有效 continuous 委托）。报告必须显示"持续值班中"。
+    duty_note: str = ""
 
     @property
     def allowed(self) -> bool:
@@ -75,6 +79,8 @@ class CompletionDecision:
             "ready_count": self.ready_count,
             "blocked_count": self.blocked_count,
             "reason_count": len(self.reasons),
+            "retained_resources": list(self.retained_resources),
+            "duty_note": self.duty_note,
         }
 
 
@@ -174,14 +180,22 @@ class FinishGate:
                 ready_count=inventory.actionable_count,
             )
 
-        # 5) 未交待结果的工具任务
+        # 5) 未交待结果的工具任务与未满足的明确等待条件
         unresolved_jobs = await self._unresolved_jobs(session_id)
-        if unresolved_jobs:
+        open_wait_sets = await self._open_wait_sets(session_id)
+        if unresolved_jobs or open_wait_sets:
             return CompletionDecision(
                 decision="wait_tool",
-                reasons=["存在未交待结果的工具任务（含状态未知）"],
-                blocking_objects={"unresolved_jobs": unresolved_jobs},
+                reasons=["存在未交待结果的工具任务或未满足的等待条件（含状态未知）"],
+                blocking_objects={
+                    "unresolved_jobs": unresolved_jobs,
+                    "open_wait_sets": open_wait_sets,
+                },
             )
+
+        # 5b) 保留资源与值班状态：**报告**它们，但不把它们当成"未完成工作"，
+        #     也不允许把真正待办（上面的有限任务）改称"保留资源"来绕过检查。
+        retained, duty_note = await self._retained_resources(session_id)
 
         # 6) 所有有效方向都确实需要外部条件 -> 等待用户（保留全部未决项）
         waiting = [
@@ -209,6 +223,8 @@ class FinishGate:
                     "missing_conditions": external,
                 },
                 blocked_count=inventory.waiting_count,
+                retained_resources=retained,
+                duty_note=duty_note,
             )
 
         # 7) 开放探索收尾：覆盖缺口复查（受阻项保留在报告里，不能靠改状态消除）
@@ -219,6 +235,8 @@ class FinishGate:
                     decision="continue",
                     reasons=["尚未登记任何覆盖组合，不能声称开放探索已经收敛"],
                     coverage_gap=gap,
+                    retained_resources=retained,
+                    duty_note=duty_note,
                 )
             if gap.get("not_checked_entries"):
                 return CompletionDecision(
@@ -229,12 +247,92 @@ class FinishGate:
                     ],
                     blocking_objects={"coverage_gaps": gap["not_checked_entries"]},
                     coverage_gap=gap,
+                    retained_resources=retained,
+                    duty_note=duty_note,
                 )
             return CompletionDecision(
-                decision="complete", reasons=[], coverage_gap=gap
+                decision="complete",
+                reasons=[],
+                coverage_gap=gap,
+                retained_resources=retained,
+                duty_note=duty_note,
             )
 
-        return CompletionDecision(decision="complete", reasons=[])
+        return CompletionDecision(
+            decision="complete", reasons=[], retained_resources=retained, duty_note=duty_note
+        )
+
+    async def _open_wait_sets(self, session_id: UUID) -> list[str]:
+        from agent_workbench.persistence.tables import ExecutionWaitSetRow
+
+        rows = (
+            (
+                await self._s.execute(
+                    select(ExecutionWaitSetRow).where(
+                        ExecutionWaitSetRow.session_id == session_id,
+                        ExecutionWaitSetRow.status == "open",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [f"{row.id}（match={row.match}）" for row in rows]
+
+    async def _retained_resources(self, session_id: UUID) -> tuple[list[str], str]:
+        """阶段结束仍存活的资源与值班状态。
+
+        - 终端/监视器本身**不隐式阻塞**完成，但必须出现在报告里；
+        - 有效持续委托 -> "持续值班中"；无委托则如实说明"保留但不值班"。
+        """
+        from agent_workbench.persistence.tables import (
+            ExecutionDelegationRow,
+            ExecutionResourceRow,
+        )
+
+        rows = (
+            (
+                await self._s.execute(
+                    select(ExecutionResourceRow).where(
+                        ExecutionResourceRow.session_id == session_id,
+                        ExecutionResourceRow.state.in_(["starting", "running", "unknown"]),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        retained = [
+            f"{row.kind}:{row.resource_id}:{row.state}"
+            + (f":{row.purpose}" if row.purpose else "")
+            for row in rows
+            if row.kind in {"terminal", "monitor", "command", "script"}
+        ]
+        delegations = (
+            (
+                await self._s.execute(
+                    select(ExecutionDelegationRow).where(
+                        ExecutionDelegationRow.session_id == session_id,
+                        ExecutionDelegationRow.status == "active",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if delegations:
+            modes = {row.mode for row in delegations}
+            duty_note = (
+                "持续值班中（continuous 委托生效）"
+                if "continuous" in modes
+                else "一次性值班待触发（once 委托生效）"
+            )
+            retained.extend(
+                f"duty:{row.id}:{row.mode}:{row.goal[:40]}" for row in delegations
+            )
+        else:
+            duty_note = "保留资源但未委托：事件会被记录，模型不会自动启动。"
+        return retained, duty_note
 
     async def _pending_high_priority_commands(self, session_id: UUID) -> list[str]:
         rows = (
@@ -252,13 +350,22 @@ class FinishGate:
         return [str(row.id) for row in rows]
 
     async def _unresolved_jobs(self, session_id: UUID) -> list[str]:
-        from agent_workbench.persistence.tables import ToolJobRow, ToolOperationRow
+        from agent_workbench.persistence.tables import (
+            ExecutionResourceRow,
+            ToolJobRow,
+            ToolOperationRow,
+        )
 
         rows = (
             (
                 await self._s.execute(
                     select(ToolJobRow)
                     .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+                    .outerjoin(ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id)
+                    .where((ExecutionResourceRow.resource_id.is_(None)) | (
+                        ExecutionResourceRow.kind.in_(["command", "script"]) &
+                        ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from("resource")
+                    ))
                     .where(
                         ToolOperationRow.session_id == session_id,
                         ToolJobRow.state.in_(["received", "starting", "running", "unknown"]),
@@ -281,9 +388,27 @@ class FinishGate:
             .scalars()
             .all()
         )
-        return [f"{row.job_id}:{row.state}" for row in rows] + [
-            f"operation:{row.operation_id}:{row.status}" for row in standalone
-        ]
+        # 有限执行资源（命令/脚本）：未完成即"待办"，**不能**仅改称"保留资源"放行。
+        # 终端/监视器是长期资源，本身不隐式阻塞（在报告里单独列出）。
+        finite = (
+            (
+                await self._s.execute(
+                    select(ExecutionResourceRow).where(
+                        ExecutionResourceRow.session_id == session_id,
+                        ExecutionResourceRow.kind.in_(["command", "script"]),
+                        ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from("resource"),
+                        ExecutionResourceRow.state.in_(["starting", "running", "unknown"]),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return (
+            [f"{row.job_id}:{row.state}" for row in rows]
+            + [f"operation:{row.operation_id}:{row.status}" for row in standalone]
+            + [f"{row.kind}:{row.resource_id}:{row.state}" for row in finite]
+        )
 
     async def _invalid_proposal_refs(
         self, session_id: UUID, proposal: Mapping[str, Any]

@@ -783,6 +783,247 @@ class ReportVersionRow(TimestampMixin, Base):
     )
 
 
+# --------------------------------------------------------------------------- #
+# 执行底座（V4）：资源只读投影 / wait-set / 委托 / 事件 / delivery / 模板
+# --------------------------------------------------------------------------- #
+
+
+class ExecutionResourceRow(TimestampMixin, Base):
+    """会话资源在控制端的**只读投影**。
+
+    真实执行状态归 Executor 台账；这里只同步观察到的状态，用于 UI、等待与撤销。
+    原创建 run/operation 不改写（跨 run 管理会生成新操作，而不是重写资源来源）。
+    """
+
+    __tablename__ = "execution_resources"
+
+    resource_id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    executor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="command")
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    purpose: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="starting")
+    interaction_state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="not_applicable"
+    )
+    origin_run_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    origin_operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    termination_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    output_limit_action: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="preserve_process"
+    )
+    quota: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: open / close_requested / closed / unknown；取消未确认时保持 close_requested
+    close_state: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    close_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sync_status: Mapped[str] = mapped_column(String(32), nullable=False, default="in_sync")
+
+    __table_args__ = (
+        Index("ix_execution_resources_session", "session_id", "state"),
+        Index("ix_execution_resources_run", "origin_run_id"),
+    )
+
+
+class ExecutionWaitSetRow(TimestampMixin, Base):
+    """明确等待集合：按具体任务/事件等待，默认任一匹配即可继续。"""
+
+    __tablename__ = "execution_wait_sets"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.runs.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    resource_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    event_types: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    match: Mapped[str] = mapped_column(String(8), nullable=False, default="any")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    creator_operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    satisfied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (
+        Index("ix_execution_wait_sets_run", "run_id", "status"),
+        Index("ix_execution_wait_sets_session", "session_id", "status"),
+    )
+
+
+class ExecutionDelegationRow(TimestampMixin, Base):
+    """值班委托：资源存活与值班是**两件事**。
+
+    - 阶段结束默认存活但未委托；
+    - 取消委托只递增 revision 并终止处置，不关闭资源；
+    - 只有当前用户任务明确要求持续处理时才可建立（授权来源必须在指令里可核对）。
+    """
+
+    __tablename__ = "execution_delegations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    resource_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    event_filters: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    goal: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="once")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    authorization_source: Mapped[str] = mapped_column(String(32), nullable=False)
+    authorization_command_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    authorization_quote: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    triggered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (
+        Index("ix_execution_delegations_session", "session_id", "status"),
+    )
+
+
+class ExecutionEventReceiptRow(Base):
+    """Executor 执行事件在控制端的**来源可追溯投影**。
+
+    以 `(executor_id, event_id)` 幂等入库；游标只在这批事件落库成功后推进。
+    """
+
+    __tablename__ = "execution_event_receipts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    executor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    event_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    session_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    operation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    availability: Mapped[str] = mapped_column(String(32), nullable=False, default="available")
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    #: 已进入某个 delivery batch / 已处理（防止重复注入）
+    consumed_by_batch: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("executor_id", "event_id", name="uq_execution_event_receipts_origin"),
+        Index("ix_execution_event_receipts_session", "session_id", "sequence"),
+        Index("ix_execution_event_receipts_unconsumed", "session_id", "consumed_by_batch"),
+    )
+
+
+class ExecutionEventCursorRow(TimestampMixin, Base):
+    """按 executor 保存的远端读取游标。同批事件落库成功后才推进。"""
+
+    __tablename__ = "execution_event_cursors"
+
+    executor_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    last_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+
+class ExecutionDeliveryBatchRow(TimestampMixin, Base):
+    """可靠聚合交付：先准备 batch，再用稳定 message_id 注入并确认。"""
+
+    __tablename__ = "execution_delivery_batches"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    delegation_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    event_receipt_ids: Mapped[list[int]] = mapped_column(JSONB, nullable=False, default=list)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: prepared -> injected -> delivered；failed 表示注入流程明确失败
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="prepared")
+    message_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    message_command_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_execution_delivery_batches_session", "session_id", "status"),
+    )
+
+
+class ExecutionTemplateRow(TimestampMixin, Base):
+    """可复用执行模板（command/script）。注册/更新只创建新版本，不直接执行。"""
+
+    __tablename__ = "execution_templates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="command")
+    latest_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "name", name="uq_execution_templates_session_name"),
+    )
+
+
+class ExecutionTemplateVersionRow(TimestampMixin, Base):
+    __tablename__ = "execution_template_versions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.execution_templates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    spec: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    script_artifact_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    created_by_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("template_id", "revision", name="uq_execution_template_versions_rev"),
+    )
+
+
 ALL_TABLES = [
     ProjectRow,
     SessionRow,
@@ -803,4 +1044,12 @@ ALL_TABLES = [
     EventRow,
     SpanRow,
     ReportVersionRow,
+    ExecutionResourceRow,
+    ExecutionWaitSetRow,
+    ExecutionDelegationRow,
+    ExecutionEventReceiptRow,
+    ExecutionEventCursorRow,
+    ExecutionDeliveryBatchRow,
+    ExecutionTemplateRow,
+    ExecutionTemplateVersionRow,
 ]

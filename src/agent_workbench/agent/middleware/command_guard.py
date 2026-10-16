@@ -27,7 +27,12 @@ from agent_workbench.domain.run_state import is_current_owner
 from agent_workbench.domain.scope import ScopePolicy
 from agent_workbench.observability.events import append_event
 from agent_workbench.persistence.repositories import CommandRepository
-from agent_workbench.persistence.tables import RunRow, SessionRow
+from agent_workbench.persistence.tables import (
+    CommandRow,
+    ExecutionDeliveryBatchRow,
+    RunRow,
+    SessionRow,
+)
 
 
 class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
@@ -80,13 +85,49 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
 
         # 4) 消费一条待处理指令（高优先级优先）
         update = await self._consume_one(toolbox)
+        if update is None:
+            update = await self._replay_delivery(toolbox, dict(_state or {}))
         if isinstance(update, GraphRunAborted):
             # 消费记录已经提交后才打断图；在事务内抛异常会把 consumed 回滚。
             raise update
         merged: dict[str, Any] = {"dispatch_control_version": pinned}
         if update:
             merged.update(update)
+        effective = {**dict(_state or {}), **merged}
+        toolbox.execution_delegation_id = effective.get("execution_delegation_id")
+        toolbox.execution_delegation_revision = effective.get("execution_delegation_revision")
         return merged
+
+    @staticmethod
+    def _event_update(command: Any) -> dict[str, Any]:
+        payload = command.payload or {}
+        return {
+            "messages": [HumanMessage(
+                content=command.content,
+                id=f"exec-delivery-{payload['batch_id']}",
+                additional_kwargs={"source": "execution_events", "untrusted_data": True},
+            )],
+            "execution_delivery_batch_id": str(payload["batch_id"]),
+            "execution_delegation_id": payload.get("delegation_id"),
+            "execution_delegation_revision": payload.get("delegation_revision"),
+        }
+
+    async def _replay_delivery(self, toolbox: Any, state: dict[str, Any]) -> dict[str, Any] | None:
+        # 指令消费事务可能先于图写盘成功。仅重放有稳定 ID 的通知，不重放工具。
+        async with toolbox.db.session() as db:
+            rows = (await db.execute(
+                select(ExecutionDeliveryBatchRow, CommandRow)
+                .join(CommandRow, CommandRow.id == ExecutionDeliveryBatchRow.message_command_id)
+                .where(
+                    ExecutionDeliveryBatchRow.session_id == toolbox.session_id,
+                    ExecutionDeliveryBatchRow.status == "injected",
+                    CommandRow.status == str(CommandStatus.CONSUMED),
+                )
+            )).all()
+            for batch, command in rows:
+                if str(batch.id) != state.get("execution_delivery_batch_id"):
+                    return self._event_update(command)
+        return None
 
     async def _consume_one(self, toolbox: Any) -> dict[str, Any] | GraphRunAborted | None:
         async with toolbox.db.transaction() as db:
@@ -156,18 +197,25 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 run_id=toolbox.run_id,
                 event_type=EventType.MESSAGE_COMPLETED,
                 payload={
-                    "role": "user",
+                    "role": "system" if pending.payload.get("source") in {"execution_duty", "execution_events"} else "user",
                     "command_id": str(pending.id),
                     "consumed_at_boundary": "before_model",
                 },
             )
             text = pending.content
+            is_execution_event = pending.payload.get("source") in {
+                "execution_duty", "execution_events"
+            }
+            if is_execution_event:
+                return self._event_update(pending)
             if kind is CommandKind.RESUME:
                 text = str(pending.payload.get("content") or text or "继续当前任务。")
             if pending.payload.get("constraints"):
                 text = f"{text}\n\n【本次补充的约束】{pending.payload['constraints']}"
             return {
                 "messages": [HumanMessage(content=text, id=f"command-{pending.id}")],
+                "execution_delegation_id": None,
+                "execution_delegation_revision": None,
                 "no_progress_streak": 0,
                 "last_progress_signature": "",
             }

@@ -1,0 +1,69 @@
+{
+  "generated_at": "2026-10-16T01:36:27.434435+00:00",
+  "mode": "isolated",
+  "results": [
+    {
+      "id": "C03",
+      "name": "服务重启不打断非交互任务（SIGTERM 停止方式）",
+      "status": "PASS",
+      "reason": "",
+      "duration": 6.701,
+      "evidence_paths": [
+        "linux/final-fixes/logs/C03-服务重启不打断非交互任务_SIGTERM_停止方式_.json"
+      ]
+    },
+    {
+      "id": "D01",
+      "name": "交互终端：多轮 send/read，状态延续",
+      "status": "PASS",
+      "reason": "",
+      "duration": 13.602,
+      "evidence_paths": [
+        "linux/final-fixes/logs/D01-交互终端_多轮_send_read_状态延续.json"
+      ]
+    },
+    {
+      "id": "D06",
+      "name": "屏幕处理 ANSI 清屏/中文；resize 一致",
+      "status": "PASS",
+      "reason": "",
+      "duration": 13.69,
+      "evidence_paths": [
+        "linux/final-fixes/logs/D06-屏幕处理_ANSI_清屏_中文_resize_一致.json"
+      ]
+    },
+    {
+      "id": "E04",
+      "name": "PTY 保活；显式 terminate 才终止",
+      "status": "PASS",
+      "reason": "",
+      "duration": 17.392,
+      "evidence_paths": [
+        "linux/final-fixes/logs/E04-PTY_保活_显式_terminate_才终止.json"
+      ]
+    },
+    {
+      "id": "E07",
+      "name": "原始非法字节快照与区间 hash 一致",
+      "status": "PASS",
+      "reason": "",
+      "duration": 4.217,
+      "evidence_paths": [
+        "linux/final-fixes/logs/E07-原始非法字节快照与区间_hash_一致.json"
+      ]
+    }
+  ],
+  "summary": {
+    "pass": 5,
+    "fail": 0,
+    "not_run": 0
+  },
+  "notes": [
+    "本次只运行：C03,D01,D06,E04,E07",
+    "fixture Executor 版本 0.1.0，执行模式 trusted",
+    "fixture Executor 版本 0.1.0，执行模式 trusted",
+    "fixture Executor 版本 0.1.0，执行模式 trusted",
+    "fixture Executor 版本 0.1.0，执行模式 trusted",
+    "fixture Executor 版本 0.1.0，执行模式 trusted"
+  ]
+}

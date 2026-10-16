@@ -24,7 +24,7 @@ import json
 import secrets
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from urllib.parse import parse_qs, urlsplit
 
 FIXTURE_VERSION = "1"
@@ -173,7 +173,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 302,
                 b"",
                 "text/plain; charset=utf-8",
-                extra_headers={"Location": "http://localhost:8899/echo-auth"},
+                extra_headers={"Location": f"http://localhost:{cast(ThreadingHTTPServer, self.server).server_port}/echo-auth"},
             )
             return
 

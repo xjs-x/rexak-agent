@@ -35,6 +35,7 @@ def upload_files(wheel: Path) -> list[tuple[Path, str]]:
         [
             (ROOT / "deploy/executor_control.py", "executor-control.py"),
             (ROOT / "deploy/rexak-executor.service", "rexak-executor.service"),
+            (ROOT / "deploy/executor-requirements.txt", "executor-requirements.txt"),
             (wheel, wheel.name),
         ]
     )
@@ -135,10 +136,19 @@ for name, digest in json.loads((release/'manifest.json').read_text()).items():
 print('上传文件哈希验证通过')
 PY
 cp {release_arg}/executor-control.py executor-control.py
+.venv/bin/python -m pip install --require-hashes -r {release_arg}/executor-requirements.txt
 .venv/bin/python executor-control.py stop
 if .venv/bin/python -m pip install --no-deps --force-reinstall {release_arg}/{shlex.quote(wheel.name)}; then
     cp -r {release_arg}/executor/. executor/
     cp {release_arg}/rexak-executor.service rexak-executor.service
+    cp .env {release_arg}/executor.env.backup
+    .venv/bin/python - <<'PY'
+from pathlib import Path
+p=Path('.env')
+lines=[line for line in p.read_text(encoding='utf-8').splitlines() if not line.startswith('EXECUTOR_EXECUTION_MODE=')]
+p.write_text('\\n'.join(lines+['EXECUTOR_EXECUTION_MODE=trusted'])+'\\n',encoding='utf-8')
+p.chmod(0o600)
+PY
     .venv/bin/python executor-control.py start
 else
     .venv/bin/python executor-control.py start
@@ -159,13 +169,13 @@ fi
             f"cd {root_arg} && .venv/bin/python - <<'PY'\n"
             "import hashlib,json,pathlib,workbench_executor\n"
             "root=pathlib.Path(workbench_executor.__file__).parent\n"
-            "print(json.dumps({p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob('*.py') if '__pycache__' not in p.parts},sort_keys=True))\nPY",
+            "print(json.dumps({p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob('*.py') if '__pycache__' not in p.parts},sort_keys=True))\nPY",
             check=True,
             timeout=20,
         )
         installed = json.loads(str(installed_check.stdout))
         expected = {
-            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            path.relative_to(ROOT / "executor/src/workbench_executor").as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in (ROOT / "executor/src/workbench_executor").rglob("*.py")
         }
         if installed != expected:
@@ -194,6 +204,9 @@ fi
                 raise RuntimeError("执行端未加载新的启动实例，部署验收未通过")
             if capabilities.get("protocol_version") != 1:
                 raise RuntimeError("执行端协议版本不兼容")
+            execution = capabilities.get("details", {}).get("execution", {})
+            if execution.get("execution_mode") != "trusted":
+                raise RuntimeError("执行底座未加载可信执行配置")
             evidence = {
                 "captured_at_utc": datetime.now(UTC).isoformat(),
                 "remote_release": release,
@@ -206,6 +219,7 @@ fi
                 "active_jobs": health.get("active_jobs"),
                 "protocol_version": capabilities.get("protocol_version"),
                 "body_modes": capabilities.get("body_modes"),
+                "execution": execution,
                 "pip_check": "passed",
                 "real_target_testing_performed": False,
                 "real_model_call_performed": False,

@@ -49,7 +49,12 @@ from agent_workbench.persistence.repositories import (
     CommandRepository,
     ToolJobRepository,
 )
-from agent_workbench.persistence.tables import RunRow, ToolJobRow, ToolOperationRow
+from agent_workbench.persistence.tables import (
+    ExecutionResourceRow,
+    RunRow,
+    ToolJobRow,
+    ToolOperationRow,
+)
 
 log = get_logger("agent_workbench.jobs")
 
@@ -82,6 +87,12 @@ async def pending_jobs_for_run(db: Database, run_id: UUID) -> list[ToolJobRow]:
                 await session.execute(
                     select(ToolJobRow)
                     .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+                    .outerjoin(ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id)
+                    .where((ExecutionResourceRow.resource_id.is_(None)) | (
+                        ExecutionResourceRow.kind.in_(["command", "script"]) & (
+                            ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from("resource")
+                        )
+                    ))
                     .where(ToolOperationRow.run_id == run_id)
                     .where(ToolJobRow.state.in_(list(UNRESOLVED_JOB_STATES)))
                 )
@@ -90,6 +101,25 @@ async def pending_jobs_for_run(db: Database, run_id: UUID) -> list[ToolJobRow]:
             .all()
         )
     return list(rows)
+
+
+async def open_wait_sets_for_run(db: Database, run_id: UUID) -> list[Any]:
+    """该 run 名下**尚未满足**的明确等待集合。
+
+    等待集合与后台任务同属"未完成工作"：不能仅改称"保留资源"绕过 finish_gate。
+    """
+    from agent_workbench.persistence.repositories import ExecutionWaitSetRepository
+
+    async with db.session() as session:
+        return list(await ExecutionWaitSetRepository(session).open_for_run(run_id))
+
+
+async def run_has_pending_work(db: Database, run_id: UUID) -> tuple[list[ToolJobRow], list[Any]]:
+    """(未决 job, 未满足 wait-set)。两者都为空才算"该 run 没有等待中的工作"。"""
+    return (
+        await pending_jobs_for_run(db, run_id),
+        await open_wait_sets_for_run(db, run_id),
+    )
 
 
 async def runs_waiting_on_jobs(db: Database) -> list[UUID]:
@@ -142,6 +172,12 @@ async def probe_and_wake(
                 await session.execute(
                     select(ToolJobRow)
                     .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+                    .outerjoin(ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id)
+                    .where((ExecutionResourceRow.resource_id.is_(None)) | (
+                        ExecutionResourceRow.kind.in_(["command", "script"]) & (
+                            ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from("resource")
+                        )
+                    ))
                     .where(ToolOperationRow.run_id.in_(waiting))
                     .where(ToolJobRow.state.in_(list(UNRESOLVED_JOB_STATES)))
                 )
@@ -149,9 +185,26 @@ async def probe_and_wake(
             .scalars()
             .all()
         )
+        from agent_workbench.persistence.tables import ExecutionWaitSetRow
+
+        wait_set_rows = (
+            await session.execute(
+                select(ExecutionWaitSetRow.run_id, ExecutionWaitSetRow.id).where(
+                    ExecutionWaitSetRow.run_id.in_(waiting),
+                    ExecutionWaitSetRow.status == "open",
+                )
+            )
+        ).all()
+    open_wait_sets: dict[UUID, list[str]] = {}
+    for run_id, wait_set_id in wait_set_rows:
+        if run_id is None:
+            continue
+        open_wait_sets.setdefault(run_id, []).append(str(wait_set_id))
+
     if not tracked:
         # 没有待核对任务：台账里已经没有未决记录（例如任务按 accepted 闭合后
-        # 从没被真正接收，或上一次巡检已经同步过终态）。此时才可以直接唤醒。
+        # 从没被真正接收，或上一次巡检已经同步过终态）。此时才可以直接唤醒；
+        # 但仍在等待明确条件（wait-set 未满足）的 run 保持等待。
         async with db.session() as session:
             terminal_rows = (
                 await session.execute(
@@ -167,6 +220,13 @@ async def probe_and_wake(
         for run_id, job_id in terminal_rows:
             terminal_ids.setdefault(run_id, []).append(job_id)
         for run_id in waiting:
+            if open_wait_sets.get(run_id):
+                result["still_waiting"].append(str(run_id))
+                result["notes"].append(
+                    f"run {run_id} 仍在等待明确条件（wait-set {open_wait_sets[run_id][:3]}）；"
+                    "满足后由事件周期唤醒。"
+                )
+                continue
             if await _wake_run(
                 db,
                 run_id,
@@ -194,6 +254,14 @@ async def probe_and_wake(
         async def _probe(row: ToolJobRow) -> tuple[ToolJobRow, str, str]:
             async with semaphore:
                 try:
+                    async with db.session() as session:
+                        resource = await session.get(ExecutionResourceRow, row.job_id)
+                    if resource is not None:
+                        view = await client.execution_resource(str(row.job_id))
+                        state = str(view.get("state") or "unknown")
+                        if state in {"exited", "closed"}:
+                            state = "succeeded" if view.get("exit_code") == 0 else "failed"
+                        return row, state, ""
                     snapshot = await client.get_job(row.job_id)
                     return row, str(snapshot.state), ""
                 except ExecutorRejected as exc:
@@ -264,6 +332,13 @@ async def probe_and_wake(
                     f"需要用户确认后才能继续：{unresolved[:5]}"
                 )
             continue
+        if open_wait_sets.get(run_id):
+            result["still_waiting"].append(str(run_id))
+            result["notes"].append(
+                f"run {run_id} 的任务已终态，但仍有未满足的等待条件："
+                f"{open_wait_sets[run_id][:3]}"
+            )
+            continue
         terminal_entries = terminal_by_run.get(run_id, [])
         summary = _terminal_summary([f"{job_id}:{state}" for job_id, state in terminal_entries])
         if await _wake_run(
@@ -288,7 +363,8 @@ def _terminal_summary(entries: list[str]) -> str:
 
 
 async def _wake_run(
-    db: Database, run_id: UUID, *, summary: str, terminal_job_ids: list[UUID] | None = None
+    db: Database, run_id: UUID, *, summary: str, terminal_job_ids: list[UUID] | None = None,
+    explicit_wait_satisfied: bool = False,
 ) -> bool:
     """把等待中的 run 重新排队，并注入一条系统通知。
 
@@ -313,6 +389,12 @@ async def _wake_run(
             await session.execute(
                 select(ToolJobRow.job_id)
                 .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+                .outerjoin(ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id)
+                .where((ExecutionResourceRow.resource_id.is_(None)) | (
+                    ExecutionResourceRow.kind.in_(["command", "script"]) & (
+                        ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from("resource")
+                    )
+                ))
                 .where(
                     ToolOperationRow.run_id == run_id,
                     ToolJobRow.state.in_(list(UNRESOLVED_JOB_STATES)),
@@ -320,7 +402,23 @@ async def _wake_run(
                 .limit(1)
             )
         ).first()
-        if pending is not None:
+        # 明确 wait any 命中一个结果即可回到 Agent；其余有限工作仍由完成闸门核对。
+        if pending is not None and not explicit_wait_satisfied:
+            return False
+        # 未满足的明确等待条件同样阻止唤醒：条件满足由事件周期标记。
+        from agent_workbench.persistence.tables import ExecutionWaitSetRow
+
+        open_wait = (
+            await session.execute(
+                select(ExecutionWaitSetRow.id)
+                .where(
+                    ExecutionWaitSetRow.run_id == run_id,
+                    ExecutionWaitSetRow.status == "open",
+                )
+                .limit(1)
+            )
+        ).first()
+        if open_wait is not None:
             return False
 
         stale_job_ids: list[str] = []

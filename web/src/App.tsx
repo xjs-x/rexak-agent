@@ -24,11 +24,12 @@ import {
   type WeaknessDetail,
   type WeaknessItem,
 } from "./api/client";
+import { ExecutionPanel } from "./ExecutionPanel";
 import { ModelConfiguration } from "./ModelConfiguration";
 import { PlanGraph } from "./PlanGraph";
 import { ToolActivityGroup } from "./ToolActivity";
 
-type Tab = "activity" | "conversation" | "plan" | "findings" | "jobs" | "cost" | "diagnostics" | "reports" | "settings";
+type Tab = "activity" | "conversation" | "plan" | "findings" | "jobs" | "resources" | "cost" | "diagnostics" | "reports" | "settings";
 type Connection = "准备中" | "已连接" | "连接中断" | "正在同步";
 const EVENT_ROW_HEIGHT = 82;
 const EVENT_VIEWPORT_HEIGHT = 450;
@@ -402,6 +403,12 @@ export default function App() {
   const [showDetails, setShowDetails] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 760);
   const [deleteTarget, setDeleteTarget] = useState<SessionItem | null>(null);
+  //: 删除被"存活执行资源"预检拦下时的详情（不静默丢弃台账，要求显式终止）。
+  const [deleteBlocked, setDeleteBlocked] = useState<{
+    target: SessionItem;
+    resources: string[];
+    message: string;
+  } | null>(null);
   const [showRecoveryConfirm, setShowRecoveryConfirm] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const followChatRef = useRef(true);
@@ -917,13 +924,42 @@ export default function App() {
     if (!deleteTarget) return;
     let pending = false;
     const removed = await runAction(async () => {
-      const result = await api.deleteSession(deleteTarget.id);
-      pending = result.cancellation_pending;
+      try {
+        const result = await api.deleteSession(deleteTarget.id);
+        pending = result.cancellation_pending;
+      } catch (cause) {
+        // 有存活的执行资源：不静默丢弃台账，要求显式终止后再删除。
+        if (cause instanceof ApiRequestError && cause.status === 409) {
+          const active = Array.isArray(cause.details?.active_resources)
+            ? (cause.details?.active_resources as string[])
+            : [];
+          setDeleteBlocked({ target: deleteTarget, resources: active, message: cause.message });
+          return;
+        }
+        throw cause;
+      }
       if (project.sessionId === deleteTarget.id) newChat();
       await project.refreshSessions(deleteTarget.project_id);
       setDeleteTarget(null);
     }, "", false);
     if (removed && pending) setNotice("任务已从列表移除；后台仍在确认取消结果。");
+  };
+
+  const terminateAndRemoveTask = async () => {
+    if (!deleteBlocked) return;
+    const target = deleteBlocked.target;
+    const ok = await runAction(async () => {
+      const termination = await api.terminateAllExecutionResources(target.id);
+      if (termination.unresolved.length) throw new Error("部分资源尚未确认停止，对话保留，请在执行资源页继续核对。");
+      const result = await api.deleteSession(target.id, true);
+      if (project.sessionId === target.id) newChat();
+      await project.refreshSessions(target.project_id);
+      setDeleteTarget(null);
+      setDeleteBlocked(null);
+      if (result.cancellation_pending) setNotice("任务已移除；后台仍在确认取消与资源关闭结果。");
+      else setNotice("任务已移除，执行资源已请求终止（未确认的资源仍可在执行资源页查看）。");
+    }, "", false);
+    return ok;
   };
 
   const loadWeaknessDetail = async (id: string) => {
@@ -1170,7 +1206,7 @@ export default function App() {
               </div>}
             </div>
             {showDetails && <nav className="tabs" aria-label="任务内容">
-              {([["activity", "实时活动"], ["conversation", "对话"], ["plan", "当前计划"], ["findings", "弱点与覆盖"], ["jobs", "后台任务"], ["cost", "费用"], ["diagnostics", "耗时诊断"], ["reports", "报告"], ["settings", "设置"]] as const).map(([key, title]) =>
+              {([["activity", "实时活动"], ["conversation", "对话"], ["plan", "当前计划"], ["findings", "弱点与覆盖"], ["jobs", "后台任务"], ["resources", "执行资源"], ["cost", "费用"], ["diagnostics", "耗时诊断"], ["reports", "报告"], ["settings", "设置"]] as const).map(([key, title]) =>
                 <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{title}</button>
               )}
             </nav>}
@@ -1262,6 +1298,7 @@ export default function App() {
                   <p className="fineprint">{snapshot?.coverage.ratio_definition || "尚未登记覆盖；不能据此推断目标没有漏洞。"}</p>
                 </section>
               </div>}
+              {tab === "resources" && <ExecutionPanel sessionId={project.sessionId} />}
               {tab === "jobs" && <section className="panel"><div className="panel-head"><div><h2>后台任务</h2><p>远端状态未知时不会显示为已完成。</p></div></div>
                 {jobs.length ? jobs.map((item) => <article key={item.job_id} className="record compact"><div className="record-title"><strong>{item.job_id.slice(0, 12)}…</strong><span className={`pill status-${item.state}`}>{label(item.state)}</span></div>
                   <p>同步状态：{label(item.sync_status)}{item.cancel_requested ? " · 已请求取消" : ""}{item.cancel_confirmed ? " · 已确认取消" : ""}</p><small>上次同步：{time(item.last_synced_at)}</small></article>) : <p className="empty">目前没有后台任务</p>}
@@ -1331,7 +1368,8 @@ export default function App() {
         <p className="fineprint">{runMode === "instruction" ? "自动读取用户指令中的目标，允许该主机的协议和端口探索，无需手填 scope。" : "按填写的网址固定协议、主机和端口。"}目标须能从执行端访问。</p>
         <div className="modal-actions"><button onClick={() => setShowSessionForm(false)}>取消</button><button className="primary" disabled={busy} onClick={() => void submitSession()}>创建并开始</button></div></div></div>}
       {showRecoveryConfirm && currentRun && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-label="确认恢复"><h2>核对后恢复</h2><p>{currentRun.stop_reason || "上一次请求的状态未能完全确认。"}</p><p>恢复前请核对工具结果与可能产生的费用。确认后将继续当前任务，不会自动重做未知的工具操作。</p><div className="modal-actions"><button onClick={() => setShowRecoveryConfirm(false)}>暂不恢复</button><button className="primary" disabled={busy} onClick={() => void runAction(async () => { await api.control(currentRun.id, "resume", true); setShowRecoveryConfirm(false); }, "恢复指令已提交")}>确认并继续</button></div></div></div>}
-      {deleteTarget && <div className="modal-backdrop" onMouseDown={() => !busy && setDeleteTarget(null)}><div className="modal" role="dialog" aria-modal="true" aria-label="删除任务" onMouseDown={(event) => event.stopPropagation()}><h2>删除任务？</h2><p>“{deleteTarget.title}”将从列表移除。正在执行的任务会请求取消；历史审计记录保留。</p><div className="modal-actions"><button disabled={busy} onClick={() => setDeleteTarget(null)}>保留</button><button className="danger" disabled={busy} onClick={() => void removeTask()}>删除</button></div></div></div>}
+      {deleteTarget && <div className="modal-backdrop" onMouseDown={() => !busy && setDeleteTarget(null)}><div className="modal" role="dialog" aria-modal="true" aria-label="删除任务" onMouseDown={(event) => event.stopPropagation()}><h2>删除任务？</h2><p>“{deleteTarget.title}”将从列表移除。正在执行的任务会请求取消；历史审计记录保留。</p>{deleteBlocked && deleteBlocked.target.id === deleteTarget.id && <div className="delete-blocked"><p className="body-error">{deleteBlocked.message}</p>{deleteBlocked.resources.length > 0 && <ul>{deleteBlocked.resources.map((item) => <li key={item}>{item}</li>)}</ul>}<p className="tool-note">也可以先到“执行资源”页逐个查看后再决定；取消确认状态的资源不会被显示为已停止。</p></div>}<div className="modal-actions"><button disabled={busy} onClick={() => { setDeleteTarget(null); setDeleteBlocked(null); }}>保留</button>{deleteBlocked && deleteBlocked.target.id === deleteTarget.id ? <button className="danger" disabled={busy} onClick={() => void terminateAndRemoveTask()}>终止资源并删除</button> : <button className="danger" disabled={busy} onClick={() => void removeTask()}>删除</button>}</div></div></div>}
+      {deleteBlocked && (!deleteTarget || deleteBlocked.target.id !== deleteTarget.id) && <div className="modal-backdrop" onMouseDown={() => !busy && setDeleteBlocked(null)}><div className="modal" role="dialog" aria-modal="true" aria-label="删除被拦截" onMouseDown={(event) => event.stopPropagation()}><h2>仍有存活资源</h2><p>{deleteBlocked.message}</p><ul>{deleteBlocked.resources.map((item) => <li key={item}>{item}</li>)}</ul><div className="modal-actions"><button disabled={busy} onClick={() => setDeleteBlocked(null)}>保留</button><button className="danger" disabled={busy} onClick={() => void terminateAndRemoveTask()}>终止资源并删除</button></div></div></div>}
       {preview && <div className="modal-backdrop" onMouseDown={() => setPreview(null)}><div className="modal wide" role="dialog" aria-modal="true" aria-label="证据预览" onMouseDown={(event) => event.stopPropagation()}><h2>证据预览</h2><p>{preview.media_type} · {preview.byte_size.toLocaleString()} 字节</p><pre className="evidence-preview">{preview.preview}</pre><p className="fineprint">{preview.note}</p><div className="modal-actions"><button onClick={() => setPreview(null)}>关闭</button></div></div></div>}
       {eventDetail && <div className="modal-backdrop" onMouseDown={() => setEventDetail(null)}><div className="modal wide" role="dialog" aria-modal="true" aria-label="事件详情" onMouseDown={(event) => event.stopPropagation()}><h2>{label(eventDetail.type)} · #{eventDetail.session_seq}</h2><p>{time(eventDetail.occurred_at)} · 运行 {eventDetail.run_id ?? "未知"}</p><pre className="evidence-preview">{JSON.stringify(eventDetail.payload, null, 2)}</pre><p className="fineprint">此处显示服务端脱敏后的事件内容；工具原始输出请从工件预览查看。</p><div className="modal-actions"><button onClick={() => setEventDetail(null)}>关闭</button></div></div></div>}
       {conversationDetail && <div className="modal-backdrop" onMouseDown={() => setConversationDetail(null)}><div className="modal wide" role="dialog" aria-modal="true" aria-label="对话正文" onMouseDown={(event) => event.stopPropagation()}><h2>{conversationDetail.entry.role === "user" ? "你的指令" : "助手正文"}</h2><p>{time(conversationDetail.entry.occurred_at)}</p><pre className="evidence-preview">{conversationDetail.text}</pre><p className="fineprint">服务端按完整正文脱敏后分段提供。此归档只供回看，不参与 Agent 记忆。</p><div className="modal-actions">{conversationDetail.nextOffset !== null && <button disabled={conversationBusy} onClick={() => void showConversationBody(conversationDetail.entry, conversationDetail.nextOffset ?? 0)}>加载后续正文</button>}<button onClick={() => setConversationDetail(null)}>关闭</button></div></div></div>}

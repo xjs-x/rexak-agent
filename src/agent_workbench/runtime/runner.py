@@ -405,6 +405,7 @@ class AgentRunner:
             await self._serve_sessions(poll_interval=poll_interval)
             return
 
+        from agent_workbench.runtime.execution_events import execution_cycle
         from agent_workbench.runtime.jobs import probe_and_wake
 
         await self._db.start()
@@ -416,6 +417,8 @@ class AgentRunner:
                     now = time.monotonic()
                     if now - last_probe >= self._settings.job_wakeup_interval_seconds:
                         last_probe = now
+                        # 先评估执行事件与等待条件，再决定是否唤醒等待中的 run。
+                        await execution_cycle(self._db, settings=self._settings)
                         wake = await probe_and_wake(
                             self._db,
                             settings=self._settings,
@@ -481,6 +484,10 @@ class AgentRunner:
                     now = time.monotonic()
                     if now - last_probe >= self._settings.job_wakeup_interval_seconds:
                         last_probe = now
+                        # 执行事件/等待条件/值班委托：基础设施轮询，不消耗模型调用。
+                        from agent_workbench.runtime.execution_events import execution_cycle
+
+                        await execution_cycle(self._db, settings=self._settings)
                         async with self._db.session() as db:
                             waiting = list(
                                 (
@@ -495,6 +502,8 @@ class AgentRunner:
                                 .all()
                             )
                         if waiting:
+                            from agent_workbench.runtime.jobs import probe_and_wake
+
                             await probe_and_wake(self._db, settings=self._settings, run_ids=waiting)
                     free = self._settings.runner_max_concurrent_runs - len(tasks)
                     if free > 0:
@@ -648,8 +657,10 @@ class AgentRunner:
 
         try:
             await executor.start()
-            # 能力预检：协议版本不兼容时给出明确阻碍，不默认远端一定支持（§8.6）
-            await executor.capabilities()
+            # 能力预检：协议版本不兼容时给出明确阻碍，不默认远端一定支持（§8.6）。
+            # 预检结果同时决定执行底座工具是否开放（trusted 模式 + 逐项能力）。
+            capabilities = await executor.capabilities()
+            selection = default_selection(settings, capabilities=capabilities)
         except Exception as exc:
             detail = f"执行岛不可用：{type(exc).__name__}: {exc}"
             await self._fail(run.id, ErrorCode.EXECUTOR_UNAVAILABLE, detail)
@@ -678,7 +689,11 @@ class AgentRunner:
             interactive_threshold_seconds=float(settings.tool_interactive_threshold_seconds),
             control_check=self._assert_dispatch_allowed,
         )
-        context = RunContext(toolbox=toolbox, thread_id=session_row.thread_id)
+        context = RunContext(
+            toolbox=toolbox,
+            thread_id=session_row.thread_id,
+            disabled_tools=selection.disabled_tools(),
+        )
 
         segments = 0
         status = RunStatus.RUNNING
@@ -743,17 +758,17 @@ class AgentRunner:
                     if await self._segment_should_continue(run):
                         continue
 
-                    # 还有非终态后台任务 -> 进入 waiting_tool 并**返回**，
-                    # 由唤醒器在任务到终态后重新排队。这里绝不继续调模型
+                    # 还有非终态后台任务或未满足的等待条件 -> 进入 waiting_tool 并**返回**，
+                    # 由唤醒器在条件满足后重新排队。这里绝不继续调模型
                     # （否则就是"等待工具期间模型空转"，§8.3）。
-                    from agent_workbench.runtime.jobs import pending_jobs_for_run
+                    from agent_workbench.runtime.jobs import run_has_pending_work
 
-                    pending = await pending_jobs_for_run(self._db, run.id)
-                    if pending:
+                    pending, open_wait_sets = await run_has_pending_work(self._db, run.id)
+                    if pending or open_wait_sets:
                         status = RunStatus.WAITING_TOOL
                         detail = (
-                            f"等待 {len(pending)} 个后台任务到达终态；"
-                            "等待期间不调用模型，由任务唤醒器触发续跑。"
+                            f"等待 {len(pending)} 个后台任务与 {len(open_wait_sets)} 个明确条件；"
+                            "等待期间不调用模型，由任务/事件唤醒器触发续跑。"
                         )
                         await self._emit(
                             run,
@@ -761,6 +776,7 @@ class AgentRunner:
                             {
                                 "status": str(RunStatus.WAITING_TOOL),
                                 "pending_jobs": [str(item.job_id) for item in pending],
+                                "open_wait_sets": [str(item.id) for item in open_wait_sets],
                                 "note": detail,
                             },
                         )
@@ -812,12 +828,15 @@ class AgentRunner:
                     status = RunStatus.WAITING_USER
                     break
                 except NoProgressBlocked as exc:
-                    from agent_workbench.runtime.jobs import pending_jobs_for_run
+                    from agent_workbench.runtime.jobs import run_has_pending_work
 
-                    pending = await pending_jobs_for_run(self._db, run.id)
-                    if pending:
+                    pending, open_wait_sets = await run_has_pending_work(self._db, run.id)
+                    if pending or open_wait_sets:
                         status = RunStatus.WAITING_TOOL
-                        detail = f"{exc}；仍有 {len(pending)} 个后台任务，等待结果后再评估。"
+                        detail = (
+                            f"{exc}；仍有 {len(pending)} 个后台任务与 "
+                            f"{len(open_wait_sets)} 个等待条件，等待结果后再评估。"
+                        )
                     else:
                         status = RunStatus.WAITING_USER
                         detail = (
@@ -1504,19 +1523,23 @@ class AgentRunner:
 
         不能在只发出取消请求时显示"已全部停止"（§4.2）。
         """
-        from agent_workbench.persistence.repositories import ToolJobRepository
+        from agent_workbench.persistence.repositories import (
+            ExecutionResourceRepository,
+            ToolJobRepository,
+        )
 
         async with self._db.session() as session:
             tracked = await ToolJobRepository(session).list_for_run(run.id)
-            jobs = [
-                job
-                for job in tracked
-                if job.state not in {"succeeded", "failed", "cancelled"}
+            resources = list(await ExecutionResourceRepository(session).list_for_session(run.session_id, limit=1000))
+            execution_ids = {item.resource_id for item in resources}
+            jobs = [job for job in tracked if job.job_id not in execution_ids and (
+                job.state not in {"succeeded", "failed", "cancelled"}
                 or job.sync_status == "uncertain"
                 or (job.cancel_requested_at is not None and not job.cancel_confirmed)
-            ]
-        if not jobs:
-            return True
+            )]
+        if not jobs and not resources:
+            from agent_workbench.runtime.execution_control import terminate_session_resources
+            return await terminate_session_resources(self._db, None, run)
         confirmed = True
         tunnel = SshTunnel(self._settings)
         client = HttpExecutorClient(
@@ -1536,6 +1559,9 @@ class AgentRunner:
                     },
                 )
                 return False
+            from agent_workbench.runtime.execution_control import terminate_session_resources
+
+            confirmed = await terminate_session_resources(self._db, client, run)
             for job in jobs:
                 import uuid as _uuid
 

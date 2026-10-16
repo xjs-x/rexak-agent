@@ -1,0 +1,234 @@
+{
+  "health": {
+    "executor_id": "kali-01",
+    "service_version": "0.1.0",
+    "boot_id": "2448032-93807f30cf27",
+    "protocol_version": 1,
+    "started_at": "2026-10-16T01:37:56.936373Z",
+    "clock_utc": "2026-10-16T02:16:00.569035Z",
+    "free_bytes": 60888698880,
+    "uptime_seconds": 2283.632916,
+    "active_jobs": 0,
+    "capabilities_version": "2"
+  },
+  "capabilities": {
+    "executor_id": "kali-01",
+    "service_version": "0.1.0",
+    "protocol_version": 1,
+    "boot_id": "2448032-93807f30cf27",
+    "started_at": "2026-10-16T01:37:56.936373Z",
+    "browser_available": true,
+    "browser_version": "1.63.0 (/usr/bin/chromium)",
+    "http_available": true,
+    "command_available": true,
+    "interpreter": "/home/kali/rexak-agent-executor/.venv/bin/python",
+    "filesystem_available": true,
+    "network_isolation": "unavailable",
+    "capabilities_version": "2",
+    "body_modes": [
+      "raw",
+      "json",
+      "form",
+      "multipart"
+    ],
+    "execution_mode": "trusted",
+    "execution_runtime_versions": [
+      1
+    ],
+    "execution": {
+      "execution_mode": "trusted",
+      "execution_runtime_versions": [
+        1
+      ],
+      "command": "available",
+      "script": "available",
+      "pty": "available",
+      "screen": "available",
+      "monitor": "available",
+      "durable_events": "available",
+      "detached_job_recovery": "available",
+      "output_limit_actions": [
+        "preserve_process",
+        "terminate"
+      ],
+      "workspace_storage_enforcement": "accounting_only",
+      "dependencies": {
+        "pyte": "0.8.2"
+      },
+      "unavailable_reasons": {},
+      "notes": [
+        "detached_job_recovery：非交互任务由独立包装进程承载，服务重启不影响其运行。",
+        "interactive PTY 在 Executor 重启后会失去交互能力：保留记录、核对残留进程，不自动重建。"
+      ]
+    }
+  },
+  "environment": {
+    "schema_version": 1,
+    "executor_id": "kali-01",
+    "platform": "linux",
+    "os_release": "Kali GNU/Linux Rolling",
+    "python_version": "3.13.12",
+    "shell": {
+      "configured": "/bin/bash",
+      "mode": "non-login (-c)"
+    },
+    "interpreters": {
+      "python": "/usr/bin/python3 (Python 3.13.12)",
+      "shell": "/bin/bash (GNU bash, version 5.3.9(1)-release (x86_64-pc-linux-gnu))",
+      "python3": "/usr/bin/python3",
+      "perl": "/usr/bin/perl"
+    },
+    "tools": {
+      "bash": "/usr/bin/bash (GNU bash, version 5.3.9(1)-release (x86_64-pc-linux-gnu))",
+      "grep": "/usr/bin/grep (grep (GNU grep) 3.12)",
+      "find": "/usr/bin/find (find (GNU findutils) 4.10.0)",
+      "sed": "/usr/bin/sed (/usr/bin/sed (GNU sed) 4.9)",
+      "curl": "/usr/bin/curl (curl 8.20.0 (x86_64-pc-linux-gnu) libcurl/8.20.0 OpenSSL/3.6.2 zlib/1.3.2 brotli/1.2.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.69.0 ngtcp2/1.22.1 nghttp3/1.15.0 mit-krb5/1.22.1)"
+    },
+    "missing": {},
+    "proxy_configured": false,
+    "ca_configured": false,
+    "workspace_root": "/home/kali/rexak-agent-data/workspaces",
+    "workspace_storage_enforcement": "accounting_only",
+    "workspace_bytes_used": 1624,
+    "dependency_environment_hint": "任务依赖请在本会话工作区内创建 venv/本地依赖目录（例如 `python3 -m venv .venv && ./.venv/bin/pip install ...`）；系统级软件属于环境维护，不在任务内默认安装。",
+    "notes": [
+      "发现过程不会自动安装任何软件。",
+      "代理环境变量只表示已配置，不代表全部流量都已代理。",
+      "任意命令的文件系统访问在 trusted 模式下不受 cwd 沙箱保护；工作区存储执行方式：accounting_only。"
+    ]
+  },
+  "events_head": [
+    {
+      "seq": 1,
+      "event_id": "c20eea91-d51a-46e2-b739-2c7d34fdc068",
+      "executor_id": "kali-01",
+      "session_id": "884b1933-9844-403d-97a2-9accb49704de",
+      "resource_id": null,
+      "operation_id": null,
+      "type": "control.synced",
+      "occurred_at": "2026-10-16T01:23:03.349135+00:00",
+      "payload": {
+        "run_id": "948f0c15-e5e8-4c2c-80e0-6c15bdb553e5",
+        "owner_generation": 1,
+        "control_version": 1
+      },
+      "availability": "available"
+    },
+    {
+      "seq": 2,
+      "event_id": "bcb07637-3603-487f-ae8e-d7bc81dfb8d8",
+      "executor_id": "kali-01",
+      "session_id": "884b1933-9844-403d-97a2-9accb49704de",
+      "resource_id": "713818c8-6a86-4070-903a-ad5c03d02de0",
+      "operation_id": "42c62721-b07c-4429-8f1f-832315c42a75",
+      "type": "resource.received",
+      "occurred_at": "2026-10-16T01:23:03.448914+00:00",
+      "payload": {
+        "kind": "command",
+        "purpose": ""
+      },
+      "availability": "available"
+    },
+    {
+      "seq": 3,
+      "event_id": "607041f6-4d2e-44b3-8b93-17d0e1ecd61f",
+      "executor_id": "kali-01",
+      "session_id": "884b1933-9844-403d-97a2-9accb49704de",
+      "resource_id": "713818c8-6a86-4070-903a-ad5c03d02de0",
+      "operation_id": "42c62721-b07c-4429-8f1f-832315c42a75",
+      "type": "resource.started",
+      "occurred_at": "2026-10-16T01:23:04.080554+00:00",
+      "payload": {
+        "job_id": "713818c8-6a86-4070-903a-ad5c03d02de0",
+        "phase": "starting"
+      },
+      "availability": "available"
+    },
+    {
+      "seq": 4,
+      "event_id": "1d22e488-12fc-4306-a528-6950e91187eb",
+      "executor_id": "kali-01",
+      "session_id": "884b1933-9844-403d-97a2-9accb49704de",
+      "resource_id": "713818c8-6a86-4070-903a-ad5c03d02de0",
+      "operation_id": "42c62721-b07c-4429-8f1f-832315c42a75",
+      "type": "resource.started",
+      "occurred_at": "2026-10-16T01:23:04.138603+00:00",
+      "payload": {
+        "job_id": "713818c8-6a86-4070-903a-ad5c03d02de0",
+        "pid": 2439297,
+        "pgid": 2439297
+      },
+      "availability": "available"
+    },
+    {
+      "seq": 5,
+      "event_id": "a08927fc-65cc-4cb8-b4f5-b1e957bd160f",
+      "executor_id": "kali-01",
+      "session_id": "884b1933-9844-403d-97a2-9accb49704de",
+      "resource_id": "713818c8-6a86-4070-903a-ad5c03d02de0",
+      "operation_id": "42c62721-b07c-4429-8f1f-832315c42a75",
+      "type": "resource.exited",
+      "occurred_at": "2026-10-16T01:23:04.198301+00:00",
+      "payload": {
+        "job_id": "713818c8-6a86-4070-903a-ad5c03d02de0",
+        "state": "succeeded",
+        "exit_code": 0,
+        "termination_reason": "exited_normally",
+        "group_confirmed_exited": true,
+        "dropped_bytes": 0
+      },
+      "availability": "available"
+    },
+    {
+      "seq": 6,
+      "event_id": "aa76dbd6-ed97-414a-b52c-0c03fb5fa799",
+      "executor_id": "kali-01",
+      "session_id": "884b1933-9844-403d-97a2-9accb49704de",
+      "resource_id": "9691ea92-2316-43ec-96f1-cf2f7a4d04af",
+      "operation_id": "602e6210-31f2-4c57-b757-eaa78c39f11a",
+      "type": "resource.started",
+      "occurred_at": "2026-10-16T01:23:04.646525+00:00",
+      "payload": {
+        "mode": "hands_free",
+        "pid": 2439307,
+        "rows": 24,
+        "cols": 80
+      },
+      "availability": "available"
+    },
+    {
+      "seq": 7,
+      "event_id": "193869a2-a34b-4103-880c-1ad87affedf5",
+      "executor_id": "kali-01",
+      "session_id": "884b1933-9844-403d-97a2-9accb49704de",
+      "resource_id": "9691ea92-2316-43ec-96f1-cf2f7a4d04af",
+      "operation_id": "602e6210-31f2-4c57-b757-eaa78c39f11a",
+      "type": "resource.closed",
+      "occurred_at": "2026-10-16T01:23:15.864365+00:00",
+      "payload": {
+        "confirmed": true,
+        "detail": "SIGTERM/SIGKILL 后已确认退出"
+      },
+      "availability": "available"
+    },
+    {
+      "seq": 8,
+      "event_id": "de489ccf-83c2-47a7-8fa2-db6affe1d211",
+      "executor_id": "kali-01",
+      "session_id": "884b1933-9844-403d-97a2-9accb49704de",
+      "resource_id": "9691ea92-2316-43ec-96f1-cf2f7a4d04af",
+      "operation_id": "602e6210-31f2-4c57-b757-eaa78c39f11a",
+      "type": "resource.exited",
+      "occurred_at": "2026-10-16T01:23:15.871514+00:00",
+      "payload": {
+        "exit_code": -9,
+        "group_confirmed_exited": true,
+        "note": ""
+      },
+      "availability": "available"
+    }
+  ],
+  "execution_mode": "trusted",
+  "note": "只读核对：未创建任务、未重启服务；上面是执行端报告的原始字段。"
+}

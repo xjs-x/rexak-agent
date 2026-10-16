@@ -61,16 +61,68 @@ class ExecutorSettings(BaseSettings):
     #: 单次截图/下载的大小上限
     browser_artifact_limit_bytes: int = 20 * 1024 * 1024
 
+    # ---------- 执行底座（命令/脚本/PTY/监视）----------
+    #: 执行模式。发行缺省 disabled；个人部署显式设置 EXECUTOR_EXECUTION_MODE=trusted。
+    #: 命令可用还需解释器/平台/初始化预检成功，不能只看配置文字。
+    execution_mode: str = "disabled"
+    #: shell 文本使用的固定 shell（非登录模式执行：`-c` 不读 profile）。
+    shell_path: str = "/bin/bash"
+    #: 脚本默认解释器（python 语言）。留空则从 PATH 解析 python3。
+    python_interpreter: str = ""
+    #: 单资源采集日志上限（stdout/stderr 合计）。
+    resource_log_limit_bytes: int = 64 * 1024 * 1024
+    #: session 采集日志预算；受理时以事务预留，不能重复释放。
+    session_log_budget_bytes: int = 512 * 1024 * 1024
+    #: 单次受理至少需要预留的输出额度（低于此值拒绝新建）。
+    min_output_reservation_bytes: int = 1024 * 1024
+    #: 并行资源配额：session 总量 / 其中 PTY / 执行端全局。
+    session_max_resources: int = 16
+    session_max_pty: int = 8
+    global_max_resources: int = 64
+    #: 磁盘低水位：剩余空间低于该值时拒绝新建并告警。
+    disk_low_watermark_bytes: int = 1024 * 1024 * 1024
+    #: PTY 默认 quiet / startup grace。
+    pty_quiet_ms: int = 8000
+    pty_startup_grace_ms: int = 15000
+    #: 工作区存储执行方式。没有文件系统级 quota 时必须如实标注 accounting_only。
+    workspace_storage_enforcement: str = "accounting_only"
+    #: 环境发现使用的程序名单（只按名称从 PATH 定位，不扫描整机）。
+    required_tools: list[str] = Field(
+        default_factory=lambda: ["bash", "grep", "find", "sed", "curl"]
+    )
+    optional_interpreters: list[str] = Field(default_factory=lambda: ["node", "python3", "perl"])
+
     @property
     def protocol_version(self) -> int:
         return 1
 
     @property
     def capabilities_version(self) -> str:
-        return "1"
+        # v2：新增执行底座能力明细（execution_mode / pty / durable_events ...）。
+        return "2"
+
+    @property
+    def execution_enabled(self) -> bool:
+        """命令组合法放行的**必要条件**（不是充分条件）：显式 trusted + 平台预检。"""
+        if self.execution_mode != "trusted":
+            return False
+        return Path(self.shell_path).exists()
+
+    @property
+    def resolved_python_interpreter(self) -> str:
+        if self.python_interpreter:
+            return self.python_interpreter
+        import shutil as _shutil
+
+        return _shutil.which("python3") or "/usr/bin/python3"
 
     def ensure_directories(self) -> None:
-        for path in (self.data_root, self.workspace_root, self.data_root / "jobs"):
+        for path in (
+            self.data_root,
+            self.workspace_root,
+            self.data_root / "jobs",
+            self.terminal_log_root,
+        ):
             path.mkdir(parents=True, exist_ok=True)
         self.browser_states.mkdir(parents=True, exist_ok=True)
 
@@ -81,6 +133,10 @@ class ExecutorSettings(BaseSettings):
     @property
     def jobs_root(self) -> Path:
         return self.data_root / "jobs"
+
+    @property
+    def terminal_log_root(self) -> Path:
+        return self.data_root / "terminals"
 
     @property
     def browser_states(self) -> Path:

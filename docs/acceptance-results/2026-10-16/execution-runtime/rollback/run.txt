@@ -1,0 +1,3 @@
+{"id": "H06", "status": "PASS", "legacy_mode": "legacy_http_only_new_execution_unavailable", "restored_state": "running", "identity_preserved": true, "started_count": 1, "logs_continued": true, "cancel_confirmed": true, "snapshot_sha256": "6a3194855ffb824f9210a693345d265bf6a3cfe921a20d5ff9d777d416759aaa", "scope": "isolated noninteractive resource; no live PTY downgrade or daily service downgrade"}
+
+Exit 0

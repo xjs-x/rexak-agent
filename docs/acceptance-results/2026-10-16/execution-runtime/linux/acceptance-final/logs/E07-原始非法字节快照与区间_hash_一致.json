@@ -1,0 +1,26 @@
+{
+  "first": {
+    "resource_id": "319b6dfe-e725-471c-b035-27261fa25f5b",
+    "stream": "stdout",
+    "stored_offset": 0,
+    "next_offset": 6,
+    "observed_size": 6,
+    "sha256": "1f43df2bb42eb9786c59a22ddfa2f93e7ab5188d4a62a6277da21b1e70ba007e",
+    "data_base64": "/2ZpcnN0",
+    "captured_at": "2026-10-16T01:29:41.754331+00:00",
+    "at_current_end": true,
+    "note": "快照只覆盖本次已存字节区间；采集丢弃区间须结合 output-index/输出页核对。"
+  },
+  "final": {
+    "resource_id": "319b6dfe-e725-471c-b035-27261fa25f5b",
+    "stream": "stdout",
+    "stored_offset": 0,
+    "next_offset": 12,
+    "observed_size": 12,
+    "sha256": "4551144de3f6385c644c7f3de1f107e280bd824a665f78a73bf37e669fde7b14",
+    "data_base64": "/2ZpcnN0c2Vjb25k",
+    "captured_at": "2026-10-16T01:29:42.902941+00:00",
+    "at_current_end": true,
+    "note": "快照只覆盖本次已存字节区间；采集丢弃区间须结合 output-index/输出页核对。"
+  }
+}

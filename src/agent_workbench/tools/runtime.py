@@ -119,6 +119,10 @@ class Toolbox:
     #: 最近一次上下文装配的 manifest（只读投影，供诊断导出与复盘）
     context_manifest: dict[str, Any] | None = None
     working_context: dict[str, Any] | None = None
+    #: 执行端当前会话 fence 序号（每次同步后更新；操作包带上它以拒绝自填提权）
+    execution_fence_seq: int | None = None
+    execution_delegation_id: str | None = None
+    execution_delegation_revision: int | None = None
     _stats: dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
     def bump(self, name: str) -> int:

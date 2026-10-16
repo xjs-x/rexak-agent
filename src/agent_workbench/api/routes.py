@@ -381,13 +381,30 @@ async def create_session(
 
 
 @router.delete("/sessions/{session_id}", tags=["sessions"])
-async def delete_session(session_id: UUID, request: Request) -> dict[str, Any]:
-    """从列表移除任务，保留审计记录；活动运行经取消流程确认停止。"""
+async def delete_session(
+    session_id: UUID,
+    request: Request,
+    terminate_resources: bool = False,
+) -> dict[str, Any]:
+    """从列表移除任务，保留审计记录；活动运行经取消流程确认停止。
+
+    执行资源预检（规格 §13）：仍存活的执行资源不允许被"顺手删掉" ——
+    默认返回 409 与资源清单；显式 `terminate_resources=true` 时先发出终止请求，
+    再执行删除。台账记录（投影）保留，不制造孤儿。
+    """
     auth = get_auth()
     auth.check_origin(request)
     ticket = auth.require_session(request)
     auth.require_csrf(request, ticket)
     from agent_workbench.persistence.db import get_database
+
+    if terminate_resources:
+        from agent_workbench.api.execution import terminate_all
+
+        termination = await terminate_all(session_id, request, f"delete-session:{session_id}")
+        if termination.unresolved:
+            raise ApiError(ErrorCode.CONFLICT, "资源终止尚未确认，对话保留以便继续管理。",
+                           details={"active_resources": termination.unresolved})
 
     async with get_database().transaction() as db:
         row = (
@@ -398,21 +415,39 @@ async def delete_session(session_id: UUID, request: Request) -> dict[str, Any]:
         project = await ProjectRepository(db).get(row.project_id) if row else None
         if row is None or project is None or project.owner_id != get_settings().owner_id:
             raise ApiError(ErrorCode.NOT_FOUND, "任务不存在")
-        runs = list(
-            (
-                await db.execute(
-                    select(RunRow)
-                    .where(
-                        RunRow.session_id == session_id,
-                        RunRow.status.in_([str(item) for item in ACTIVE_RUN_STATUSES]),
-                    )
-                    .with_for_update()
-                )
-            )
-            .scalars()
-            .all()
+        from agent_workbench.persistence.repositories import ExecutionResourceRepository
+
+        active_resources = list(
+            await ExecutionResourceRepository(db).active_for_session(session_id)
         )
         if row.status != "deleted":
+            if active_resources:
+                raise ApiError(
+                    ErrorCode.CONFLICT,
+                    "该对话仍有存活的执行资源；删除前请显式选择终止（terminate_resources=true）"
+                    "或先逐个关闭。系统不会在删除时静默丢弃它们的台账。",
+                    details={
+                        "active_resources": [
+                            f"{item.kind}:{item.resource_id}:{item.state}"
+                            for item in active_resources
+                        ],
+                        "required_field": "terminate_resources",
+                    },
+                )
+            runs = list(
+                (
+                    await db.execute(
+                        select(RunRow)
+                        .where(
+                            RunRow.session_id == session_id,
+                            RunRow.status.in_([str(item) for item in ACTIVE_RUN_STATUSES]),
+                        )
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
             row.status = "deleted"
             for run in runs:
                 await bump_control_version(db, run_id=run.id)
@@ -427,7 +462,21 @@ async def delete_session(session_id: UUID, request: Request) -> dict[str, Any]:
                     await set_run_status(db, run_id=run.id, target=RunStatus.PAUSED)
                 if RunStatus(run.status) is not RunStatus.CANCELLING:
                     await set_run_status(db, run_id=run.id, target=RunStatus.CANCELLING)
-        return {"id": str(session_id), "deleted": True, "cancellation_pending": bool(runs)}
+            return {
+                "id": str(session_id),
+                "deleted": True,
+                "cancellation_pending": bool(runs),
+                "active_resources": [
+                    f"{item.kind}:{item.resource_id}" for item in active_resources
+                ],
+                "resources_note": (
+                    "删除只做软删除并取消运行；执行资源台账与投影保留，"
+                    "请通过执行面板或 terminate_resources 显式终止。"
+                    if active_resources
+                    else ""
+                ),
+            }
+        return {"id": str(session_id), "deleted": True, "cancellation_pending": False}
 
 
 @router.post(
@@ -2272,10 +2321,12 @@ async def executor_doctor(executor_id: str, request: Request) -> dict[str, Any]:
             "filesystem_available": caps.filesystem_available,
             "network_isolation": caps.network_isolation,
             "capabilities_version": caps.capabilities_version,
+            "execution_mode": caps.execution_mode,
+            "execution": caps.execution,
         },
         "honesty_note": (
-            "network_isolation=unavailable 意味着通用命令的无人值守模式应被关闭："
-            "正则黑名单、工作目录与提示词都不能替代执行环境级网络隔离。"
+            "命令能力按执行端声明的 trusted 模式和依赖开放；"
+            "可信执行不承诺系统级网络隔离，工作目录也不是隔离边界。"
         ),
     }
 

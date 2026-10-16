@@ -12,6 +12,8 @@ EnvironmentFile=/home/kali/rexak-agent-executor/.env
 ExecStart=/home/kali/rexak-agent-executor/.venv/bin/workbench-executor
 Restart=on-failure
 RestartSec=3
+KillMode=process
+# 仅停止 Executor 主进程；独立 job_worker 继续运行并保存回执。
 UMask=0077
 NoNewPrivileges=true
 

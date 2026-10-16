@@ -74,6 +74,41 @@ class ExecutorClient(Protocol):
         self, job_id: UUID, name: str, *, offset: int = 0, limit: int = 1_048_576
     ) -> tuple[bytes, dict[str, str]]: ...
 
+    # ---- 执行子协议（旧执行端未实现时抛 ExecutorProtocolError，能力检查先行）----
+
+    async def execution_sync_control(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+
+    async def execution_submit(self, envelope: dict[str, Any]) -> dict[str, Any]: ...
+
+    async def execution_operation(self, operation_id: str) -> dict[str, Any]: ...
+
+    async def execution_resources(
+        self, *, session_id: str, limit: int = 50, offset: int = 0, kind: str | None = None
+    ) -> dict[str, Any]: ...
+
+    async def execution_resource(self, resource_id: str) -> dict[str, Any]: ...
+
+    async def execution_output(
+        self,
+        resource_id: str,
+        *,
+        stream: str = "stdout",
+        cursor: str | None = None,
+        limit: int = 16384,
+        view: str = "stream",
+        max_lines: int | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def execution_raw_output(
+        self, resource_id: str, *, session_id: str, stream: str = "stdout",
+        offset: int = 0, limit: int = 262144,
+    ) -> dict[str, Any]: ...
+
+    async def execution_events(self, *, after: int, limit: int = 200) -> dict[str, Any]: ...
+
+    async def execution_environment(self) -> dict[str, Any]: ...
+
 
 class HttpExecutorClient:
     """基于 HTTPX 的实现，经 SSH 隧道访问执行岛。"""
@@ -229,6 +264,10 @@ class HttpExecutorClient:
         response = await self._request("GET", "/capabilities")
         self._raise_for_status(response, context="能力预检")
         payload = response.json()
+        details = payload.get("details") or {}
+        execution = details.get("execution") if isinstance(details, dict) else None
+        if not isinstance(execution, dict):
+            execution = {}
         caps = ExecutorCapabilities.model_validate(
             {
                 "executor_id": payload["executor_id"],
@@ -245,6 +284,21 @@ class HttpExecutorClient:
                 "network_isolation": payload.get("network_isolation", "unavailable"),
                 "capabilities_version": payload.get("capabilities_version", "1"),
                 "body_modes": list(payload.get("body_modes") or ["raw", "json"]),
+                "execution_mode": str(
+                    execution.get("execution_mode")
+                    or details.get("execution_mode")
+                    or "disabled"
+                ),
+                "execution_runtime_versions": [
+                    int(item)
+                    for item in (execution.get("execution_runtime_versions") or [])
+                    if isinstance(item, (int, str)) and str(item).isdigit()
+                ],
+                "execution": {
+                    key: value
+                    for key, value in execution.items()
+                    if isinstance(key, str)
+                },
             }
         )
         if caps.protocol_version != self._expected_protocol_version:
@@ -258,6 +312,119 @@ class HttpExecutorClient:
             )
         self._preflight = caps
         return caps
+
+    # ---------------- 执行子协议 ----------------
+
+    async def execution_sync_control(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = await self._request("POST", "/execution/v1/control", json_body=payload)
+        self._raise_for_status(response, context="会话控制同步")
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ExecutorProtocolError("控制同步返回了无效响应")
+        return data
+
+    async def execution_submit(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        """提交执行操作。**传输不确定**时抛 ExecutorConnectionError，调用方按 operation_id 核对。"""
+        response = await self._request("POST", "/execution/v1/operations", json_body=envelope)
+        self._raise_for_status(
+            response, context=f"执行操作 operation_id={envelope.get('operation_id')}"
+        )
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ExecutorProtocolError("执行操作返回了无效响应")
+        return data
+
+    async def execution_operation(self, operation_id: str) -> dict[str, Any]:
+        response = await self._request("GET", f"/execution/v1/operations/{operation_id}")
+        self._raise_for_status(response, context=f"查询执行操作 {operation_id}")
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ExecutorProtocolError("操作查询返回了无效响应")
+        return data
+
+    async def execution_resources(
+        self, *, session_id: str, limit: int = 50, offset: int = 0, kind: str | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"session_id": session_id, "limit": limit, "offset": offset}
+        if kind:
+            params["kind"] = kind
+        response = await self._request("GET", "/execution/v1/resources", params=params)
+        self._raise_for_status(response, context="资源列表")
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ExecutorProtocolError("资源列表返回了无效响应")
+        return data
+
+    async def execution_resource(self, resource_id: str) -> dict[str, Any]:
+        response = await self._request("GET", f"/execution/v1/resources/{resource_id}")
+        self._raise_for_status(response, context=f"资源状态 {resource_id}")
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ExecutorProtocolError("资源状态返回了无效响应")
+        return data
+
+    async def execution_output(
+        self,
+        resource_id: str,
+        *,
+        stream: str = "stdout",
+        cursor: str | None = None,
+        limit: int = 16384,
+        view: str = "stream",
+        max_lines: int | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "stream": stream,
+            "cursor": cursor,
+            "limit": limit,
+            "view": view,
+        }
+        if max_lines is not None:
+            params["max_lines"] = max_lines
+        if session_id:
+            params["session_id"] = session_id
+        response = await self._request(
+            "GET",
+            f"/execution/v1/resources/{resource_id}/output",
+            data_client=True,
+            params=params,
+        )
+        self._raise_for_status(response, context=f"资源输出 {resource_id}")
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ExecutorProtocolError("资源输出返回了无效响应")
+        return data
+
+    async def execution_raw_output(
+        self, resource_id: str, *, session_id: str, stream: str = "stdout",
+        offset: int = 0, limit: int = 262144,
+    ) -> dict[str, Any]:
+        from agent_workbench.contracts.execution_runtime import RawOutputSnapshot
+
+        response = await self._request("GET", f"/execution/v1/resources/{resource_id}/raw-output",
+                                       data_client=True, params={"session_id": session_id,
+                                       "stream": stream, "offset": offset, "limit": limit})
+        self._raise_for_status(response, context="原始输出快照")
+        return RawOutputSnapshot.model_validate(response.json()).model_dump(mode="json")
+
+    async def execution_events(self, *, after: int, limit: int = 200) -> dict[str, Any]:
+        response = await self._request(
+            "GET", "/execution/v1/events", params={"after": after, "limit": limit}
+        )
+        self._raise_for_status(response, context="读取执行事件")
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ExecutorProtocolError("执行事件返回了无效响应")
+        return data
+
+    async def execution_environment(self) -> dict[str, Any]:
+        response = await self._request("GET", "/execution/v1/environment")
+        self._raise_for_status(response, context="环境发现")
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ExecutorProtocolError("环境发现返回了无效响应")
+        return data
 
     async def probe_target(self, url: str, scope: dict[str, Any]) -> dict[str, Any]:
         """让执行岛报告目标实际解析与连接结果。"""

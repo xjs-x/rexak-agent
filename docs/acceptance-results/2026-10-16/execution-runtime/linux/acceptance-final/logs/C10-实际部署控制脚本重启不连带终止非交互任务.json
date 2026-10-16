@@ -1,0 +1,27 @@
+{
+  "controller": "deploy/executor_control.py",
+  "first": {
+    "executor_id": "acceptance-fixture",
+    "service_version": "0.1.0",
+    "protocol_version": 1,
+    "boot_id": "2441461-498e6727b1c1",
+    "started_at": "2026-10-16T01:27:04.471190+00:00",
+    "clock_utc": "2026-10-16T01:27:04.755126+00:00",
+    "free_bytes": 689299456,
+    "uptime_seconds": 0.283964,
+    "active_jobs": 0,
+    "capabilities_version": "2"
+  },
+  "second": {
+    "executor_id": "acceptance-fixture",
+    "service_version": "0.1.0",
+    "protocol_version": 1,
+    "boot_id": "2441521-c4787da6897d",
+    "started_at": "2026-10-16T01:27:09.927419+00:00",
+    "clock_utc": "2026-10-16T01:27:10.520368+00:00",
+    "free_bytes": 689131520,
+    "uptime_seconds": 0.592978,
+    "active_jobs": 1,
+    "capabilities_version": "2"
+  }
+}

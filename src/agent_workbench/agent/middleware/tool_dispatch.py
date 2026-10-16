@@ -186,6 +186,17 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             )
 
         # 6) 片段工作计数 + 异常转结构化结果
+        duty_id = request.state.get("execution_delegation_id") if request.state else None
+        if duty_id:
+            from uuid import UUID
+
+            from agent_workbench.persistence.repositories import ExecutionDelegationRepository
+
+            async with toolbox.db.session() as db:
+                duty = await ExecutionDelegationRepository(db).get(UUID(str(duty_id)))
+                revision = request.state.get("execution_delegation_revision")
+                if duty is None or duty.status != "active" or duty.revision != revision:
+                    return _tool_message(request, "该响应依赖的值班委托已失效，操作未执行；资源仍保留。")
         #
         # 工具抛出的异常**不能**让整轮图崩溃：那会把"某个工具失败"升级成
         # "整个 run 失败"，掩盖真实原因。这里按类型区分后写成合法的终结 ToolMessage，

@@ -1,0 +1,31 @@
+{
+  "view": {
+    "resource_id": "7fa0cb0a-88ca-4db6-aeeb-6b9daf4b861e",
+    "session_id": "b5bf8615-a210-4162-af80-b457d5194fc5",
+    "run_id": "48486002-4390-421c-87a0-0cf459826b71",
+    "kind": "terminal",
+    "state": "exited",
+    "interaction_state": "lost",
+    "mode": "hands_free",
+    "purpose": "",
+    "created_at": "2026-10-16T01:28:44.317974+00:00",
+    "started_at": null,
+    "exited_at": "2026-10-16T01:28:47.670172+00:00",
+    "closed_at": null,
+    "exit_code": null,
+    "termination_reason": "unknown",
+    "deadline_at": null,
+    "output_limit_action": "preserve_process",
+    "output_bytes": 0,
+    "dropped_bytes": 0,
+    "output_limit_bytes": 0,
+    "cancel_requested": false,
+    "cancel_confirmed": false,
+    "last_checked_at": "2026-10-16T01:28:48.190036+00:00",
+    "watch_hits": 0,
+    "notes": [
+      "交互已丢失（服务重启）：历史记录与日志保留，不自动重建。"
+    ]
+  },
+  "send": 409
+}

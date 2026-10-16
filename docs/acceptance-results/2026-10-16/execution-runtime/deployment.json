@@ -1,0 +1,69 @@
+{
+  "captured_at_utc": "2026-10-16T01:37:59.066537+00:00",
+  "remote_release": "/home/kali/rexak-agent-executor/releases/20261016T013741330389Z",
+  "wheel_sha256": "0bee8f273b450aa646a5791a187bbcf86279f0f5ead74424fa46c180683580e8",
+  "uploaded_files_verified": 26,
+  "installed_source_sha256": {
+    "__init__.py": "66e58bcd51af3a4fc566a365fb8e2ac27ce611d8304add3f0a53c2d4c7dbe814",
+    "__main__.py": "e9ffc5647c7a7fecb9630764e381ca62d065ac6ce48a708c3a91ad7cd85547f1",
+    "_generated/__init__.py": "96a4960423ffedf30c3e800d4a6e315c1773c9700b4bd535330b96c9702364d4",
+    "_generated/contracts/__init__.py": "96a4960423ffedf30c3e800d4a6e315c1773c9700b4bd535330b96c9702364d4",
+    "_generated/contracts/execution_runtime.py": "559b91498f1ce2a8d14813c814e53ee23922e7ba64bccc2c3d0f3b21402105c6",
+    "api.py": "e3002c82cf833da1ffb174efcca6f975f87a973711c4e2278ccd77bb40bfdf60",
+    "browser.py": "a776670155580f3389b9cf0f8d251b53edd0c4871d87335714106f8f548235ef",
+    "command_runtime.py": "09f2243a1d9f5a2b0a7a65550bff1fca7797494e9c8343bb83439cfbdbf22626",
+    "execution_api.py": "7189655faf9b6c0276a67a5d69365f67bf520338bbb6d1b3215d6326a1db86c5",
+    "execution_environment.py": "8253237c9499171d66ff2c67c2ad6d9d5ac528d3a7dbe08c632eef69d13525a5",
+    "filesystem.py": "0cb29fe6a6b321a79ce8cdd88387dfb27e90021d39359c98be0dcab503afb931",
+    "http_encoding.py": "f0819f656df6a6d58464fe0c862c5ceb092b03103a539364f65f74eb93835554",
+    "http_sessions.py": "a19512a9f9c49c942d46dd747ca598b104a6bf95f4e60c67e8fc3fe50d1bf3a4",
+    "job_worker.py": "8d7409c31030cb28483c1f194e841a42a11351778d7220f90ba300cca2bb2847",
+    "ledger.py": "ebf214ca61a04642a5cf631d3f947b68ebe8cd4652ea3e81ecacb9d19b6c3db8",
+    "output_store.py": "11fd21e06f471dda60da85b1b6d7781346603a009ea34d8746819346cf02126a",
+    "policy.py": "4f291d5118e4b5bceec17f251b8a90702b8d2d2963a8832df7ba8f3eb0eddcf6",
+    "processes.py": "1f098445e4ba1a49a0e5490b29dd6543904e3eaa294f43d28d7f2f557a42d80c",
+    "settings.py": "10ed4da5a2606caaa4618a81b6b68004db3b01c576c4489f23b6afcd9094473e",
+    "terminals.py": "f4eee656191aecd5bdeaf621e7605318a8aa34e94f3536dcf337710fe167f80f",
+    "watch.py": "26c329d4ecc09173fcec832d477db7c530b1233ce6720699f6ae38f07dd76102"
+  },
+  "previous_boot_id": "2438864-5d6d7d17006e",
+  "boot_id": "2448032-93807f30cf27",
+  "executor_identity_matches": true,
+  "active_jobs": 0,
+  "protocol_version": 1,
+  "body_modes": [
+    "raw",
+    "json",
+    "form",
+    "multipart"
+  ],
+  "execution": {
+    "execution_mode": "trusted",
+    "execution_runtime_versions": [
+      1
+    ],
+    "command": "available",
+    "script": "available",
+    "pty": "available",
+    "screen": "available",
+    "monitor": "available",
+    "durable_events": "available",
+    "detached_job_recovery": "available",
+    "output_limit_actions": [
+      "preserve_process",
+      "terminate"
+    ],
+    "workspace_storage_enforcement": "accounting_only",
+    "dependencies": {
+      "pyte": "0.8.2"
+    },
+    "unavailable_reasons": {},
+    "notes": [
+      "detached_job_recovery：非交互任务由独立包装进程承载，服务重启不影响其运行。",
+      "interactive PTY 在 Executor 重启后会失去交互能力：保留记录、核对残留进程，不自动重建。"
+    ]
+  },
+  "pip_check": "passed",
+  "real_target_testing_performed": false,
+  "real_model_call_performed": false
+}

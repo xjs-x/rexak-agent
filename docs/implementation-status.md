@@ -339,3 +339,12 @@ Earth 自然目标测试尚未完成：10 次成功 HTTP 操作和 25 个哈希�
 ## 2026-10-15 模型预算与 Web 配置
 
 修正内置模型的上下文/完整输出预算，增加小米三款模型及百炼 Flash 的 Web 设置、Windows 加密 Key 持久化与输入框选择。阶段模型与端点固定，旧阶段恢复时升级错误预算并保留审计。启动器取消终端 Key 交互，缺 Key 的 Runner 等待配置，Windows 自动停止会清理子进程。参数、来源和启用方法见[模型配置说明](model-settings.md)，工程与部署证据见[验收记录](acceptance-results/2026-10-15/model-settings/README.md)。真实模型效果仍待用户复测。
+
+
+## 2026-10-16 命令执行底座
+
+命令、脚本、PTY、监视、屏幕、批量文件编辑与检索迁入 Python Executor；协议为独立生成的 `/execution/v1`。默认发行 disabled，个人 Kali 显式 trusted；不将工作目录或 accounting_only 声称为系统级隔离。
+
+增加独立包装进程与完成回执、稳定操作身份、分流日志与原始字节快照、会话预算、明确等待、按用途区分待办与保留能力、持续委托和可靠事件交付。资源保留、暂停、取消值班、关闭资源及终止任务分开；PTY 重启后交互丢失明确显示，不自动重建。
+
+实际代码、运行证据、部署与未测边界见[本轮验收](acceptance-results/2026-10-16/execution-runtime/README.md)。真实模型与靶场效果不在本轮验收范围，由用户执行。最新行为以 [decision 0006](decisions/0006-execution-runtime.md) 为准，旧章节的命令禁用结论属于此前版本。

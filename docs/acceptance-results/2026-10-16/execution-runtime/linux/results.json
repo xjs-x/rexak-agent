@@ -1,0 +1,351 @@
+{
+  "mode": "cumulative_revalidation",
+  "note": "31 项累计通过，非单次全批次结果；E04 首次失败后修复索引持久化并复验。每项 source_batch 指向实际运行批次。",
+  "summary": {
+    "pass": 31,
+    "fail": 0
+  },
+  "results": [
+    {
+      "id": "A03",
+      "name": "协议保真：命令正文逐字节保留；非法参数前置拒绝",
+      "status": "PASS",
+      "reason": "",
+      "duration": 3.875,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/A03-协议保真_命令正文逐字节保留_非法参数前置拒绝.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "B01",
+      "name": "shell、heredoc、分流、非零退出与 JSON 脚本参数",
+      "status": "PASS",
+      "reason": "",
+      "duration": 4.636,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/B01-shell_heredoc_分流_非零退出与_JSON_脚本参数.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "B08",
+      "name": "任务 venv 安装本地 fixture wheel，零外网下载",
+      "status": "PASS",
+      "reason": "",
+      "duration": 8.997,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/B08-任务_venv_安装本地_fixture_wheel_零外网下载.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "C01",
+      "name": "等待超时返回同一 job，命令只启动一次",
+      "status": "PASS",
+      "reason": "",
+      "duration": 5.708,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/C01-等待超时返回同一_job_命令只启动一次.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "C02",
+      "name": "等待与执行截止相互独立",
+      "status": "PASS",
+      "reason": "",
+      "duration": 6.158,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/C02-等待与执行截止相互独立.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "C03",
+      "name": "服务重启不打断非交互任务（SIGTERM 停止方式）",
+      "status": "PASS",
+      "reason": "",
+      "duration": 6.701,
+      "evidence_paths": [
+        "linux/final-fixes/logs/C03-服务重启不打断非交互任务_SIGTERM_停止方式_.json"
+      ],
+      "source_batch": "linux/final-fixes/results.json"
+    },
+    {
+      "id": "C04",
+      "name": "SIGKILL 后从完成回执取得真实退出码",
+      "status": "PASS",
+      "reason": "",
+      "duration": 6.998,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/C04-SIGKILL_后从完成回执取得真实退出码.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "C05",
+      "name": "证据缺失 -> unknown，不伪造成功",
+      "status": "PASS",
+      "reason": "",
+      "duration": 22.303,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/C05-证据缺失_-_unknown_不伪造成功.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "C06",
+      "name": "同 operation 复用；不同参数 409",
+      "status": "PASS",
+      "reason": "",
+      "duration": 3.587,
+      "evidence_paths": [
+        "linux/extended-cases/logs/C06-同_operation_复用_不同参数_409.json"
+      ],
+      "source_batch": "linux/extended-cases/results.json"
+    },
+    {
+      "id": "C08",
+      "name": "进程组回收与重复取消幂等",
+      "status": "PASS",
+      "reason": "",
+      "duration": 4.335,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/C08-进程组回收与重复取消幂等.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "C09",
+      "name": "服务离线期间截止仍被执行",
+      "status": "PASS",
+      "reason": "",
+      "duration": 10.368,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/C09-服务离线期间截止仍被执行.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "C10",
+      "name": "实际部署控制脚本重启不连带终止非交互任务",
+      "status": "PASS",
+      "reason": "",
+      "duration": 18.726,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/C10-实际部署控制脚本重启不连带终止非交互任务.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "D01",
+      "name": "交互终端：多轮 send/read，状态延续",
+      "status": "PASS",
+      "reason": "",
+      "duration": 13.602,
+      "evidence_paths": [
+        "linux/final-fixes/logs/D01-交互终端_多轮_send_read_状态延续.json"
+      ],
+      "source_batch": "linux/final-fixes/results.json"
+    },
+    {
+      "id": "D02",
+      "name": "非法按键整单拒绝；keys/hex 顺序正确",
+      "status": "PASS",
+      "reason": "",
+      "duration": 14.094,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/D02-非法按键整单拒绝_keys_hex_顺序正确.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "D03",
+      "name": "hands_free 立即返回；monitor 命中记录事件",
+      "status": "PASS",
+      "reason": "",
+      "duration": 10.604,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/D03-hands_free_立即返回_monitor_命中记录事件.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "D04",
+      "name": "不用上一轮提示符判定本轮完成",
+      "status": "PASS",
+      "reason": "",
+      "duration": 15.344,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/D04-不用上一轮提示符判定本轮完成.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "D05",
+      "name": "同 operation 输入不重复写入",
+      "status": "PASS",
+      "reason": "",
+      "duration": 15.019,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/D05-同_operation_输入不重复写入.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "D06",
+      "name": "屏幕处理 ANSI 清屏/中文；resize 一致",
+      "status": "PASS",
+      "reason": "",
+      "duration": 13.69,
+      "evidence_paths": [
+        "linux/final-fixes/logs/D06-屏幕处理_ANSI_清屏_中文_resize_一致.json"
+      ],
+      "source_batch": "linux/final-fixes/results.json"
+    },
+    {
+      "id": "D07",
+      "name": "重启后交互丢失但历史保留，不自动重建",
+      "status": "PASS",
+      "reason": "",
+      "duration": 7.352,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/D07-重启后交互丢失但历史保留_不自动重建.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "D08",
+      "name": "关闭幂等；跨 session 拒绝",
+      "status": "PASS",
+      "reason": "",
+      "duration": 3.489,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/D08-关闭幂等_跨_session_拒绝.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "E01",
+      "name": "多字节跨页游标不漏字；不跨资源",
+      "status": "PASS",
+      "reason": "",
+      "duration": 5.865,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/E01-多字节跨页游标不漏字_不跨资源.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "E02",
+      "name": "非法 UTF-8 报告编码问题并保留原件",
+      "status": "PASS",
+      "reason": "",
+      "duration": 3.77,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/E02-非法_UTF-8_报告编码问题并保留原件.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "E03",
+      "name": "超限默认保活并记录缺失区间",
+      "status": "PASS",
+      "reason": "",
+      "duration": 7.248,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/E03-超限默认保活并记录缺失区间.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "E04",
+      "name": "PTY 保活；显式 terminate 才终止",
+      "status": "PASS",
+      "reason": "",
+      "duration": 17.392,
+      "evidence_paths": [
+        "linux/final-fixes/logs/E04-PTY_保活_显式_terminate_才终止.json"
+      ],
+      "source_batch": "linux/final-fixes/results.json"
+    },
+    {
+      "id": "E05",
+      "name": "session 日志预算不足时拒绝新建，不淘汰已有",
+      "status": "PASS",
+      "reason": "",
+      "duration": 11.244,
+      "evidence_paths": [
+        "linux/extended-cases/logs/E05-session_日志预算不足时拒绝新建_不淘汰已有.json"
+      ],
+      "source_batch": "linux/extended-cases/results.json"
+    },
+    {
+      "id": "E06",
+      "name": "读到末尾 != 程序结束",
+      "status": "PASS",
+      "reason": "",
+      "duration": 5.465,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/E06-读到末尾_程序结束.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "E07",
+      "name": "原始非法字节快照与区间 hash 一致",
+      "status": "PASS",
+      "reason": "",
+      "duration": 4.217,
+      "evidence_paths": [
+        "linux/final-fixes/logs/E07-原始非法字节快照与区间_hash_一致.json"
+      ],
+      "source_batch": "linux/final-fixes/results.json"
+    },
+    {
+      "id": "E08",
+      "name": "资源上限只拒绝新建",
+      "status": "PASS",
+      "reason": "",
+      "duration": 22.073,
+      "evidence_paths": [
+        "linux/extended-cases/logs/E08-资源上限只拒绝新建.json"
+      ],
+      "source_batch": "linux/extended-cases/results.json"
+    },
+    {
+      "id": "F02",
+      "name": "事件序号跨重启不归零",
+      "status": "PASS",
+      "reason": "",
+      "duration": 7.31,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/F02-事件序号跨重启不归零.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "G04",
+      "name": "旧 run / 自填 fence 序号被拒绝",
+      "status": "PASS",
+      "reason": "",
+      "duration": 3.067,
+      "evidence_paths": [
+        "linux/acceptance-final/logs/G04-旧_run_自填_fence_序号被拒绝.json"
+      ],
+      "source_batch": "linux/acceptance-final/results.json"
+    },
+    {
+      "id": "B03",
+      "name": "独立命令不隐式继承目录和环境",
+      "status": "PASS",
+      "reason": "",
+      "duration": 7.236,
+      "evidence_paths": [
+        "linux/extended-cases/logs/B03-独立命令不隐式继承目录和环境.json"
+      ],
+      "source_batch": "linux/extended-cases/results.json"
+    }
+  ]
+}

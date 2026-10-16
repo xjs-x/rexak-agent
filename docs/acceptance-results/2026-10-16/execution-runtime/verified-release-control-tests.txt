@@ -1,0 +1,57 @@
+........................................................................ [ 11%]
+........................................................................ [ 23%]
+........................................................................ [ 35%]
+.............ss......................................................... [ 47%]
+........................................................................ [ 59%]
+........................................................................ [ 71%]
+........................................................................ [ 83%]
+........................................................................ [ 95%]
+.........................                                                [100%]
+============================== warnings summary ===============================
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+  C:\xjs\rexak-agent\.venv\Lib\site-packages\pydantic\functional_validators.py:851: UserWarning: Pydantic serializer warnings:
+    PydanticSerializationUnexpectedValue(Expected `Toolbox` - serialized value may not be as expected [field_name='toolbox', input_value=namespace(db=<agent_workb... at 0x000002A95837AC00>), input_type=SimpleNamespace])
+    function=lambda v, h: h(v), schema=original_schema
+
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+tests/integration/test_stage_reports.py::test_repeated_completion_rejections_continue_without_user_or_extra_evaluator
+  C:\xjs\rexak-agent\.venv\Lib\site-packages\pydantic\main.py:520: UserWarning: Pydantic serializer warnings:
+    PydanticSerializationUnexpectedValue(Expected `Toolbox` - serialized value may not be as expected [field_name='toolbox', input_value=namespace(db=<agent_workb... at 0x000002A95837AC00>), input_type=SimpleNamespace])
+    return self.__pydantic_serializer__.to_python(
+
+tests/integration/test_weakness_closure.py::test_official_loop_consumes_weakness_and_links_execution
+tests/integration/test_weakness_closure.py::test_official_loop_consumes_weakness_and_links_execution
+tests/integration/test_weakness_closure.py::test_official_loop_consumes_weakness_and_links_execution
+tests/integration/test_weakness_closure.py::test_official_loop_consumes_weakness_and_links_execution
+tests/integration/test_weakness_closure.py::test_official_loop_consumes_weakness_and_links_execution
+tests/integration/test_weakness_closure.py::test_official_loop_never_consuming_weakness_yields_specific_review
+tests/integration/test_weakness_closure.py::test_official_loop_never_consuming_weakness_yields_specific_review
+  C:\xjs\rexak-agent\.venv\Lib\site-packages\pydantic\functional_validators.py:851: UserWarning: Pydantic serializer warnings:
+    PydanticSerializationUnexpectedValue(Expected `Toolbox` - serialized value may not be as expected [field_name='toolbox', input_value=namespace(db=<agent_workb... 'pending_job_ids': []}), input_type=SimpleNamespace])
+    function=lambda v, h: h(v), schema=original_schema
+
+tests/integration/test_weakness_closure.py::test_official_loop_consumes_weakness_and_links_execution
+tests/integration/test_weakness_closure.py::test_official_loop_consumes_weakness_and_links_execution
+tests/integration/test_weakness_closure.py::test_official_loop_consumes_weakness_and_links_execution
+tests/integration/test_weakness_closure.py::test_official_loop_consumes_weakness_and_links_execution
+tests/integration/test_weakness_closure.py::test_official_loop_consumes_weakness_and_links_execution
+tests/integration/test_weakness_closure.py::test_official_loop_never_consuming_weakness_yields_specific_review
+tests/integration/test_weakness_closure.py::test_official_loop_never_consuming_weakness_yields_specific_review
+  C:\xjs\rexak-agent\.venv\Lib\site-packages\pydantic\main.py:520: UserWarning: Pydantic serializer warnings:
+    PydanticSerializationUnexpectedValue(Expected `Toolbox` - serialized value may not be as expected [field_name='toolbox', input_value=namespace(db=<agent_workb... 'pending_job_ids': []}), input_type=SimpleNamespace])
+    return self.__pydantic_serializer__.to_python(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\unit\test_workspace_paths.py:53: Windows 创建符号链接需要额外权限
+SKIPPED [1] tests\unit\test_workspace_paths.py:77: Windows 创建符号链接需要额外权限
+599 passed, 2 skipped, 1 deselected, 26 warnings in 181.23s (0:03:01)

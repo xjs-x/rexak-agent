@@ -67,7 +67,7 @@ async def run_filesystem_action(
     *,
     tool_call_id: str,
     tool_name: str,
-    action: Literal["list", "read", "write", "edit"],
+    action: Literal["list", "read", "write", "edit", "edit_batch", "glob", "search"],
     path: str = "",
     content: str | None = None,
     old_text: str | None = None,
@@ -76,10 +76,12 @@ async def run_filesystem_action(
     replace_all: bool = False,
     offset: int = 0,
     limit: int | None = None,
+    extra_arguments: dict[str, Any] | None = None,
 ) -> ToolResult:
     # 写操作属于副作用；读/列目录是只读
     effect_class = (
-        ToolEffectClass.SIDE_EFFECTING if action in {"write", "edit"} else ToolEffectClass.READ_ONLY
+        ToolEffectClass.SIDE_EFFECTING
+        if action in {"write", "edit", "edit_batch"} else ToolEffectClass.READ_ONLY
     )
 
     await toolbox.assert_control_current()
@@ -96,6 +98,7 @@ async def run_filesystem_action(
             "action": action,
             "path": path,
             "workspace_id": str(toolbox.session_id),
+            **(extra_arguments or {}),
         }
         operation_id, _replayed = await prepare_operation(
             toolbox, tool_call_id, tool_name, arguments, effect_class=effect_class
@@ -120,6 +123,7 @@ async def run_filesystem_action(
                 "replace_all": replace_all,
                 "offset": offset,
                 "limit": limit,
+                **(extra_arguments or {}),
             },
         }
 
@@ -411,4 +415,51 @@ async def edit_file(
     return json_text(result)
 
 
-FILE_TOOLS = [list_files, read_file, write_file, edit_file]
+@tool("edit_file_batch")
+async def edit_file_batch(
+    runtime: ToolRuntime[RunContext], path: str, expected_version: str,
+    edits: list[dict[str, Any]],
+) -> str:
+    """原子应用一组文件替换；先 read_file 取得版本，任一替换失败则不改文件。"""
+    result = await run_filesystem_action(
+        runtime.context.toolbox, tool_call_id=runtime.tool_call_id or "",
+        tool_name="edit_file_batch", action="edit_batch", path=path,
+        expected_version=expected_version, extra_arguments={"edits": edits},
+    )
+    return json_text(result)
+
+
+@tool("glob_files")
+async def glob_files(
+    runtime: ToolRuntime[RunContext], pattern: str, root: str = ".",
+    cursor: str | None = None, limit: int = 200,
+) -> str:
+    """在当前对话工作区匹配文件，支持 **；按返回 cursor 分页，不搜索工作区外。"""
+    result = await run_filesystem_action(
+        runtime.context.toolbox, tool_call_id=runtime.tool_call_id or "",
+        tool_name="glob_files", action="glob", path=root,
+        limit=max(1, min(limit, 1000)), extra_arguments={"pattern": pattern, "cursor": cursor},
+    )
+    return json_text(result)
+
+
+@tool("search_files")
+async def search_files(
+    runtime: ToolRuntime[RunContext], pattern: str, paths: list[str] | None = None,
+    regex: bool = False, case_sensitive: bool = True, context_lines: int = 0,
+    cursor: str | None = None, limit: int = 200,
+) -> str:
+    """有界检索工作区文件，返回路径、行号和上下文；非法编码会明确说明。"""
+    result = await run_filesystem_action(
+        runtime.context.toolbox, tool_call_id=runtime.tool_call_id or "",
+        tool_name="search_files", action="search", path=".", limit=max(1, min(limit, 1000)),
+        extra_arguments={
+            "pattern": pattern, "paths": paths or ["."], "regex": regex,
+            "case_sensitive": case_sensitive, "context_lines": max(0, min(context_lines, 20)),
+            "cursor": cursor,
+        },
+    )
+    return json_text(result)
+
+
+FILE_TOOLS = [list_files, read_file, write_file, edit_file, edit_file_batch, glob_files, search_files]

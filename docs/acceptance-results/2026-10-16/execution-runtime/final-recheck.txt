@@ -1,0 +1,10 @@
+[ ok ] A03 协议保真：命令正文逐字节保留；非法参数前置拒绝（3.82s）
+[ ok ] B01 shell、heredoc、分流、非零退出与 JSON 脚本参数（6.03s）
+[ ok ] C03 服务重启不打断非交互任务（SIGTERM 停止方式）（6.98s）
+[ ok ] C04 SIGKILL 后从完成回执取得真实退出码（6.61s）
+[ ok ] D05 同 operation 输入不重复写入（14.79s）
+[ ok ] E07 原始非法字节快照与区间 hash 一致（5.61s）
+
+结果：PASS 6 / FAIL 0 / NOT_RUN 0 -> /tmp/rexak-execution-accept-ctHmeaoE/final-recheck/results.json
+
+Exit 0

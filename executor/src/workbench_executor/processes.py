@@ -118,6 +118,31 @@ def pid_is_alive(pid: int, *, expected_start_ticks: int | None) -> bool:
     return current is not None and current == expected_start_ticks
 
 
+def process_group_alive(pgid: int) -> bool:
+    """核对仍能执行的组成员；已退出的 zombie 不算存活能力。"""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    if not Path("/proc").is_dir():
+        return True
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        fields = stat[stat.rfind(")") + 2:].split()
+        if len(fields) >= 3 and fields[2] == str(pgid) and fields[0] not in {"Z", "X"}:
+            return True
+    return False
+
+
 class ProcessSupervisor:
     """启动与回收受控进程。"""
 

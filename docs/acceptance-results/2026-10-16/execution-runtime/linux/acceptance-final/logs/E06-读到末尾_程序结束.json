@@ -1,0 +1,19 @@
+{
+  "page": {
+    "resource_id": "6675e053-ddd6-4245-9c99-24602efd58ce",
+    "stream": "stdout",
+    "cursor": "",
+    "next_cursor": "djJ8NjY3NWUwNTMtZGRkNi00MjQ1LTljOTktMjQ2MDJlZmQ1OGNlfHN0ZG91dHw5",
+    "byte_start": 0,
+    "byte_end": 9,
+    "text": "part-one\n",
+    "byte_count": 9,
+    "at_current_end": true,
+    "process_exited": false,
+    "truncated": false,
+    "missing_ranges": [],
+    "encoding_error": null,
+    "artifact_refs": [],
+    "note": "at_current_end 只表示已读到当前末尾，不代表程序已结束。"
+  }
+}

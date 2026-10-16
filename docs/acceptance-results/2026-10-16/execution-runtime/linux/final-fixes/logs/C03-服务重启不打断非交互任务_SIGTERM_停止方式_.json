@@ -1,0 +1,29 @@
+{
+  "view": {
+    "resource_id": "b47ee8c6-0baf-441b-aedb-bc228af41053",
+    "session_id": "5159d0d8-147c-48bb-888a-db88d73291fd",
+    "run_id": "1e796613-c91f-48d1-8707-ae7d35c682e1",
+    "kind": "command",
+    "state": "exited",
+    "interaction_state": "not_applicable",
+    "mode": "",
+    "purpose": "",
+    "created_at": "2026-10-16T01:35:34.757074+00:00",
+    "started_at": "2026-10-16T01:35:35.268799+00:00",
+    "exited_at": "2026-10-16T01:35:37.802058+00:00",
+    "closed_at": null,
+    "exit_code": 5,
+    "termination_reason": "exited_normally",
+    "deadline_at": null,
+    "output_limit_action": "preserve_process",
+    "output_bytes": 29,
+    "dropped_bytes": 0,
+    "output_limit_bytes": 67108864,
+    "cancel_requested": false,
+    "cancel_confirmed": false,
+    "last_checked_at": "2026-10-16T01:35:38.493920+00:00",
+    "watch_hits": 0,
+    "notes": []
+  },
+  "stdout": "before-restart\nafter-restart\n"
+}

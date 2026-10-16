@@ -262,8 +262,17 @@ export class ApiClient {
     return this.write(`/projects/${projectId}/sessions`, body);
   }
 
-  deleteSession(sessionId: string): Promise<{ deleted: boolean; cancellation_pending: boolean }> {
-    return request(`/sessions/${sessionId}`, {
+  deleteSession(
+    sessionId: string,
+    terminateResources = false,
+  ): Promise<{
+    deleted: boolean;
+    cancellation_pending: boolean;
+    active_resources?: string[];
+    resources_note?: string;
+  }> {
+    const suffix = terminateResources ? "?terminate_resources=true" : "";
+    return request(`/sessions/${sessionId}${suffix}`, {
       method: "DELETE", headers: { "X-Workbench-CSRF": this.csrf },
     });
   }
@@ -331,6 +340,80 @@ export class ApiClient {
 
   jobs(sessionId: string): Promise<{ jobs: JobItem[] }> {
     return request(`/sessions/${sessionId}/jobs`);
+  }
+
+  // ---- 执行底座：资源 / 值班 / 输出（资源状态与值班状态分开） ----
+
+  executionResources(
+    sessionId: string,
+    options: { refresh?: boolean; activeOnly?: boolean } = {},
+  ): Promise<components["schemas"]["ExecutionResourcesResponse"]> {
+    const query = new URLSearchParams({
+      refresh: String(options.refresh ?? true),
+      active_only: String(options.activeOnly ?? false),
+      limit: "100",
+    });
+    return request(`/sessions/${sessionId}/execution/resources?${query.toString()}`);
+  }
+
+  executionResourceOutput(
+    sessionId: string,
+    resourceId: string,
+    params: { view?: "stream" | "screen"; cursor?: string | null; stream?: string } = {},
+  ): Promise<components["schemas"]["ResourceOutputResponse"]> {
+    const query = new URLSearchParams({
+      view: params.view ?? "stream",
+      stream: params.stream ?? "stdout",
+      limit: "16384",
+    });
+    if (params.cursor) query.set("cursor", params.cursor);
+    return request(
+      `/sessions/${sessionId}/execution/resources/${resourceId}/output?${query.toString()}`,
+    );
+  }
+
+  closeExecutionResource(
+    sessionId: string,
+    resourceId: string,
+  ): Promise<components["schemas"]["ExecutionOperationResponse"]> {
+    return this.write(
+      `/sessions/${sessionId}/execution/resources/${resourceId}/close`,
+      undefined,
+      crypto.randomUUID(),
+    );
+  }
+
+  terminateAllExecutionResources(
+    sessionId: string,
+  ): Promise<components["schemas"]["TerminateAllResponse"]> {
+    return this.write(
+      `/sessions/${sessionId}/execution/resources/terminate-all`,
+      undefined,
+      crypto.randomUUID(),
+    );
+  }
+
+  createDuty(
+    sessionId: string,
+    body: components["schemas"]["DutyCreateRequest"],
+  ): Promise<components["schemas"]["DutyMutationResponse"]> {
+    return this.write(`/sessions/${sessionId}/execution/duties`, body, crypto.randomUUID());
+  }
+
+  cancelDuty(
+    sessionId: string,
+    delegationId: string,
+    reason: string,
+  ): Promise<components["schemas"]["DutyMutationResponse"]> {
+    return this.write(
+      `/sessions/${sessionId}/execution/duties/${delegationId}/cancel`,
+      { reason },
+      crypto.randomUUID(),
+    );
+  }
+
+  executionEnvironment(sessionId: string): Promise<components["schemas"]["ExecutionEnvironmentReport"]> {
+    return request(`/sessions/${sessionId}/execution/environment`);
   }
 
   usage(sessionId: string): Promise<UsageSummary> {

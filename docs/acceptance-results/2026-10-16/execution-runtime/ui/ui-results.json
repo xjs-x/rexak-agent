@@ -1,0 +1,23 @@
+{
+  "status": "PASS",
+  "checks": [
+    "按用途分组",
+    "输出翻页",
+    "交互丢失",
+    "取消值班不关闭资源",
+    "关闭未确认如实展示",
+    "无浏览器脚本异常"
+  ],
+  "calls": [
+    "GET /api/sessions/fixture/execution/resources",
+    "GET /api/sessions/fixture/execution/resources/listener/output",
+    "GET /api/sessions/fixture/execution/resources/listener/output",
+    "POST /api/session",
+    "POST /api/sessions/fixture/execution/duties/duty/cancel",
+    "GET /api/sessions/fixture/execution/resources",
+    "POST /api/sessions/fixture/execution/resources/listener/close",
+    "GET /api/sessions/fixture/execution/resources"
+  ],
+  "api_mode": "fixture",
+  "real_model": false
+}

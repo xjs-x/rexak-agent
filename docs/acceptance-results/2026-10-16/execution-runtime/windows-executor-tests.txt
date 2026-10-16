@@ -1,0 +1,56 @@
+sssssssssssss..sssssssss........sssss.....ssssssssssssss......ssssssssss [ 74%]
+..s.........ssss.........                                                [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] executor\tests\test_browser.py:99: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:110: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:123: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:159: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:168: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:185: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:202: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:212: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:233: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:269: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:310: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:329: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_browser.py:341: fixture 目标未运行：先执行 ~/rexak-agent-executor/start-target.sh
+SKIPPED [1] executor\tests\test_execution_jobs_linux.py:136: 进程组 / forkpty / /proc 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_execution_jobs_linux.py:154: 进程组 / forkpty / /proc 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_execution_jobs_linux.py:183: 进程组 / forkpty / /proc 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_execution_jobs_linux.py:202: 进程组 / forkpty / /proc 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_execution_jobs_linux.py:225: 进程组 / forkpty / /proc 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_execution_jobs_linux.py:241: 进程组 / forkpty / /proc 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_execution_jobs_linux.py:265: 进程组 / forkpty / /proc 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_execution_jobs_linux.py:283: 进程组 / forkpty / /proc 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_execution_jobs_linux.py:313: 进程组 / forkpty / /proc 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [5] executor\tests\test_execution_recovery_windows.py:17: 真实 Linux 包装进程与回执
+SKIPPED [1] executor\tests\test_filesystem_jobs.py:44: 符号链接语义与目标平台不同；Windows 上跑等于没验证（用控制端的单测覆盖路径逻辑）
+SKIPPED [1] executor\tests\test_filesystem_jobs.py:61: 符号链接语义与目标平台不同；Windows 上跑等于没验证（用控制端的单测覆盖路径逻辑）
+SKIPPED [1] executor\tests\test_filesystem_jobs.py:74: 符号链接语义与目标平台不同；Windows 上跑等于没验证（用控制端的单测覆盖路径逻辑）
+SKIPPED [1] executor\tests\test_filesystem_jobs.py:122: 符号链接语义与目标平台不同；Windows 上跑等于没验证（用控制端的单测覆盖路径逻辑）
+SKIPPED [1] executor\tests\test_filesystem_jobs.py:166: 符号链接语义与目标平台不同；Windows 上跑等于没验证（用控制端的单测覆盖路径逻辑）
+SKIPPED [1] executor\tests\test_filesystem_jobs.py:219: 符号链接语义与目标平台不同；Windows 上跑等于没验证（用控制端的单测覆盖路径逻辑）
+SKIPPED [1] executor\tests\test_filesystem_jobs.py:232: 符号链接语义与目标平台不同；Windows 上跑等于没验证（用控制端的单测覆盖路径逻辑）
+SKIPPED [1] executor\tests\test_filesystem_jobs.py:243: 符号链接语义与目标平台不同；Windows 上跑等于没验证（用控制端的单测覆盖路径逻辑）
+SKIPPED [1] executor\tests\test_filesystem_jobs.py:275: 符号链接语义与目标平台不同；Windows 上跑等于没验证（用控制端的单测覆盖路径逻辑）
+SKIPPED [1] executor\tests\test_filesystem_jobs.py:298: 符号链接语义与目标平台不同；Windows 上跑等于没验证（用控制端的单测覆盖路径逻辑）
+SKIPPED [1] executor\tests\test_http_redirect.py:17: 本地 fixture 目标未运行
+SKIPPED [1] executor\tests\test_http_redirect.py:48: 本地 fixture 目标未运行
+SKIPPED [1] executor\tests\test_http_session_jobs.py:64: 本地 fixture 目标未运行
+SKIPPED [1] executor\tests\test_http_session_jobs.py:75: 本地 fixture 目标未运行
+SKIPPED [1] executor\tests\test_processes.py:95: 进程组 / /proc/<pid>/stat 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_processes.py:131: 进程组 / /proc/<pid>/stat 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_processes.py:154: 进程组 / /proc/<pid>/stat 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_processes.py:193: 进程组 / /proc/<pid>/stat 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_processes.py:207: 进程组 / /proc/<pid>/stat 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_processes.py:224: 进程组 / /proc/<pid>/stat 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_processes.py:243: 进程组 / /proc/<pid>/stat 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_processes.py:265: 进程组 / /proc/<pid>/stat 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_processes.py:270: 进程组 / /proc/<pid>/stat 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_processes.py:283: 进程组 / /proc/<pid>/stat 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_target_probe.py:24: 本地 fixture 目标未运行
+SKIPPED [1] executor\tests\test_terminals_linux.py:59: forkpty / termios 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_terminals_linux.py:160: forkpty / termios 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_terminals_linux.py:195: forkpty / termios 只在 Linux 上存在；Windows 上跑等于没验证
+SKIPPED [1] executor\tests\test_terminals_linux.py:253: forkpty / termios 只在 Linux 上存在；Windows 上跑等于没验证
+41 passed, 56 skipped in 14.63s

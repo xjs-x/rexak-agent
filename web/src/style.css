@@ -276,3 +276,31 @@ h1 { font-size: 16px; margin: 0; font-weight: 500; overflow: hidden; text-overfl
 .composer-model select { width: auto; max-width: 100%; border-radius: 18px; padding: 6px 12px; }
 .composer-model small { color: var(--muted, #777); }
 .model-settings-entry { margin: 8px 12px; }
+
+/* 执行资源面板：资源状态与值班状态分开呈现 */
+.resource-card, .duty-card { margin: 10px 0; padding: 10px 14px; border: 1px solid #e3e5e8; border-radius: 8px; background: #fbfbfc; }
+.resource-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.resource-head button { margin-left: auto; color: var(--text-primary); background: white; border: 1px solid #d5d8dd; padding: 4px 10px; border-radius: 6px; }
+.resource-kind { font-weight: 600; }
+.resource-state { color: var(--text-secondary); }
+.resource-interaction { color: var(--text-secondary); font-size: 12px; }
+.resource-meta { margin-top: 4px; color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; line-height: 1.6; }
+.resource-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.resource-actions button { color: var(--text-primary); background: white; border: 1px solid #d5d8dd; padding: 5px 12px; border-radius: 6px; }
+.resource-actions button.danger { color: #fff; background: #a33131; border-color: #8f2a2a; }
+.resource-warn { color: #a33131; font-size: 12px; }
+.resource-card.state-unknown, .resource-card.state-starting { border-left: 3px solid #c98a00; }
+.resource-card.state-running { border-left: 3px solid #1f7a3f; }
+.resource-card.state-exited, .resource-card.state-closed { border-left: 3px solid #8a8f98; }
+.resource-detail { margin-top: 10px; }
+.resource-view-toggle { display: flex; gap: 8px; margin-bottom: 6px; }
+.resource-view-toggle button { color: var(--text-primary); background: white; border: 1px solid #d5d8dd; padding: 4px 10px; border-radius: 6px; }
+.resource-view-toggle button.active { border-color: #1f7a3f; box-shadow: inset 0 0 0 1px #1f7a3f; }
+.resource-output { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 "Cascadia Code", Consolas, monospace; background: #0f1115; color: #e6e8eb; padding: 10px 12px; border-radius: 6px; }
+.duty-card.state-active { border-left: 3px solid #1f7a3f; }
+.duty-card.state-cancelled { border-left: 3px solid #8a8f98; opacity: .8; }
+.duty-form { display: grid; gap: 10px; margin-top: 8px; }
+.duty-form label { display: grid; gap: 6px; font-size: 13px; }
+.duty-form input, .duty-form select { padding: 6px 10px; border: 1px solid #d5d8dd; border-radius: 6px; }
+.delete-blocked { margin: 10px 0; padding: 10px 12px; border: 1px solid #e3b0b0; background: #fdf5f5; border-radius: 8px; }
+.delete-blocked ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }

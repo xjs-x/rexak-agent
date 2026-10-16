@@ -1,0 +1,20 @@
+{
+  "page": {
+    "resource_id": "0a2a1a75-9961-4922-af6b-6b8624c3457e",
+    "stream": "stdout",
+    "cursor": "",
+    "next_cursor": "djJ8MGEyYTFhNzUtOTk2MS00OTIyLWFmNmItNmI4NjI0YzM0NTdlfHN0ZG91dHw3",
+    "byte_start": 0,
+    "byte_end": 7,
+    "text": "ok\ufffdbad\n",
+    "byte_count": 7,
+    "at_current_end": true,
+    "process_exited": true,
+    "truncated": false,
+    "missing_ranges": [],
+    "encoding_error": "非法起始字节 0xff（偏移 2）",
+    "artifact_refs": [],
+    "note": "at_current_end 只表示已读到当前末尾，不代表程序已结束。"
+  },
+  "raw_sha256": "cec306cb20b9627e94f3197b19835d942189f823e1e6be57b26629cd7f397735"
+}

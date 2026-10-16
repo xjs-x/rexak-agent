@@ -1,0 +1,20 @@
+{
+  "status": "PASS",
+  "shortcut": "Rexak Agent.lnk",
+  "chain": [
+    "start-workbench.cmd",
+    "scripts/start_workbench.py"
+  ],
+  "mode": "--api-only --no-browser --smoke-seconds 120",
+  "console_loaded": true,
+  "built_assets_match": {
+    "/console/assets/index-DdyHQgwi.js": "9b5d1faeb017d75293b27e9fbfeaede0a60005809633a8c037505c1dfb069b14",
+    "/console/assets/index-D-owx2JP.css": "5fe96fbc9ef2b74f9bdb1af3c2f87addad6da992bb40b46a1ac2e26ea90c000a"
+  },
+  "resource_panel_rendered": true,
+  "fixture_session_id": "14112b44-671c-4a3c-ac91-22bb2a52f7fd",
+  "fixture_run_id": "7723c3a6-9da1-46cf-a86b-ddea97af391a",
+  "runner_started": false,
+  "real_model_called": false,
+  "real_target_accessed": false
+}

@@ -191,6 +191,29 @@ class ExecutorCapabilities(_Base):
     #: 执行岛支持的请求体形态。旧端未声明时按"已有模式 raw/json"处理，
     #: 控制端在调用前检查；不支持时明确返回能力不足，**不悄悄降级构造**（§6.2）。
     body_modes: list[str] = Field(default_factory=lambda: ["raw", "json"])
+    #: 执行子协议能力。旧端未声明这些字段 -> 新工具确定不可用，
+    #: **不回退到控制端执行命令**（规格 §5.2）。
+    execution_mode: str = "disabled"
+    execution_runtime_versions: list[int] = Field(default_factory=list)
+    #: `/capabilities.details.execution` 的结构化能力明细（含逐项原因）。
+    execution: dict[str, Any] = Field(default_factory=dict)
+
+    def execution_capable(self, name: str) -> bool:
+        """某一项执行能力是否可用。未知/未声明一律**不**当作可用。"""
+        if self.execution_mode != "trusted":
+            return False
+        if not self.execution:
+            return False
+        return str(self.execution.get(name, "unavailable")) == "available"
+
+    def execution_reason(self, name: str) -> str:
+        reasons = self.execution.get("unavailable_reasons") or {}
+        if isinstance(reasons, dict):
+            if name in reasons:
+                return str(reasons[name])
+            if "execution" in reasons:
+                return str(reasons["execution"])
+        return ""
 
 
 class ExecutorHealth(_Base):

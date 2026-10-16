@@ -25,6 +25,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import os
 import shutil
 import socket
 import time
@@ -47,7 +48,7 @@ from workbench_executor.http_encoding import (
     FormField,
     MultipartPart,
 )
-from workbench_executor.ledger import JobRecord, Ledger, OperationConflict
+from workbench_executor.ledger import JobRecord, Ledger, LedgerMigrationError, OperationConflict
 from workbench_executor.policy import (
     NetworkPolicy,
     PolicyDenied,
@@ -140,12 +141,19 @@ class FilesystemPayload(_Base):
     客户端无法把它指向别处。`path` 只在工作区内解析，越界与软链接逃逸都会被拒。
     """
 
-    action: Literal["list", "read", "write", "edit"]
+    action: Literal["list", "read", "write", "edit", "edit_batch", "glob", "search"]
     workspace_id: str
     path: str = ""
     content: str | None = None
     old_text: str | None = None
     new_text: str | None = None
+    edits: list[dict[str, Any]] = Field(default_factory=list)
+    pattern: str | None = None
+    paths: list[str] = Field(default_factory=list)
+    regex: bool = False
+    case_sensitive: bool = True
+    context_lines: int = 0
+    cursor: str | None = None
     expected_version: str | None = None
     replace_all: bool = False
     offset: int = 0
@@ -315,6 +323,8 @@ class ExecutorState:
         self.settings = settings
         self.boot_id = new_boot_id()
         self.started_at = datetime.now(UTC)
+        self._execution_available = False
+        self._execution_unavailable_reason = "执行底座未初始化"
         self.ledger = Ledger(settings.ledger_path)
         self.supervisor = ProcessSupervisor(
             settings.jobs_root,
@@ -323,7 +333,9 @@ class ExecutorState:
             terminate_grace_seconds=settings.command_terminate_grace_seconds,
         )
         from workbench_executor.browser import BrowserManager
+        from workbench_executor.command_runtime import CommandRuntime
         from workbench_executor.http_sessions import HttpSessionRegistry
+        from workbench_executor.terminals import TerminalRuntime
 
         # 浏览器进程常驻：登录态不因一次动作结束而丢失（§10）
         self.browser = BrowserManager(settings)
@@ -333,6 +345,22 @@ class ExecutorState:
         self._events_path = settings.data_root / "remote-events.jsonl"
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._last_control_contact: float = time.time()
+        # 执行底座（命令/脚本/PTY/监视）。关闭时能力预检如实报告不可用。
+        self.command_runtime = CommandRuntime(settings, self.ledger, self.boot_id)
+        self.terminals = TerminalRuntime(settings, self.ledger, self.boot_id)
+        self.execution_admission_lock = asyncio.Lock()
+
+    @property
+    def execution_available(self) -> bool:
+        return self._execution_available
+
+    @property
+    def execution_unavailable_reason(self) -> str:
+        return self._execution_unavailable_reason
+
+    def set_execution_availability(self, available: bool, reason: str = "") -> None:
+        self._execution_available = available
+        self._execution_unavailable_reason = reason
 
     def emit(self, event_type: str, payload: dict[str, Any]) -> None:
         self._event_seq += 1
@@ -391,19 +419,70 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     settings.ensure_directories()
     global _state
     _state = ExecutorState(settings)
-    await _state.ledger.open()
+    try:
+        await _state.ledger.open()
+    except LedgerMigrationError as exc:
+        # 历史重复 operation_id 等：明确报告并拒绝启动，不清库、不删记录。
+        raise RuntimeError(f"执行端台账迁移失败：{exc}") from exc
+    enabled, reason = _execution_availability(_state)
+    _state.set_execution_availability(enabled, reason)
     await _reconcile_on_startup(_state)
-    _state.emit("executor.started", {"boot_id": _state.boot_id, "version": __version__})
+    await _reconcile_execution_on_startup(_state)
+    _state.emit(
+        "executor.started",
+        {
+            "boot_id": _state.boot_id,
+            "version": __version__,
+            "execution_mode": settings.execution_mode,
+            "execution_available": enabled,
+        },
+    )
     try:
         yield
     finally:
         # 关闭顺序：先把各身份的 storage_state 落盘再关浏览器。
         # 不落盘的话"重启后登录态还在"就是空话。
         with contextlib.suppress(Exception):
+            await _state.terminals.shutdown()
+        with contextlib.suppress(Exception):
             await _state.browser.close()
         await _state.http_sessions.close()
         await _state.ledger.close()
         _state = None
+
+
+def _execution_availability(state: ExecutorState) -> tuple[bool, str]:
+    """命令可用性预检：配置 + 平台 + 解释器/shell 存在性，不能只看配置文字。"""
+    settings = state.settings
+    if os.name != "posix":
+        return False, "命令执行底座只在 Linux 执行岛提供"
+    if settings.execution_mode != "trusted":
+        return (
+            False,
+            "EXECUTOR_EXECUTION_MODE 未设为 trusted；发行缺省保持 disabled。"
+            "个人部署可显式设置后重新预检。",
+        )
+    if not Path(settings.shell_path).exists():
+        return False, f"配置的 shell 不存在：{settings.shell_path}"
+    interpreter = settings.resolved_python_interpreter
+    if not Path(interpreter).exists():
+        return False, f"配置的 Python 解释器不存在：{interpreter}"
+    return True, ""
+
+
+async def _reconcile_execution_on_startup(state: ExecutorState) -> None:
+    """执行底座恢复核对：包装进程可重管、回执可导入、无证据标 unknown。"""
+    try:
+        jobs = await state.command_runtime.reconcile()
+    except Exception as exc:
+        state.emit("execution.reconcile_failed", {"error": f"{type(exc).__name__}: {exc}"})
+        jobs = {"error": str(exc)}
+    try:
+        terminals = await state.terminals.reconcile()
+    except Exception as exc:
+        state.emit("terminal.reconcile_failed", {"error": f"{type(exc).__name__}: {exc}"})
+        terminals = {"error": str(exc)}
+    state.emit("execution.reconciled", {"jobs": jobs, "terminals": terminals})
 
 
 async def _reconcile_on_startup(state: ExecutorState) -> None:
@@ -412,6 +491,8 @@ async def _reconcile_on_startup(state: ExecutorState) -> None:
     **分别核对，不统一标为失败后自动重跑**（§8.4）。
     """
     for record in await state.ledger.list_unfinished():
+        if record.is_execution_resource:
+            continue
         if record.worker_boot_id != state.boot_id:
             # 上一个 boot 的进程：只能靠 PID + start ticks 判断
             alive = False
@@ -461,6 +542,12 @@ async def _note_contact(request: Request, call_next):  # type: ignore[no-untyped
     return await call_next(request)
 
 
+# 执行底座子协议（/execution/v1）。写操作集中经 operations；旧接口保持不变。
+from workbench_executor.execution_api import create_router as _create_execution_router  # noqa: E402
+
+app.include_router(_create_execution_router(get_state, _require_token))
+
+
 # --------------------------------------------------------------------------- #
 # 健康与能力
 # --------------------------------------------------------------------------- #
@@ -493,6 +580,7 @@ async def capabilities() -> CapabilitiesResponse:
     state = get_state()
     env = describe_environment()
     browser_version = _browser_capability(state.settings)
+    execution_details = _execution_capability_details(state)
     return CapabilitiesResponse(
         executor_id=state.settings.executor_id,
         service_version=__version__,
@@ -505,7 +593,7 @@ async def capabilities() -> CapabilitiesResponse:
             "browser_available 依据**是否存在可用可执行文件**判定，不只看 playwright 包是否安装。"
         ),
         http_available=True,
-        command_available=True,
+        command_available=execution_details["command"] == "available",
         command_unattended_allowed=False,
         interpreter=env["interpreter"],
         filesystem_available=True,
@@ -519,14 +607,61 @@ async def capabilities() -> CapabilitiesResponse:
             "env_allowlist": env["env_allowlist"],
             "control_link_age_seconds": state.control_link_age(),
             "disconnect_grace_seconds": state.settings.disconnect_grace_seconds,
+            "execution": execution_details,
+            **execution_details,
             "notes": [
-                "通用命令模式的无人值守使用要求执行环境级出站约束；当前 network_isolation=unavailable "
-                "因此 command_unattended_allowed=false。",
+                "通用命令模式的无人值守使用要求执行环境级出站约束；当前 network_isolation=unavailable，"
+                "因此执行底座以**显式 trusted 配置**为准，且该配置是用户已确认的产品决策："
+                "network_isolation 依旧如实报告 unavailable，不因此谎称已隔离。",
                 "正则命令黑名单、工作目录与提示词均不构成网络隔离。",
                 "body_modes 声明结构化请求体能力；旧控制端不发送结构化体时行为不变。",
+                "execution 子协议（/execution/v1）与旧接口并存；旧接口行为不变。",
             ],
         },
     )
+
+
+def _execution_capability_details(state: ExecutorState) -> dict[str, Any]:
+    """执行子协议能力明细。每一项要么 available，要么给出确定原因。"""
+    from workbench_executor._generated.contracts import execution_runtime as proto
+
+    settings = state.settings
+    available = state.execution_available
+    reason = state.execution_unavailable_reason
+    pty_ok = state.terminals.available and available
+    reasons: dict[str, str] = {}
+    if not available:
+        reasons["execution"] = reason
+    if available and not state.terminals.available:
+        reasons["pty"] = "当前平台不支持 PTY（仅 Linux 执行岛提供该能力）"
+    return {
+        "execution_mode": settings.execution_mode,
+        "execution_runtime_versions": [proto.EXECUTION_SUBPROTOCOL_VERSION],
+        "command": "available" if available else "unavailable",
+        "script": "available" if available else "unavailable",
+        "pty": "available" if pty_ok else "unavailable",
+        "screen": "available" if pty_ok else "unavailable",
+        "monitor": "available" if available else "unavailable",
+        "durable_events": "available",
+        "detached_job_recovery": "available" if available else "unavailable",
+        "output_limit_actions": [item.value for item in proto.OutputLimitAction],
+        "workspace_storage_enforcement": settings.workspace_storage_enforcement,
+        "dependencies": {"pyte": _module_version("pyte")},
+        "unavailable_reasons": reasons,
+        "notes": [
+            "detached_job_recovery：非交互任务由独立包装进程承载，服务重启不影响其运行。",
+            "interactive PTY 在 Executor 重启后会失去交互能力：保留记录、核对残留进程，不自动重建。",
+        ],
+    }
+
+
+def _module_version(name: str) -> str:
+    try:
+        from importlib.metadata import version
+
+        return version(name)
+    except Exception:
+        return "missing"
 
 
 @app.post("/target-probe", dependencies=[Depends(_require_token)])
@@ -1057,6 +1192,43 @@ async def _run_filesystem_job(state: ExecutorState, job_id: str, request: JobCre
                     expected_version=payload.expected_version,
                 ),
             }
+        elif payload.action == "edit_batch":
+            if not payload.edits:
+                raise WorkspaceError("invalid_request", "edit_batch 需要提供 edits")
+            if not payload.expected_version:
+                raise WorkspaceError(
+                    "invalid_request",
+                    "edit_batch 必须提供 expected_version（先读后改），避免覆盖并发改动",
+                )
+            result = {
+                "action": "edit_batch",
+                **workspace.edit_file_batch(
+                    payload.path,
+                    edits=payload.edits,
+                    expected_version=payload.expected_version,
+                ),
+            }
+        elif payload.action == "glob":
+            if not payload.pattern:
+                raise WorkspaceError("invalid_request", "glob 需要提供 pattern")
+            result = workspace.glob_files(
+                payload.pattern,
+                root=payload.path or ".",
+                cursor=payload.cursor,
+                limit=payload.limit or 200,
+            )
+        elif payload.action == "search":
+            if not payload.pattern:
+                raise WorkspaceError("invalid_request", "search 需要提供 pattern")
+            result = workspace.search_files(
+                payload.pattern,
+                paths=payload.paths or [payload.path or "."],
+                regex=payload.regex,
+                case_sensitive=payload.case_sensitive,
+                context_lines=payload.context_lines,
+                cursor=payload.cursor,
+                limit=payload.limit or 200,
+            )
         else:  # edit
             if payload.old_text is None or payload.new_text is None:
                 raise WorkspaceError("invalid_request", "edit 需要提供 old_text 与 new_text")
@@ -1737,6 +1909,48 @@ async def _conflict_handler(request: Request, exc: OperationConflict) -> JSONRes
     return JSONResponse(
         status_code=409, content={"code": "operation_conflict", "message": str(exc)}
     )
+
+
+def _register_execution_error_handlers() -> None:
+    """执行子协议的确定错误 -> 结构化 4xx/5xx。控制端据 code 判断，不猜测中文文本。"""
+    from workbench_executor.command_runtime import RuntimeRejected
+    from workbench_executor.terminals import TerminalRejected
+
+    @app.exception_handler(RuntimeRejected)
+    async def _runtime_rejected(request: Request, exc: RuntimeRejected) -> JSONResponse:  # noqa: ARG001
+        status_code = {
+            "operation_conflict": 409,
+            "stale_control": 409,
+            "resource_not_found": 404,
+            "resource_owner_mismatch": 403,
+            "interaction_lost": 409,
+            "execution_disabled": 503,
+            "dependency_unavailable": 503,
+            "resource_limit": 429,
+            "invalid_cursor": 422,
+        }.get(exc.code, 422)
+        return JSONResponse(
+            status_code=status_code,
+            content={"code": exc.code, "message": exc.message, "details": exc.details},
+        )
+
+    @app.exception_handler(TerminalRejected)
+    async def _terminal_rejected(request: Request, exc: TerminalRejected) -> JSONResponse:  # noqa: ARG001
+        status_code = {
+            "operation_conflict": 409,
+            "resource_not_found": 404,
+            "resource_owner_mismatch": 403,
+            "interaction_lost": 409,
+            "dependency_unavailable": 503,
+            "resource_limit": 429,
+            "invalid_cursor": 422,
+        }.get(exc.code, 422)
+        return JSONResponse(
+            status_code=status_code, content={"code": exc.code, "message": exc.message}
+        )
+
+
+_register_execution_error_handlers()
 
 
 def describe_local_environment() -> dict[str, str]:

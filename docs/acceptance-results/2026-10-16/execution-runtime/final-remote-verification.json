@@ -1,0 +1,140 @@
+{
+  "import_path": "/home/kali/rexak-agent-executor/.venv/lib/python3.13/site-packages/workbench_executor",
+  "installed_source_sha256": {
+    "watch.py": "26c329d4ecc09173fcec832d477db7c530b1233ce6720699f6ae38f07dd76102",
+    "execution_environment.py": "8253237c9499171d66ff2c67c2ad6d9d5ac528d3a7dbe08c632eef69d13525a5",
+    "policy.py": "4f291d5118e4b5bceec17f251b8a90702b8d2d2963a8832df7ba8f3eb0eddcf6",
+    "execution_api.py": "7189655faf9b6c0276a67a5d69365f67bf520338bbb6d1b3215d6326a1db86c5",
+    "terminals.py": "f4eee656191aecd5bdeaf621e7605318a8aa34e94f3536dcf337710fe167f80f",
+    "filesystem.py": "0cb29fe6a6b321a79ce8cdd88387dfb27e90021d39359c98be0dcab503afb931",
+    "processes.py": "1f098445e4ba1a49a0e5490b29dd6543904e3eaa294f43d28d7f2f557a42d80c",
+    "http_encoding.py": "f0819f656df6a6d58464fe0c862c5ceb092b03103a539364f65f74eb93835554",
+    "output_store.py": "11fd21e06f471dda60da85b1b6d7781346603a009ea34d8746819346cf02126a",
+    "job_worker.py": "8d7409c31030cb28483c1f194e841a42a11351778d7220f90ba300cca2bb2847",
+    "browser.py": "a776670155580f3389b9cf0f8d251b53edd0c4871d87335714106f8f548235ef",
+    "command_runtime.py": "09f2243a1d9f5a2b0a7a65550bff1fca7797494e9c8343bb83439cfbdbf22626",
+    "__main__.py": "e9ffc5647c7a7fecb9630764e381ca62d065ac6ce48a708c3a91ad7cd85547f1",
+    "api.py": "e3002c82cf833da1ffb174efcca6f975f87a973711c4e2278ccd77bb40bfdf60",
+    "http_sessions.py": "a19512a9f9c49c942d46dd747ca598b104a6bf95f4e60c67e8fc3fe50d1bf3a4",
+    "settings.py": "10ed4da5a2606caaa4618a81b6b68004db3b01c576c4489f23b6afcd9094473e",
+    "__init__.py": "66e58bcd51af3a4fc566a365fb8e2ac27ce611d8304add3f0a53c2d4c7dbe814",
+    "ledger.py": "ebf214ca61a04642a5cf631d3f947b68ebe8cd4652ea3e81ecacb9d19b6c3db8",
+    "_generated/__init__.py": "96a4960423ffedf30c3e800d4a6e315c1773c9700b4bd535330b96c9702364d4",
+    "_generated/contracts/execution_runtime.py": "559b91498f1ce2a8d14813c814e53ee23922e7ba64bccc2c3d0f3b21402105c6",
+    "_generated/contracts/__init__.py": "96a4960423ffedf30c3e800d4a6e315c1773c9700b4bd535330b96c9702364d4"
+  },
+  "owned_fixture_wrappers": [
+    {
+      "pid": 2416368,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2417012,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2417071,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2418884,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2418885,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2419082,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2419091,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2420902,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2420976,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2421468,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2421477,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2421624,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2421633,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2422971,
+      "action": "preserved_unconfirmed"
+    },
+    {
+      "pid": 2423152,
+      "action": "preserved_unconfirmed"
+    },
+    {
+      "pid": 2423453,
+      "action": "preserved_unconfirmed"
+    },
+    {
+      "pid": 2424161,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2424765,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2424840,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2426361,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2426561,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2426562,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2426767,
+      "action": "closed_completed_fixture_wrapper"
+    },
+    {
+      "pid": 2426776,
+      "action": "closed_completed_fixture_wrapper"
+    }
+  ],
+  "captured_at": "2026-10-16T02:25:05.935521+00:00",
+  "source_files_verified": 21,
+  "remaining_fixture_wrapper_cleanup": [
+    {
+      "pid": 2422971,
+      "action": "closed_childless_owned_fixture_wrapper"
+    },
+    {
+      "pid": 2423152,
+      "action": "closed_childless_owned_fixture_wrapper"
+    },
+    {
+      "pid": 2423453,
+      "action": "closed_childless_owned_fixture_wrapper"
+    }
+  ]
+}

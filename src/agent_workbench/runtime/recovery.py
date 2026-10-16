@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -34,7 +35,7 @@ from agent_workbench.observability.events import append_event
 from agent_workbench.observability.logging import get_logger
 from agent_workbench.persistence.db import Database, get_database
 from agent_workbench.persistence.repositories import ToolJobRepository
-from agent_workbench.persistence.tables import ArtifactRow, RunRow
+from agent_workbench.persistence.tables import ArtifactRow, ExecutionResourceRow, RunRow
 
 log = get_logger("agent_workbench.recovery")
 
@@ -160,6 +161,11 @@ async def reconcile_remote_jobs(
                 .all()
             )
             tracked = [job for job in tracked if job.operation_id in allowed_operations]
+        execution_resource_ids = set((await session.execute(
+            select(ExecutionResourceRow.resource_id).where(
+                ExecutionResourceRow.resource_id.in_([job.job_id for job in tracked])
+            )
+        )).scalars().all()) if tracked else set()
         session_by_operation: dict[UUID, UUID] = {}
         if tracked:
             from agent_workbench.persistence.tables import ToolOperationRow
@@ -208,6 +214,15 @@ async def reconcile_remote_jobs(
         async def _probe(row: Any) -> tuple[Any, Any, str | None]:
             async with semaphore:
                 try:
+                    if row.job_id in execution_resource_ids:
+                        view = await client.execution_resource(str(row.job_id))
+                        state = str(view.get("state") or "unknown")
+                        if state in {"exited", "closed"}:
+                            state = "succeeded" if view.get("exit_code") == 0 else "failed"
+                        return row, SimpleNamespace(
+                            state=state, output_cursor=None,
+                            started_at=None, finished_at=None,
+                        ), None
                     return row, await client.get_job(row.job_id), None
                 except ExecutorRejected as exc:
                     return row, None, f"rejected:{exc.status_code}"

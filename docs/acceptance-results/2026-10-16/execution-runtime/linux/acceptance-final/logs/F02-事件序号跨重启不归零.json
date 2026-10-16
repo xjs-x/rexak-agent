@@ -1,0 +1,92 @@
+{
+  "max_before": 1,
+  "after": {
+    "schema_version": 1,
+    "executor_id": "acceptance-fixture",
+    "events": [
+      {
+        "seq": 2,
+        "event_id": "733505f6-e1ae-47a9-ae1d-f5225281d636",
+        "executor_id": "acceptance-fixture",
+        "session_id": "9424c308-686a-46d1-b172-1cabe698559b",
+        "resource_id": "f64f47fc-918b-441f-a023-b1b2f51a2a6f",
+        "operation_id": "0c49a13b-1f0b-4595-b364-b1db68f23887",
+        "type": "resource.received",
+        "occurred_at": "2026-10-16T01:29:53.203714+00:00",
+        "payload": {
+          "kind": "command",
+          "purpose": ""
+        },
+        "availability": "available"
+      },
+      {
+        "seq": 3,
+        "event_id": "0c3b943e-a6c0-4427-8258-a13e9860ea3c",
+        "executor_id": "acceptance-fixture",
+        "session_id": "9424c308-686a-46d1-b172-1cabe698559b",
+        "resource_id": "f64f47fc-918b-441f-a023-b1b2f51a2a6f",
+        "operation_id": "0c49a13b-1f0b-4595-b364-b1db68f23887",
+        "type": "resource.started",
+        "occurred_at": "2026-10-16T01:29:53.702772+00:00",
+        "payload": {
+          "job_id": "f64f47fc-918b-441f-a023-b1b2f51a2a6f",
+          "phase": "starting"
+        },
+        "availability": "available"
+      },
+      {
+        "seq": 4,
+        "event_id": "ed26096b-51a2-4fd1-8f04-9dc8cfda9167",
+        "executor_id": "acceptance-fixture",
+        "session_id": "9424c308-686a-46d1-b172-1cabe698559b",
+        "resource_id": "f64f47fc-918b-441f-a023-b1b2f51a2a6f",
+        "operation_id": "0c49a13b-1f0b-4595-b364-b1db68f23887",
+        "type": "resource.started",
+        "occurred_at": "2026-10-16T01:29:53.730534+00:00",
+        "payload": {
+          "job_id": "f64f47fc-918b-441f-a023-b1b2f51a2a6f",
+          "pid": 2443542,
+          "pgid": null
+        },
+        "availability": "available"
+      },
+      {
+        "seq": 5,
+        "event_id": "9940b2b5-24c2-432c-b11e-bf6e4010b909",
+        "executor_id": "acceptance-fixture",
+        "session_id": "9424c308-686a-46d1-b172-1cabe698559b",
+        "resource_id": "f64f47fc-918b-441f-a023-b1b2f51a2a6f",
+        "operation_id": "0c49a13b-1f0b-4595-b364-b1db68f23887",
+        "type": "resource.exited",
+        "occurred_at": "2026-10-16T01:29:53.748758+00:00",
+        "payload": {
+          "job_id": "f64f47fc-918b-441f-a023-b1b2f51a2a6f",
+          "state": "succeeded",
+          "exit_code": 0,
+          "termination_reason": "exited_normally",
+          "group_confirmed_exited": true,
+          "dropped_bytes": 0
+        },
+        "availability": "available"
+      },
+      {
+        "seq": 6,
+        "event_id": "f151f0ec-8d25-43b5-88e2-5fa6237f6495",
+        "executor_id": "acceptance-fixture",
+        "session_id": "9424c308-686a-46d1-b172-1cabe698559b",
+        "resource_id": null,
+        "operation_id": null,
+        "type": "control.synced",
+        "occurred_at": "2026-10-16T01:29:57.680845+00:00",
+        "payload": {
+          "run_id": "f515c0f7-9276-4c95-a787-8558c27b788e",
+          "owner_generation": 1,
+          "control_version": 1
+        },
+        "availability": "available"
+      }
+    ],
+    "next_after": 6,
+    "has_more": false
+  }
+}

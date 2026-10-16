@@ -49,9 +49,13 @@ export interface paths {
         put?: never;
         /**
          * Create Local Session
-         * @description 签发本地会话 Cookie 与 CSRF 令牌。
+         * @description 获取本地会话 Cookie 与 CSRF 令牌。
          *
-         *     只允许从回环地址调用；同源校验在中间件里执行。
+         *     已持有有效会话时**复用当前会话**（不重新签发、不覆盖 Cookie）：控制台可能
+         *     同时存在多个页面实例（多标签页、断线重连），每个实例都会调用本接口。若每次
+         *     都签发新会话，最后签发的会覆盖浏览器共享的 Cookie，让其它页面内存中的 CSRF
+         *     令牌立即失效，表现为「保存类写操作全部 403」。只允许从回环地址调用；
+         *     同源校验在中间件里执行。
          */
         post: operations["create_local_session_api_session_post"];
         delete?: never;
@@ -114,6 +118,10 @@ export interface paths {
         /**
          * Delete Session
          * @description 从列表移除任务，保留审计记录；活动运行经取消流程确认停止。
+         *
+         *     执行资源预检（规格 §13）：仍存活的执行资源不允许被"顺手删掉" ——
+         *     默认返回 409 与资源清单；显式 `terminate_resources=true` 时先发出终止请求，
+         *     再执行删除。台账记录（投影）保留，不制造孤儿。
          */
         delete: operations["delete_session_api_sessions__session_id__delete"];
         options?: never;
@@ -758,6 +766,180 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/execution/resources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Resources
+         * @description 资源列表（只读投影 + 执行端刷新）。真实状态归执行端。
+         */
+        get: operations["list_resources_api_sessions__session_id__execution_resources_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/execution/resources/{resource_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Resource */
+        get: operations["get_resource_api_sessions__session_id__execution_resources__resource_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/execution/resources/{resource_id}/output": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Resource Output
+         * @description 分页读取 stdout/stderr 或屏幕快照。缺失区间与证据不可用会明确标注。
+         */
+        get: operations["read_resource_output_api_sessions__session_id__execution_resources__resource_id__output_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/execution/resources/{resource_id}/raw-output": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Raw Output */
+        get: operations["download_raw_output_api_sessions__session_id__execution_resources__resource_id__raw_output_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/execution/resources/{resource_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Close Resource
+         * @description 显式关闭**单个**资源。取消/关闭未确认时返回 unknown，不虚报"已停止"。
+         */
+        post: operations["close_resource_api_sessions__session_id__execution_resources__resource_id__close_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/execution/resources/terminate-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Terminate All
+         * @description **明确终止全部资源**：作用于当前对话（含早期 run 创建后保留的资源）。
+         *
+         *     返回逐资源结果与未决清单；无法确认的资源保持未决，不清空记录。
+         */
+        post: operations["terminate_all_api_sessions__session_id__execution_resources_terminate_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/execution/duties": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Duties */
+        get: operations["list_duties_api_sessions__session_id__execution_duties_get"];
+        put?: never;
+        /**
+         * Create Duty
+         * @description UI 建立值班：`authorization_quote` 必须引用用户消息原话（确定性核对）。
+         */
+        post: operations["create_duty_api_sessions__session_id__execution_duties_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/execution/duties/{delegation_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Duty
+         * @description 取消值班：**不关闭资源**；旧 revision 不再触发新副作用。
+         */
+        post: operations["cancel_duty_api_sessions__session_id__execution_duties__delegation_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/execution/environment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Environment */
+        get: operations["environment_api_sessions__session_id__execution_environment_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -779,6 +961,45 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ArtifactPointer
+         * @description 工件引用：不可变快照/区间的标识与哈希。
+         */
+        ArtifactPointer: {
+            /** Artifact Id */
+            artifact_id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /**
+             * Media Type
+             * @default application/octet-stream
+             */
+            media_type: string;
+            /**
+             * Byte Size
+             * @default 0
+             */
+            byte_size: number;
+            /**
+             * Sha256
+             * @default
+             */
+            sha256: string;
+            byte_range?: components["schemas"]["ByteRange"] | null;
+            /** @default available */
+            availability: components["schemas"]["OutputAvailability"];
+        };
+        /** Body_cancel_duty_api_sessions__session_id__execution_duties__delegation_id__cancel_post */
+        Body_cancel_duty_api_sessions__session_id__execution_duties__delegation_id__cancel_post: {
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+        };
         /** Body_change_objective_api_runs__run_id__objective_post */
         Body_change_objective_api_runs__run_id__objective_post: {
             /** Content */
@@ -802,6 +1023,21 @@ export interface components {
              * @default false
              */
             acknowledge_unknown_operations: boolean;
+        };
+        /**
+         * ByteRange
+         * @description 原始字节区间（左闭右开）。
+         */
+        ByteRange: {
+            /** Start */
+            start: number;
+            /** End */
+            end: number;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
         };
         /** ConversationBody */
         ConversationBody: {
@@ -868,6 +1104,79 @@ export interface components {
             /** Source */
             source?: ("explicit" | "plan_inferred") | null;
         };
+        /** DutyCard */
+        DutyCard: {
+            /** Delegation Id */
+            delegation_id: string;
+            /** Mode */
+            mode: string;
+            /** Status */
+            status: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Goal
+             * @default
+             */
+            goal: string;
+            /** Resource Ids */
+            resource_ids?: string[];
+            /** Event Filters */
+            event_filters?: string[];
+            /**
+             * Triggered Count
+             * @default 0
+             */
+            triggered_count: number;
+            /** Created At */
+            created_at?: string | null;
+            /** Cancelled At */
+            cancelled_at?: string | null;
+        };
+        /**
+         * DutyCreateRequest
+         * @description UI 建立值班的请求体。`authorization_quote` 必须引用用户消息原话。
+         */
+        DutyCreateRequest: {
+            /** Resource Ids */
+            resource_ids?: string[];
+            /** Events */
+            events?: string[];
+            /**
+             * Goal
+             * @default
+             */
+            goal: string;
+            /**
+             * Mode
+             * @default once
+             */
+            mode: string;
+            /**
+             * Authorization Quote
+             * @default
+             */
+            authorization_quote: string;
+        };
+        /** DutyListResponse */
+        DutyListResponse: {
+            /** Duties */
+            duties: components["schemas"]["DutyCard"][];
+        };
+        /** DutyMutationResponse */
+        DutyMutationResponse: {
+            /** Delegation Id */
+            delegation_id: string;
+            /** Status */
+            status: string;
+            /** Revision */
+            revision?: number | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
         /**
          * EventEnvelope
          * @description SSE 事件信封。同时作为 OpenAPI 可导出的 schema。
@@ -918,6 +1227,198 @@ export interface components {
          * @enum {string}
          */
         EventType: "run.status" | "message.delta" | "message.completed" | "plan.updated" | "focus.updated" | "leads.recalled" | "context.selected" | "segment.yielded" | "snapshot.captured" | "model.response_quality" | "tool.accepted" | "tool.output" | "tool.completed" | "lead.updated" | "finding.updated" | "weakness.changed" | "weakness.presented" | "weakness.reviewed" | "relation.changed" | "condition.review_due" | "completion.review" | "coverage.updated" | "usage.updated" | "memory.compacted" | "input.required" | "report.ready" | "error" | "stream.resync_required" | "stream.heartbeat";
+        /**
+         * ExecutionEnvironmentReport
+         * @description 环境发现结果。不返回秘密（代理/CA 只报是否配置）。
+         */
+        ExecutionEnvironmentReport: {
+            /**
+             * Schema Version
+             * @default 1
+             */
+            schema_version: number;
+            /**
+             * Executor Id
+             * @default
+             */
+            executor_id: string;
+            /**
+             * Platform
+             * @default
+             */
+            platform: string;
+            /**
+             * Os Release
+             * @default
+             */
+            os_release: string;
+            /**
+             * Python Version
+             * @default
+             */
+            python_version: string;
+            /** Shell */
+            shell?: {
+                [key: string]: string;
+            };
+            /** Interpreters */
+            interpreters?: {
+                [key: string]: string;
+            };
+            /** Tools */
+            tools?: {
+                [key: string]: string;
+            };
+            /** Missing */
+            missing?: {
+                [key: string]: string;
+            };
+            /**
+             * Proxy Configured
+             * @default false
+             */
+            proxy_configured: boolean;
+            /**
+             * Ca Configured
+             * @default false
+             */
+            ca_configured: boolean;
+            /**
+             * Workspace Root
+             * @default
+             */
+            workspace_root: string;
+            /**
+             * Workspace Storage Enforcement
+             * @default unsupported
+             */
+            workspace_storage_enforcement: string;
+            /**
+             * Workspace Bytes Used
+             * @default 0
+             */
+            workspace_bytes_used: number;
+            /**
+             * Dependency Environment Hint
+             * @default
+             */
+            dependency_environment_hint: string;
+            /** Notes */
+            notes?: string[];
+        };
+        /**
+         * ExecutionOperationResponse
+         * @description 关闭/取消操作回执。`process_confirmed_exited=false` 时必须显示为"未确认"。
+         */
+        ExecutionOperationResponse: {
+            /** Operation Id */
+            operation_id: string;
+            /** Status */
+            status: string;
+            /** Resource Id */
+            resource_id?: string | null;
+            /** Process State */
+            process_state?: string | null;
+            /** Process Confirmed Exited */
+            process_confirmed_exited?: boolean | null;
+            /** Termination Reason */
+            termination_reason?: string | null;
+            /**
+             * Deduplicated
+             * @default false
+             */
+            deduplicated: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ExecutionResourceCard
+         * @description 资源卡：真实状态、交互是否可用、创建时间、最近核对、用途与配额。
+         */
+        ExecutionResourceCard: {
+            /** Resource Id */
+            resource_id: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Mode
+             * @default
+             */
+            mode: string;
+            /**
+             * Purpose
+             * @default
+             */
+            purpose: string;
+            /** State */
+            state: string;
+            /**
+             * Interaction State
+             * @default not_applicable
+             */
+            interaction_state: string;
+            /** Exit Code */
+            exit_code?: number | null;
+            /** Termination Reason */
+            termination_reason?: string | null;
+            /**
+             * Close State
+             * @default open
+             */
+            close_state: string;
+            /**
+             * Close Confirmed
+             * @default false
+             */
+            close_confirmed: boolean;
+            /** Last Checked At */
+            last_checked_at?: string | null;
+            /**
+             * Sync Status
+             * @default in_sync
+             */
+            sync_status: string;
+            /**
+             * Output Limit Action
+             * @default preserve_process
+             */
+            output_limit_action: string;
+            /** Quota */
+            quota?: {
+                [key: string]: unknown;
+            };
+            /** Detail */
+            detail?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * ExecutionResourcesResponse
+         * @description 资源列表：资源状态与值班状态**分开**呈现（取消值班不关闭资源）。
+         */
+        ExecutionResourcesResponse: {
+            /** Resources */
+            resources: components["schemas"]["ExecutionResourceCard"][];
+            /** Count */
+            count: number;
+            /** Duties */
+            duties: components["schemas"]["DutyCard"][];
+            /**
+             * Executor Note
+             * @default
+             */
+            executor_note: string;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -945,6 +1446,11 @@ export interface components {
              */
             auth_revision: number;
         };
+        /**
+         * InteractionState
+         * @enum {string}
+         */
+        InteractionState: "available" | "lost" | "not_applicable";
         /** ModelCallPage */
         ModelCallPage: {
             /** Model Calls */
@@ -1173,6 +1679,17 @@ export interface components {
             /** Executor Finished At */
             executor_finished_at: string | null;
         };
+        /**
+         * OutputAvailability
+         * @enum {string}
+         */
+        OutputAvailability: "available" | "truncated" | "unavailable";
+        /**
+         * OutputLimitAction
+         * @description 采集日志超限动作。缺省保活；只有显式设置才终止。
+         * @enum {string}
+         */
+        OutputLimitAction: "preserve_process" | "terminate";
         /** PlanRead */
         PlanRead: {
             /** Revision */
@@ -1316,6 +1833,174 @@ export interface components {
              * @default 1
              */
             settings_version: string;
+        };
+        /**
+         * ResourceKind
+         * @enum {string}
+         */
+        ResourceKind: "command" | "script" | "monitor" | "terminal";
+        /**
+         * ResourceOutputResponse
+         * @description 资源输出页（stream 或 screen）。
+         */
+        ResourceOutputResponse: {
+            /** Resource Id */
+            resource_id: string;
+            /**
+             * Stream
+             * @default stdout
+             */
+            stream: string;
+            /** Cursor */
+            cursor?: string | null;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /**
+             * Byte Start
+             * @default 0
+             */
+            byte_start: number;
+            /**
+             * Byte End
+             * @default 0
+             */
+            byte_end: number;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Byte Count
+             * @default 0
+             */
+            byte_count: number;
+            /**
+             * At Current End
+             * @default false
+             */
+            at_current_end: boolean;
+            /**
+             * Process Exited
+             * @default false
+             */
+            process_exited: boolean;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /** Missing Ranges */
+            missing_ranges?: components["schemas"]["ByteRange"][];
+            /** Encoding Error */
+            encoding_error?: string | null;
+            /** Artifact Refs */
+            artifact_refs?: components["schemas"]["ArtifactPointer"][];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * View
+             * @default stream
+             */
+            view: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ResourceStatus
+         * @description 资源状态。**不要**把交互失效等同于进程已退出。
+         * @enum {string}
+         */
+        ResourceStatus: "starting" | "running" | "exited" | "closed" | "unknown";
+        /**
+         * ResourceStatusView
+         * @description 资源状态视图（控制端只读投影的来源）。
+         */
+        ResourceStatusView: {
+            /** Resource Id */
+            resource_id: string;
+            /**
+             * Session Id
+             * @default
+             */
+            session_id: string;
+            /**
+             * Run Id
+             * @default
+             */
+            run_id: string;
+            kind: components["schemas"]["ResourceKind"];
+            state: components["schemas"]["ResourceStatus"];
+            /** @default not_applicable */
+            interaction_state: components["schemas"]["InteractionState"];
+            /**
+             * Mode
+             * @default
+             */
+            mode: string;
+            /**
+             * Purpose
+             * @default
+             */
+            purpose: string;
+            /**
+             * Created At
+             * @default
+             */
+            created_at: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Exited At */
+            exited_at?: string | null;
+            /** Closed At */
+            closed_at?: string | null;
+            /** Exit Code */
+            exit_code?: number | null;
+            termination_reason?: components["schemas"]["TerminationReason"] | null;
+            /** Deadline At */
+            deadline_at?: string | null;
+            /** @default preserve_process */
+            output_limit_action: components["schemas"]["OutputLimitAction"];
+            /**
+             * Output Bytes
+             * @default 0
+             */
+            output_bytes: number;
+            /**
+             * Dropped Bytes
+             * @default 0
+             */
+            dropped_bytes: number;
+            /**
+             * Output Limit Bytes
+             * @default 0
+             */
+            output_limit_bytes: number;
+            /**
+             * Cancel Requested
+             * @default false
+             */
+            cancel_requested: boolean;
+            /**
+             * Cancel Confirmed
+             * @default false
+             */
+            cancel_confirmed: boolean;
+            /**
+             * Last Checked At
+             * @default
+             */
+            last_checked_at: string;
+            /**
+             * Watch Hits
+             * @default 0
+             */
+            watch_hits: number;
+            /** Notes */
+            notes?: string[];
         };
         /** RunSummaryRead */
         RunSummaryRead: {
@@ -1484,6 +2169,23 @@ export interface components {
             /** Status */
             status: string | null;
         };
+        /** TerminateAllResponse */
+        TerminateAllResponse: {
+            /** Terminated */
+            terminated: {
+                [key: string]: unknown;
+            }[];
+            /** Unresolved */
+            unresolved: string[];
+            /** Note */
+            note: string;
+        };
+        /**
+         * TerminationReason
+         * @description 退出原因。`unknown` 表示无法核实，不得伪造。
+         * @enum {string}
+         */
+        TerminationReason: "exited_normally" | "execution_timeout" | "user_cancelled" | "output_limit_terminate" | "failure" | "unknown";
         /** ToolActivityDetail */
         ToolActivityDetail: {
             /** Request Text */
@@ -1798,7 +2500,9 @@ export interface operations {
     };
     delete_session_api_sessions__session_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                terminate_resources?: boolean;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -3047,6 +3751,348 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_resources_api_sessions__session_id__execution_resources_get: {
+        parameters: {
+            query?: {
+                kind?: string | null;
+                active_only?: boolean;
+                limit?: number;
+                offset?: number;
+                refresh?: boolean;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionResourcesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_resource_api_sessions__session_id__execution_resources__resource_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                resource_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResourceStatusView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_resource_output_api_sessions__session_id__execution_resources__resource_id__output_get: {
+        parameters: {
+            query?: {
+                stream?: string;
+                cursor?: string | null;
+                limit?: number;
+                view?: string;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+                resource_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResourceOutputResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_raw_output_api_sessions__session_id__execution_resources__resource_id__raw_output_get: {
+        parameters: {
+            query?: {
+                stream?: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+                resource_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_resource_api_sessions__session_id__execution_resources__resource_id__close_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                session_id: string;
+                resource_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionOperationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    terminate_all_api_sessions__session_id__execution_resources_terminate_all_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TerminateAllResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_duties_api_sessions__session_id__execution_duties_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DutyListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_duty_api_sessions__session_id__execution_duties_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DutyCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DutyMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_duty_api_sessions__session_id__execution_duties__delegation_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                delegation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["Body_cancel_duty_api_sessions__session_id__execution_duties__delegation_id__cancel_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DutyMutationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    environment_api_sessions__session_id__execution_environment_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionEnvironmentReport"];
                 };
             };
             /** @description Validation Error */
