@@ -18,11 +18,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Concatenate
 
 import aiosqlite
 
@@ -413,13 +416,41 @@ async def migrate(db: aiosqlite.Connection) -> int:
     return version
 
 
+def _serialized[**P, T](
+    method: Callable[Concatenate[Ledger, P], Awaitable[T]],
+) -> Callable[Concatenate[Ledger, P], Awaitable[T]]:
+    """锁住整次台账访问，防止其他协程在同一连接上提交或回滚别人的事务。"""
+
+    @wraps(method)
+    async def guarded(self: Ledger, *args: P.args, **kwargs: P.kwargs) -> T:
+        task = asyncio.current_task()
+        if task is not None and self._access_owner is task:
+            return await method(self, *args, **kwargs)
+        async with self._access_lock:
+            self._access_owner = task
+            try:
+                return await method(self, *args, **kwargs)
+            except BaseException:
+                # 取消也必须清理事务；否则下一次访问会继承未提交事务。
+                if self._db is not None and self._db.in_transaction:
+                    await self._db.rollback()
+                raise
+            finally:
+                self._access_owner = None
+
+    return guarded
+
+
 class Ledger:
     """SQLite 台账的唯一入口。所有写操作自带事务。"""
 
     def __init__(self, path: Path) -> None:
         self._path = path
         self._db: aiosqlite.Connection | None = None
+        self._access_lock = asyncio.Lock()
+        self._access_owner: asyncio.Task[Any] | None = None
 
+    @_serialized
     async def open(self) -> None:
         if self._db is not None:
             return
@@ -432,6 +463,7 @@ class Ledger:
         await db.commit()
         self._db = db
 
+    @_serialized
     async def close(self) -> None:
         if self._db is not None:
             await self._db.close()
@@ -447,6 +479,7 @@ class Ledger:
     # 旧接口（保持兼容）
     # ------------------------------------------------------------------ #
 
+    @_serialized
     async def find_by_operation(self, operation_id: str, request_digest: str) -> JobRecord | None:
         """按 operation_id 查找。
 
@@ -466,11 +499,13 @@ class Ledger:
             )
         return _row_to_record(row)
 
+    @_serialized
     async def get(self, job_id: str) -> JobRecord | None:
         async with self.db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)) as cursor:
             row = await cursor.fetchone()
         return _row_to_record(row) if row is not None else None
 
+    @_serialized
     async def insert(
         self,
         *,
@@ -556,6 +591,7 @@ class Ledger:
         "deadline_at",
     }
 
+    @_serialized
     async def update(self, job_id: str, **fields: Any) -> None:
         if not fields:
             return
@@ -570,6 +606,7 @@ class Ledger:
         )
         await self.db.commit()
 
+    @_serialized
     async def list_unfinished(self) -> list[JobRecord]:
         """重启核对用：所有非终态任务。"""
         async with self.db.execute(
@@ -579,11 +616,13 @@ class Ledger:
             rows = await cursor.fetchall()
         return [_row_to_record(row) for row in rows]
 
+    @_serialized
     async def list_all(self) -> list[JobRecord]:
         async with self.db.execute("SELECT * FROM jobs ORDER BY created_at") as cursor:
             rows = await cursor.fetchall()
         return [_row_to_record(row) for row in rows]
 
+    @_serialized
     async def active_count(self) -> int:
         async with self.db.execute(
             "SELECT COUNT(*) AS n FROM jobs WHERE state IN ('received','starting','running') OR (runtime='execution_v1' AND state='unknown')"
@@ -600,6 +639,7 @@ class Ledger:
     # 执行底座：操作记录
     # ------------------------------------------------------------------ #
 
+    @_serialized
     async def get_operation(self, operation_id: str) -> OperationRecord | None:
         async with self.db.execute(
             "SELECT * FROM operations WHERE operation_id = ?", (operation_id,)
@@ -607,6 +647,7 @@ class Ledger:
             row = await cursor.fetchone()
         return _operation_from_row(row) if row is not None else None
 
+    @_serialized
     async def insert_operation(
         self,
         *,
@@ -658,6 +699,7 @@ class Ledger:
         assert record is not None
         return record
 
+    @_serialized
     async def complete_operation(
         self,
         operation_id: str,
@@ -685,6 +727,7 @@ class Ledger:
     # 执行底座：资源查询与配额
     # ------------------------------------------------------------------ #
 
+    @_serialized
     async def list_session_resources(
         self, session_id: str, *, limit: int = 50, offset: int = 0
     ) -> tuple[list[dict[str, Any]], int]:
@@ -711,6 +754,7 @@ class Ledger:
             result.append({"kind": row["source"], "created_at": row["created_at"], "record": record})
         return result, total
 
+    @_serialized
     async def non_terminal_execution_jobs(self) -> list[JobRecord]:
         """重启核对：属于执行底座且未到终态的任务。"""
         async with self.db.execute(
@@ -720,12 +764,14 @@ class Ledger:
             rows = await cursor.fetchall()
         return [_row_to_record(row) for row in rows]
 
+    @_serialized
     async def non_terminal_terminals(self) -> list[aiosqlite.Row]:
         async with self.db.execute(
             "SELECT * FROM terminals WHERE state IN ('starting','running','unknown') ORDER BY created_at"
         ) as cursor:
             return list(await cursor.fetchall())
 
+    @_serialized
     async def count_active_for_session(self, session_id: str) -> tuple[int, int]:
         """返回 (活动资源总数, 活动 PTY 数)。"""
         async with self.db.execute(
@@ -743,6 +789,7 @@ class Ledger:
         terminals = int(row["n"]) if row is not None else 0
         return jobs + terminals, terminals
 
+    @_serialized
     async def count_active_global(self) -> int:
         async with self.db.execute(
             "SELECT COUNT(*) AS n FROM jobs WHERE runtime = 'execution_v1' "
@@ -756,6 +803,7 @@ class Ledger:
             row = await cursor.fetchone()
         return jobs + (int(row["n"]) if row is not None else 0)
 
+    @_serialized
     async def reserve_output_budget(
         self, *, resource_id: str, session_id: str, bytes_needed: int, session_budget: int
     ) -> int:
@@ -790,6 +838,7 @@ class Ledger:
             raise
         return used + bytes_needed
 
+    @_serialized
     async def release_output_budget(self, resource_id: str) -> bool:
         """释放预留；重复释放不产生第二次效果。返回是否本次真正释放。"""
         cursor = await self.db.execute(
@@ -801,6 +850,7 @@ class Ledger:
         await self.db.commit()
         return released
 
+    @_serialized
     async def session_budget_used(self, session_id: str) -> int:
         async with self.db.execute(
             "SELECT COALESCE(SUM(reserved_bytes), 0) AS n FROM budget_reservations "
@@ -810,6 +860,7 @@ class Ledger:
             row = await cursor.fetchone()
         return int(row["n"]) if row is not None else 0
 
+    @_serialized
     async def settle_output_budget(self, resource_id: str, stored_bytes: int) -> None:
         """结束只释放未用预留；仍保留的日志继续占用 session 存储预算。"""
         await self.db.execute(
@@ -823,6 +874,7 @@ class Ledger:
     # 执行底座：控制 fence
     # ------------------------------------------------------------------ #
 
+    @_serialized
     async def get_fence(self, session_id: str) -> dict[str, Any] | None:
         async with self.db.execute(
             "SELECT * FROM session_fences WHERE session_id = ?", (session_id,)
@@ -841,6 +893,7 @@ class Ledger:
             "updated_at": row["updated_at"],
         }
 
+    @_serialized
     async def sync_fence(
         self,
         *,
@@ -949,6 +1002,7 @@ class Ledger:
     # 执行底座：终端
     # ------------------------------------------------------------------ #
 
+    @_serialized
     async def insert_terminal(
         self,
         *,
@@ -1037,6 +1091,7 @@ class Ledger:
         "input_seq",
     }
 
+    @_serialized
     async def update_terminal(self, terminal_id: str, **fields: Any) -> None:
         if not fields:
             return
@@ -1051,12 +1106,14 @@ class Ledger:
         )
         await self.db.commit()
 
+    @_serialized
     async def get_terminal(self, terminal_id: str) -> aiosqlite.Row | None:
         async with self.db.execute(
             "SELECT * FROM terminals WHERE terminal_id = ?", (terminal_id,)
         ) as cursor:
             return await cursor.fetchone()
 
+    @_serialized
     async def list_terminals(
         self, session_id: str, *, limit: int = 50, offset: int = 0
     ) -> tuple[list[aiosqlite.Row], int]:
@@ -1072,6 +1129,7 @@ class Ledger:
             rows = await cursor.fetchall()
         return list(rows), total
 
+    @_serialized
     async def allocate_input_seq(
         self,
         *,
@@ -1126,6 +1184,7 @@ class Ledger:
             await self.db.rollback()
             raise
 
+    @_serialized
     async def get_input_receipt(self, operation_id: str) -> tuple[int, dict[str, Any]] | None:
         async with self.db.execute(
             "SELECT * FROM terminal_inputs WHERE operation_id = ?", (operation_id,)
@@ -1135,6 +1194,7 @@ class Ledger:
             return None
         return int(row["input_seq"]), json.loads(row["receipt_json"])
 
+    @_serialized
     async def mark_input_receipt(self, operation_id: str, receipt: dict[str, Any]) -> None:
         """写入完成后更新回执。中途崩溃时回执保持 `writing`，恢复路径不重发。"""
         await self.db.execute(
@@ -1147,6 +1207,7 @@ class Ledger:
     # 执行底座：持久事件
     # ------------------------------------------------------------------ #
 
+    @_serialized
     async def append_event(
         self,
         *,
@@ -1182,6 +1243,7 @@ class Ledger:
         await self.db.commit()
         return seq
 
+    @_serialized
     async def read_events(self, *, after: int, limit: int) -> list[aiosqlite.Row]:
         async with self.db.execute(
             "SELECT * FROM execution_events WHERE seq > ? ORDER BY seq LIMIT ?",
@@ -1189,6 +1251,7 @@ class Ledger:
         ) as cursor:
             return list(await cursor.fetchall())
 
+    @_serialized
     async def max_event_seq(self) -> int:
         async with self.db.execute("SELECT COALESCE(MAX(seq), 0) AS n FROM execution_events") as cursor:
             row = await cursor.fetchone()

@@ -940,6 +940,143 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Skills */
+        get: operations["list_skills_api_skills_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/rescan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rescan */
+        post: operations["rescan_api_skills_rescan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Skill */
+        post: operations["import_skill_api_skills_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{skill_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Versions */
+        get: operations["versions_api_skills__skill_id__versions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{skill_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Detail */
+        get: operations["detail_api_skills__skill_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Skill */
+        patch: operations["update_skill_api_skills__skill_id__patch"];
+        trace?: never;
+    };
+    "/api/skills/{skill_id}/versions/{version_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resource */
+        get: operations["resource_api_skills__skill_id__versions__version_id__files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{skill_id}/versions/{version_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Skill */
+        get: operations["export_skill_api_skills__skill_id__versions__version_id__export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Session Skills */
+        get: operations["session_skills_api_sessions__session_id__skills_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -1013,6 +1150,8 @@ export interface components {
             provider_id?: string | null;
             /** Model Name */
             model_name?: string | null;
+            /** Skill Refs */
+            skill_refs?: string[] | null;
         };
         /** Body_resume_run_api_runs__run_id__resume_post */
         Body_resume_run_api_runs__run_id__resume_post: {
@@ -1226,7 +1365,7 @@ export interface components {
          * EventType
          * @enum {string}
          */
-        EventType: "run.status" | "message.delta" | "message.completed" | "plan.updated" | "focus.updated" | "leads.recalled" | "context.selected" | "segment.yielded" | "snapshot.captured" | "model.response_quality" | "tool.accepted" | "tool.output" | "tool.completed" | "lead.updated" | "finding.updated" | "weakness.changed" | "weakness.presented" | "weakness.reviewed" | "relation.changed" | "condition.review_due" | "completion.review" | "coverage.updated" | "usage.updated" | "memory.compacted" | "input.required" | "report.ready" | "error" | "stream.resync_required" | "stream.heartbeat";
+        EventType: "skill.activity" | "run.status" | "message.delta" | "message.completed" | "plan.updated" | "focus.updated" | "leads.recalled" | "context.selected" | "segment.yielded" | "snapshot.captured" | "model.response_quality" | "tool.accepted" | "tool.output" | "tool.completed" | "lead.updated" | "finding.updated" | "weakness.changed" | "weakness.presented" | "weakness.reviewed" | "relation.changed" | "condition.review_due" | "completion.review" | "coverage.updated" | "usage.updated" | "memory.compacted" | "input.required" | "report.ready" | "error" | "stream.resync_required" | "stream.heartbeat";
         /**
          * ExecutionEnvironmentReport
          * @description 环境发现结果。不返回秘密（代理/CA 只报是否配置）。
@@ -2094,6 +2233,8 @@ export interface components {
         };
         /** SessionCreate */
         SessionCreate: {
+            /** Initial Skill Refs */
+            initial_skill_refs?: string[];
             /**
              * Project Id
              * Format: uuid
@@ -2136,6 +2277,102 @@ export interface components {
             };
             /** Event Cursor */
             event_cursor: number;
+        };
+        /** SkillImport */
+        SkillImport: {
+            /** Directory */
+            directory?: string | null;
+            /** Zip Base64 */
+            zip_base64?: string | null;
+        };
+        /** SkillList */
+        SkillList: {
+            /**
+             * Root
+             * @default
+             */
+            root: string;
+            /** Skills */
+            skills: components["schemas"]["SkillRead"][];
+            /** Total */
+            total: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Errors */
+            errors?: string[];
+        };
+        /** SkillRead */
+        SkillRead: {
+            /** Skill Id */
+            skill_id: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Source */
+            source: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Version Id */
+            version_id: string;
+            /** Package Hash */
+            package_hash: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Diagnostics */
+            diagnostics?: string[];
+            /** Project Ids */
+            project_ids?: string[];
+            /** Default For Projects */
+            default_for_projects?: string[];
+        };
+        /** SkillResource */
+        SkillResource: {
+            /** Path */
+            path: string;
+            /** Sha256 */
+            sha256: string;
+            /** Byte Size */
+            byte_size: number;
+            /** Text */
+            text?: string | null;
+            /** Next Offset */
+            next_offset?: number | null;
+            /** Files */
+            files?: string[];
+            /**
+             * Files Total
+             * @default 0
+             */
+            files_total: number;
+            /** Next File Offset */
+            next_file_offset?: number | null;
+        };
+        /** SkillSessionRead */
+        SkillSessionRead: {
+            /** Active */
+            active?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Note
+             * @default 活跃引用来自 checkpoint；加载不代表脚本已执行。
+             */
+            note: string;
+        };
+        /** SkillUpdate */
+        SkillUpdate: {
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Version Id */
+            version_id?: string | null;
+            /** Project Ids */
+            project_ids?: string[] | null;
+            /** Default For Projects */
+            default_for_projects?: string[] | null;
         };
         /** SpanPage */
         SpanPage: {
@@ -4093,6 +4330,289 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExecutionEnvironmentReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_skills_api_skills_get: {
+        parameters: {
+            query?: {
+                query?: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rescan_api_skills_rescan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillList"];
+                };
+            };
+        };
+    };
+    import_skill_api_skills_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SkillImport"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    versions_api_skills__skill_id__versions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                skill_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    detail_api_skills__skill_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                skill_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_skill_api_skills__skill_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                skill_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SkillUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resource_api_skills__skill_id__versions__version_id__files_get: {
+        parameters: {
+            query?: {
+                path?: string;
+                offset?: number;
+                limit?: number;
+                files_offset?: number;
+            };
+            header?: never;
+            path: {
+                skill_id: string;
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillResource"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_skill_api_skills__skill_id__versions__version_id__export_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                skill_id: string;
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    session_skills_api_sessions__session_id__skills_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillSessionRead"];
                 };
             };
             /** @description Validation Error */

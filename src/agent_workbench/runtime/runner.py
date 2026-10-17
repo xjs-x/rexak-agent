@@ -1623,6 +1623,28 @@ class AgentRunner:
             ModelResponseUnavailable,
         )
         from agent_workbench.models.context_budget import ContextBudgetExceeded
+        from agent_workbench.models.errors import content_rejection
+
+        rejection = content_rejection(exc)
+        if rejection is not None:
+            detail = (
+                "模型供应商拒绝了本次输入（内容审核，data_inspection_failed）。"
+                "已保留 checkpoint、工具结果与现有报告，等待用户处理；不会自动重试或恢复测试。"
+                "供应商未指出具体触发文本，这不是目标不可达或安全测试结论。"
+            )
+            if rejection.request_id:
+                detail += f" 请求编号：{rejection.request_id}。"
+            async with self._db.transaction() as session:
+                run = await session.get(RunRow, run_id)
+                if run is not None:
+                    await append_event(
+                        session, session_id=run.session_id, run_id=run_id,
+                        event_type=EventType.ERROR,
+                        payload={"code": str(ErrorCode.PROVIDER_ERROR), "message": detail,
+                                 "provider_code": rejection.code, "request_id": rejection.request_id,
+                                 "retryable": False},
+                    )
+            return RunStatus.WAITING_USER, detail
 
         if isinstance(exc, ModelResponseUnavailable):
             # 恢复耗尽：明确 failed，stop_reason 说明"模型响应不可用"，

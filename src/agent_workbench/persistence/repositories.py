@@ -771,6 +771,9 @@ class ExecutionResourceRepository:
         if row.session_id != session_id or row.executor_id != executor_id:
             raise ApiError(ErrorCode.CONFLICT, "执行资源投影归属冲突，拒绝覆盖")
         checked_at = _utcnow()
+        # 迟到的初始回执不得把已确认退出的资源改回运行中。
+        if row.state in {"exited", "closed"} and state in {"starting", "running", "unknown"}:
+            state, exit_code, termination_reason = row.state, row.exit_code, row.termination_reason
         row.executor_id = executor_id
         row.kind = kind
         row.state = state
@@ -793,6 +796,9 @@ class ExecutionResourceRepository:
         row.sync_status = sync_status
         row.last_checked_at = checked_at
         await self._s.flush()
+        from agent_workbench.persistence.execution_projection import sync_resource_operation
+
+        await sync_resource_operation(self._s, row)
         return row
 
     async def get(self, resource_id: UUID) -> ExecutionResourceRow | None:

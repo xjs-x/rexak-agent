@@ -24,7 +24,11 @@ from sqlalchemy import select
 from agent_workbench.agent.context import RunContext
 from agent_workbench.contracts.enums import ErrorCode, OperationStatus
 from agent_workbench.contracts.tool import ToolError, ToolResult
-from agent_workbench.execution.client import ExecutorConnectionError, ExecutorProtocolError
+from agent_workbench.execution.client import (
+    ExecutorConnectionError,
+    ExecutorProtocolError,
+    ExecutorRejected,
+)
 from agent_workbench.persistence.repositories import (
     ExecutionResourceRepository,
     ToolJobRepository,
@@ -54,13 +58,16 @@ def _result(payload: dict[str, object], summary: str, job_id: UUID | None) -> st
     ).model_dump_json()
 
 
-def _error_result(summary: str, code: ErrorCode | str, message: str, job_id: UUID | None) -> str:
+def _error_result(
+    summary: str, code: ErrorCode | str, message: str, job_id: UUID | None,
+    *, recovery_hint: str | None = None,
+) -> str:
     return ToolResult(
         operation_id=UUID(int=0),
         job_id=job_id,
         status=OperationStatus.FAILED,
         summary=summary,
-        error=ToolError(code=str(code), message=message),
+        error=ToolError(code=str(code), message=message, recovery_hint=recovery_hint),
         started_at=datetime.now(UTC),
         finished_at=datetime.now(UTC),
     ).model_dump_json()
@@ -309,6 +316,8 @@ async def read_job_output(
                 f"读取到 {page.get('byte_count', 0)} 字节输出{_direction_warning(direction)}",
                 resolved,
             )
+        except ExecutorRejected as exc:
+            return _output_rejection(exc, resolved)
         except ExecutorConnectionError as exc:
             return _error_result(
                 "执行岛不可达，无法读取输出", ErrorCode.EXECUTOR_UNAVAILABLE, str(exc), resolved
@@ -320,6 +329,8 @@ async def read_job_output(
 
     try:
         page = await toolbox.executor.read_output(resolved, cursor, stream=stream, limit=bounded)
+    except ExecutorRejected as exc:
+        return _output_rejection(exc, resolved)
     except ExecutorConnectionError as exc:
         return _error_result(
             "执行岛不可达，无法读取输出", ErrorCode.EXECUTOR_UNAVAILABLE, str(exc), resolved
@@ -334,6 +345,21 @@ async def read_job_output(
         {**page.model_dump(mode="json"), **direction},
         f"读取到 {page.byte_count} 字节输出{_direction_warning(direction)}",
         resolved,
+    )
+
+
+def _output_rejection(exc: ExecutorRejected, job_id: UUID) -> str:
+    return _error_result(
+        "输出读取被执行岛拒绝，未读取其他资源的数据",
+        exc.code or ErrorCode.VALIDATION_FAILED,
+        str(exc),
+        job_id,
+        recovery_hint=(
+            "cursor 只能用于产生它的同一资源；请使用该 job 上次返回的 next_cursor，"
+            "或省略 cursor 从该资源开头读取。无需重新运行原命令。"
+            if exc.code == "invalid_cursor"
+            else "请按执行岛返回的错误码修正读取参数；不要重新运行原命令。"
+        ),
     )
 
 

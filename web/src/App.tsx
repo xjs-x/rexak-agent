@@ -25,6 +25,7 @@ import {
   type WeaknessItem,
 } from "./api/client";
 import { ExecutionPanel } from "./ExecutionPanel";
+import { SkillLibrary } from "./SkillLibrary";
 import { ModelConfiguration } from "./ModelConfiguration";
 import { PlanGraph } from "./PlanGraph";
 import { ToolActivityGroup } from "./ToolActivity";
@@ -453,6 +454,8 @@ export default function App() {
   const [spans, setSpans] = useState<SpanItem[]>([]);
   const [reports, setReports] = useState<ReportItem[]>([]);
   const [showModelSettings, setShowModelSettings] = useState(false);
+  const [showSkills, setShowSkills] = useState(false);
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [priceCatalog, setPriceCatalog] = useState<PriceCatalog | null>(null);
@@ -858,6 +861,7 @@ export default function App() {
     const projectId = await ensureProject();
     const created = await api.createSession(projectId, {
       project_id: projectId, title, initial_objective: content, ...modelSelection,
+      initial_skill_refs: selectedSkills,
       scope: { mode, revision: 1, rules: target ? [{
         scheme: mode === "instruction" ? "any" : target.protocol === "https:" ? "https" : "http",
         host: target.hostname.replace(/^\[|\]$/g, ""),
@@ -866,6 +870,7 @@ export default function App() {
       }] : [] },
     });
     project.setSessionId(created.session.id);
+    setSelectedSkills([]);
     setTab("conversation");
     try { await project.refreshSessions(projectId); }
     catch { setNotice("任务已创建；列表暂时无法刷新，连接恢复后会重新加载。请勿重复提交。"); }
@@ -890,10 +895,11 @@ export default function App() {
     if (!chosenModel?.secret_configured || !chosenModel.base_url) { setShowModelSettings(true); return; }
     const content = message.trim();
     const accepted = await runAction(async () => {
-      if (project.sessionId) await api.message(project.sessionId, content, modelSelection);
+      if (project.sessionId) await api.message(project.sessionId, content, modelSelection, selectedSkills);
       else await createChat(content, content.slice(0, 30));
     }, "", false);
     if (accepted) {
+      setSelectedSkills([]);
       setMessage("");
       setAssistantText("");
       assistantResponseRef.current = "";
@@ -1174,6 +1180,8 @@ export default function App() {
           {project.projectId && project.sessions.length === 0 && <p className="empty-side">这个项目还没有任务。</p>}
         </div>
         <button className="side-item model-settings-entry" disabled={!project.ready} onClick={() => setShowModelSettings(true)}>⚙ 模型设置</button>
+        <button className="side-item" disabled={!project.ready} onClick={() => setShowSkills(true)}>技能库{selectedSkills.length ? ` · 已选 ${selectedSkills.length}` : ""}</button>
+        {showSkills && <div className="modal-backdrop" onMouseDown={() => setShowSkills(false)}><div className="modal model-settings-modal" role="dialog" aria-modal="true" aria-label="技能库" onMouseDown={e => e.stopPropagation()}><div className="panel-head"><h2>技能库</h2><button onClick={() => setShowSkills(false)}>关闭</button></div><SkillLibrary sessionId={project.sessionId} projectId={project.projectId} selected={selectedSkills} onSelected={setSelectedSkills} /></div></div>}
         <div className="sidebar-foot">本地个人工作台<br />结果以证据和复测为准</div>
       </aside>
 

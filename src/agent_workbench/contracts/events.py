@@ -21,6 +21,7 @@ EVENT_SCHEMA_VERSION = 1
 
 
 class EventType(StrEnum):
+    SKILL_ACTIVITY = "skill.activity"
     RUN_STATUS = "run.status"
     MESSAGE_DELTA = "message.delta"
     MESSAGE_COMPLETED = "message.completed"

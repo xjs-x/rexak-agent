@@ -66,6 +66,34 @@ class Base(DeclarativeBase):
     metadata = APP_METADATA
 
 
+class SkillInstallationRow(Base):
+    __tablename__ = "skill_installations"
+    id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    current_version_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    project_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    default_for_projects: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    __table_args__ = (UniqueConstraint("owner_id", "source", name="uq_skills_owner_source"),)
+
+
+class SkillVersionRow(Base):
+    __tablename__ = "skill_versions"
+    id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    installation_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.skill_installations.id"), nullable=False
+    )
+    package_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.artifacts.id"), nullable=False
+    )
+    spec: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (UniqueConstraint("installation_id", "package_hash", name="uq_skill_version_content"),)
+
+
 def _uuid_pk() -> Mapped[uuid.UUID]:
     return mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 

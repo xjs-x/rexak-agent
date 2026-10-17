@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from agent_workbench.api.app import create_app
+from agent_workbench.api.auth import COOKIE_NAME
 from agent_workbench.persistence.tables import RunRow
 
 pytestmark = pytest.mark.integration
@@ -61,6 +62,58 @@ async def test_model_settings_protect_write_and_do_not_return_keys(database):
             for p in deleted.json()["profiles"]
             if p["provider_id"] == "xiaomi"
         )
+
+
+async def test_session_reuse_keeps_earlier_pages_csrf_valid(database):
+    """同一浏览器多个控制台页面各自获取会话时，后到的调用不得作废先前的 CSRF。
+
+    回归：此前每次 POST /api/session 都签发新会话并覆盖共享 Cookie，其它页面
+    内存中的令牌随即失效，「保存模型设置」等写操作一直 403。
+    """
+    with TestClient(create_app()) as client:
+        first = client.post("/api/session").json()
+        assert first["reused"] is False
+        cookie_after_first = client.cookies.get(COOKIE_NAME)
+        second = client.post("/api/session").json()
+        assert second["reused"] is True
+        assert second["csrf_token"] == first["csrf_token"]
+        assert client.cookies.get(COOKIE_NAME) == cookie_after_first
+        saved = client.put(
+            "/api/settings/models",
+            json=body(api_key=None),
+            headers={"X-Workbench-CSRF": first["csrf_token"]},
+        )
+        assert saved.status_code == 200, saved.text
+
+
+async def test_session_issues_new_ticket_only_without_valid_cookie(database):
+    with TestClient(create_app()) as client:
+        first = client.post("/api/session").json()
+        assert first["reused"] is False
+        client.cookies.clear()
+        second = client.post("/api/session").json()
+        assert second["reused"] is False
+        assert second["csrf_token"] != first["csrf_token"]
+
+
+async def test_session_reuse_does_not_weaken_csrf_check(database):
+    """幂等复用只改变签发时机；令牌与 Cookie 不匹配仍然拒绝。"""
+    with TestClient(create_app()) as client:
+        stale = client.post("/api/session").json()
+        client.cookies.clear()
+        fresh = client.post("/api/session").json()
+        rejected = client.put(
+            "/api/settings/models",
+            json=body(api_key=None),
+            headers={"X-Workbench-CSRF": stale["csrf_token"]},
+        )
+        assert rejected.status_code == 403
+        accepted = client.put(
+            "/api/settings/models",
+            json=body(api_key=None),
+            headers={"X-Workbench-CSRF": fresh["csrf_token"]},
+        )
+        assert accepted.status_code == 200, accepted.text
 
 
 async def test_chat_model_selection_is_frozen_for_stage_and_changes_for_new_stage(

@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     # ---------- 数据根目录 ----------
     data_root: Path = REPO_ROOT / "data"
     remote_data_root: str = "/home/kali/rexak-agent-data"
+    skills_root: Path | None = None
+    skill_catalog_tokens: int = Field(default=2000, ge=256, le=10000)
+    skill_context_tokens: int = Field(default=12000, ge=512, le=100000)
 
     # ---------- 模型 ----------
     default_provider: str = "xiaomi"

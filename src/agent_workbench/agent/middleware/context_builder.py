@@ -57,10 +57,23 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             scope_block = f"\n\n### 当前运行模式\n{mode}\n当前目标规则：" + json.dumps(
                 [rule.model_dump() for rule in snapshot.rules], ensure_ascii=False
             )
+            scope_block += (
+                "\n连接起点：HTTP、浏览器、脚本及命令都在执行岛运行。"
+                "回环地址属于执行岛；其端口、容器和进程状态不能证明用户主机的状态。"
+                "\n当前显式目标映射："
+                + json.dumps(snapshot.target_mappings, ensure_ascii=False)
+            )
+            if snapshot.mode == "instruction":
+                scope_block += (
+                    "\n遇到未映射的回环目标，先说明目标机器归属尚未解析，"
+                    "需要执行岛可访问的地址或显式映射。不要通过命令重复探测回环、"
+                    "检查岛内容器或启动服务；不得把此条件写成目标未运行。"
+                )
         base_system = request.system_message
         system_text = base_system.content if base_system is not None else ""
 
         def compose(context_text: str) -> SystemMessage:
+            context_text += getattr(getattr(ctx, "toolbox", None), "skill_context", "")
             if isinstance(system_text, list):
                 return SystemMessage(content=[*system_text, {"type": "text", "text": context_text}])
             if system_text:
@@ -148,6 +161,7 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 ensure_fits(budget)
             manifest = _build_manifest(state, selected, str(merged.content))
         manifest.update(
+            skills=getattr(getattr(ctx, "toolbox", None), "skill_manifest", []),
             manifest_version=3,
             selected_messages=message_inventory(selected),
             replacements=replacements,

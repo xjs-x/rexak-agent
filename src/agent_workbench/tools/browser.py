@@ -31,7 +31,7 @@ from agent_workbench.contracts.enums import (
     ToolEffectClass,
 )
 from agent_workbench.contracts.tool import ArtifactRef, ToolError, ToolResult
-from agent_workbench.domain.scope import ScopeViolation
+from agent_workbench.domain.scope import ScopeViolation, TargetMappingRequired
 from agent_workbench.execution.client import ExecutorRejected
 from agent_workbench.tools.remote import (
     download_result_json,
@@ -79,7 +79,24 @@ async def run_browser_action(
             # 控制端先判一次；执行岛逐请求复核所有子资源。
             for target in (url, fields.get("login_url"), fields.get("probe_url")):
                 if target:
-                    toolbox.scope.check_url(str(target))
+                    toolbox.scope.check_execution_url(str(target))
+        except TargetMappingRequired as exc:
+            return ToolResult(
+                operation_id=UUID(int=0),
+                status=OperationStatus.FAILED,
+                summary=str(exc),
+                data={"error_category": "target_mapping", "delivery_state": "not_applied"},
+                error=ToolError(
+                    code=str(ErrorCode.VALIDATION_FAILED),
+                    message=str(exc),
+                    retryable=False,
+                    recovery_hint="先明确目标所在机器及执行岛可访问的地址；不要据此要求用户启动服务。",
+                    details={"target": exc.target, "connection_origin": "executor"},
+                ),
+                execution_certainty=ExecutionCertainty.NOT_APPLIED,
+                started_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC),
+            )
         except ScopeViolation as exc:
             # 越界：**不派发**，写覆盖记录，返回确定失败
             return ToolResult(

@@ -12,7 +12,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from agent_workbench.agent.factory import AgentRuntime
 from agent_workbench.agent.middleware.finish_gate import _looks_like_finish
-from agent_workbench.agent.state import AgentGraphState, next_input_state
+from agent_workbench.agent.state import (
+    CURRENT_STATE_SCHEMA_VERSION,
+    AgentGraphState,
+    next_input_state,
+)
 from agent_workbench.runtime.runner import AgentRunner, _delta_text
 from tests.support.scripted_model import ScriptedChatModel, final_text
 
@@ -63,7 +67,7 @@ async def test_end_checkpoint_reenters_official_model_without_reinjecting_object
 async def test_new_run_updates_objective_and_preserves_prior_messages():
     first_id, new_id, session_id = uuid4(), uuid4(), uuid4()
     values = {
-        "state_schema_version": 4,
+        "state_schema_version": CURRENT_STATE_SCHEMA_VERSION,
         "messages": ["已保存的历史"],
         "active_run_id": str(first_id),
         "plan": [],
@@ -96,7 +100,7 @@ async def test_pending_graph_nodes_resume_without_new_input():
 
     async def state(_config):
         return SimpleNamespace(
-            values={"state_schema_version": 4, "messages": ["历史"], "active_run_id": str(run.id)},
+            values={"state_schema_version": CURRENT_STATE_SCHEMA_VERSION, "messages": ["历史"], "active_run_id": str(run.id)},
             next=("tools",),
         )
 

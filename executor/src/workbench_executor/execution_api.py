@@ -20,12 +20,13 @@ import base64
 import hashlib
 import json
 import uuid
+import zipfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from workbench_executor._generated.contracts import execution_runtime as proto
@@ -42,6 +43,21 @@ def _utcnow() -> str:
 
 def create_router(get_state: Callable[[], Any], require_token: Callable[..., Any]) -> APIRouter:
     router = APIRouter(prefix=proto.EXECUTION_PREFIX, tags=["execution"])
+
+    @router.put("/skill-packages", dependencies=[Depends(require_token)])
+    async def skill_package(request: Request) -> dict[str, Any]:
+        from workbench_executor.skill_packages import materialize
+
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 45_000_000:
+                raise HTTPException(413, "skill_package_invalid: 包过大")
+        try:
+            payload = json.loads(body)
+            return await asyncio.to_thread(materialize, get_state().settings, payload)
+        except (ValueError, KeyError, TypeError, OSError, zipfile.BadZipFile) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     # ------------------------------------------------------------------ #
     # 控制 fence

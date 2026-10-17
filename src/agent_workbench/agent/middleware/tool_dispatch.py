@@ -115,6 +115,16 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         if args is None:
             args = {}
 
+        batch = batch_tool_names(dict(request.state or {}))
+        if tool_name in {"load_skill", "unload_skill"} and sum(
+            name in {"load_skill", "unload_skill"} for name in batch
+        ) > 1:
+            return _tool_message(request, "Skill 状态修改请分轮执行，避免同批版本竞争。")
+        if tool_name in {"run_skill_script", "read_skill_resource"} and any(
+            name in {"load_skill", "unload_skill"} for name in batch
+        ):
+            return _tool_message(request, "请在加载或卸载技能后的下一轮再读取资源或执行脚本。")
+
         # 2) 能力检查：缺能力给确定错误与替代能力，不诱导模型找工具
         reason = _disabled_reason(context, tool_name)
         if reason:

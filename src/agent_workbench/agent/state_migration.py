@@ -271,6 +271,18 @@ async def ensure_current_checkpoint(
         snapshot = migrated
         values = dict(migrated.values or {})
 
+    if values.get("state_schema_version") == 4:
+        if any(getattr(task, "result", None) is not None for task in (getattr(snapshot, "tasks", None) or ())):
+            raise StateSchemaIncompatibleError("v4 checkpoint 含未提交的并行结果，拒绝迁移；需先核对台账")
+        migrated = await _apply_update(graph, snapshot, {
+            "state_schema_version": 5, "active_skills": {}, "skill_directives": {},
+            "state_migration": {"adapter": "v4_to_v5_skills_v1", "from": 4, "to": 5,
+                "source_checkpoint_id": str(snapshot.config["configurable"]["checkpoint_id"]),
+                "expected_next": list(snapshot.next)},
+        }, config)
+        _assert_migration_preserved({"next": snapshot.next, "messages": values.get("messages", [])}, migrated)
+        snapshot = migrated
+        values = dict(migrated.values or {})
     assert_compatible_state(values)
     if values.get("state_schema_version") != CURRENT_STATE_SCHEMA_VERSION:
         raise StateSchemaIncompatibleError("迁移后状态版本仍不是当前版本，拒绝恢复")

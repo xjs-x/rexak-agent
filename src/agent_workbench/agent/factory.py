@@ -31,6 +31,7 @@ from agent_workbench.agent.middleware.command_guard import CommandGuardMiddlewar
 from agent_workbench.agent.middleware.progress import ProgressMiddleware
 from agent_workbench.agent.middleware.response_recovery import ResponseRecoveryMiddleware
 from agent_workbench.agent.middleware.segment import SegmentMiddleware
+from agent_workbench.agent.middleware.skills import SkillsMiddleware
 from agent_workbench.agent.middleware.stage_report import StageReportMiddleware
 from agent_workbench.agent.middleware.working_context import WorkingContextMiddleware
 from agent_workbench.agent.prompts import PROMPT_VERSION, SYSTEM_PROMPT
@@ -100,6 +101,7 @@ def build_agent_middleware(
     """
     return [
         CommandGuardMiddleware(),
+        SkillsMiddleware(),
         SegmentMiddleware(settings.segment_decision_rounds),
         ProgressMiddleware(),
         WorkingContextMiddleware(),

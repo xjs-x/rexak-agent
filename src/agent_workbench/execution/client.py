@@ -43,9 +43,10 @@ class ExecutorRejected(RuntimeError):
     把两者混为"失败"会导致要么误报副作用、要么漏掉真实副作用。
     """
 
-    def __init__(self, message: str, *, status_code: int) -> None:
+    def __init__(self, message: str, *, status_code: int, code: str | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
 
 
 class ExecutorProtocolError(RuntimeError):
@@ -54,6 +55,7 @@ class ExecutorProtocolError(RuntimeError):
 
 @runtime_checkable
 class ExecutorClient(Protocol):
+    async def execution_skill_package(self, payload: dict[str, Any]) -> dict[str, Any]: ...
     async def capabilities(self) -> ExecutorCapabilities: ...
 
     async def health(self) -> ExecutorHealth: ...
@@ -241,9 +243,15 @@ class HttpExecutorClient:
             )
         if 400 <= response.status_code < 500:
             # 明确拒绝：远端**没有**执行该操作
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            code = payload.get("code") if isinstance(payload, dict) else None
             raise ExecutorRejected(
                 f"{context} 被拒绝（HTTP {response.status_code}）：{response.text[:400]}",
                 status_code=response.status_code,
+                code=code if isinstance(code, str) else None,
             )
         if response.status_code >= 500:
             raise ExecutorProtocolError(
@@ -424,6 +432,14 @@ class HttpExecutorClient:
         data = response.json()
         if not isinstance(data, dict):
             raise ExecutorProtocolError("环境发现返回了无效响应")
+        return data
+
+    async def execution_skill_package(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = await self._request("PUT", "/execution/v1/skill-packages", json_body=payload, data_client=True)
+        self._raise_for_status(response, context="技能包同步")
+        data = response.json()
+        if not isinstance(data, dict) or data.get("package_hash") != payload.get("package_hash"):
+            raise ExecutorProtocolError("技能包返回了无效响应")
         return data
 
     async def probe_target(self, url: str, scope: dict[str, Any]) -> dict[str, Any]:

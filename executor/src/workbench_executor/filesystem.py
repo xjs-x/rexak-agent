@@ -239,6 +239,7 @@ class WorkspaceFileSystem:
         *,
         expected_version: str | None = None,
     ) -> dict[str, object]:
+        self._require_writable(relative)
         payload = content.encode("utf-8")
         if len(payload) > self._max_write_bytes:
             raise WorkspaceError(
@@ -310,6 +311,7 @@ class WorkspaceFileSystem:
     ) -> dict[str, object]:
         """批量编辑：**先在内存中校验全部替换**，任一失败不写文件；
         全部成功后写临时文件并原子替换（保留版本冲突与唯一匹配规则）。"""
+        self._require_writable(relative)
         if not edits:
             raise WorkspaceError("invalid_edit", "edits 不能为空")
         if len(edits) > 100:
@@ -388,6 +390,12 @@ class WorkspaceFileSystem:
             "replacements": total_replacements,
             "byte_size": len(payload),
         }
+
+    def _require_writable(self, relative: str) -> None:
+        target = self.resolve(relative, must_exist=False)
+        cache = self._real_root() / ".rexak" / "skills"
+        if target == cache or target.is_relative_to(cache):
+            raise WorkspaceError("skill_path_denied", "已发布 Skill 缓存不能通过文件工具修改；请发布新版本")
 
     # ---------------- 检索与枚举 ----------------
 

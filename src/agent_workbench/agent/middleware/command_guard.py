@@ -213,7 +213,8 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             if pending.payload.get("constraints"):
                 text = f"{text}\n\n【本次补充的约束】{pending.payload['constraints']}"
             return {
-                "messages": [HumanMessage(content=text, id=f"command-{pending.id}")],
+                "messages": [HumanMessage(content=text, id=f"command-{pending.id}",
+                    additional_kwargs={"skill_refs": pending.payload.get("skill_refs") or []})],
                 "execution_delegation_id": None,
                 "execution_delegation_revision": None,
                 "no_progress_streak": 0,

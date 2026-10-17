@@ -21,13 +21,23 @@ from langgraph.graph.message import add_messages
 #: （最近一次明确判断）。
 #: v4：计划步骤支持多线索（`lead_ids`）与类型（`kind`）；新增弱点呈现与复查进度字段
 #: （`presented_weakness_ids` / `weakness_review_cursor` / `last_recall_keys`）。
-#: 1→2→3→4 顺序兼容，不允许跳过迁移。
-CURRENT_STATE_SCHEMA_VERSION = 4
+#: v5：固定版本的 active_skills 引用与有界 skill_directives；1→2→3→4→5 顺序迁移。
+CURRENT_STATE_SCHEMA_VERSION = 5
 
-StateSchemaVersion = Literal[4]
+StateSchemaVersion = Literal[5]
 
 #: 可迁移到当前版本的旧版本（由 `state_migration` 提供显式适配）。
-MIGRATABLE_STATE_SCHEMA_VERSIONS = (1, 2, 3)
+MIGRATABLE_STATE_SCHEMA_VERSIONS = (1, 2, 3, 4)
+
+
+def merge_skill_refs(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
+    merged = {key: value for key, value in (left or {}).items() if value is not None}
+    for key, value in (right or {}).items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    return merged
 
 
 class StateSchemaIncompatibleError(RuntimeError):
@@ -168,6 +178,8 @@ class CompletionProposal(TypedDict):
 
 
 class AgentGraphState(AgentState):
+    active_skills: NotRequired[Annotated[dict[str, Any], merge_skill_refs]]
+    skill_directives: NotRequired[dict[str, Any]]
     """扩展后的图状态。
 
     以 `AgentState` 为基类，因此 `messages` 仍由框架的 `add_messages` reducer 管理，
@@ -265,6 +277,8 @@ def new_graph_state(
     """
     return AgentGraphState(
         messages=[],
+        active_skills={},
+        skill_directives={},
         session_id=str(session_id),
         active_run_id=str(run_id),
         segment_index=0,

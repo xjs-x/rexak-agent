@@ -3,6 +3,9 @@ import type { components } from "./generated/schema";
 export type ProjectCreate = components["schemas"]["ProjectCreate"];
 export type SessionCreate = components["schemas"]["SessionCreate"];
 export type AgentEvent = components["schemas"]["EventEnvelope"];
+export type SkillItem = components["schemas"]["SkillRead"];
+export type SkillPage = components["schemas"]["SkillList"];
+export type SkillResource = components["schemas"]["SkillResource"];
 
 export interface ProjectItem {
   id: string;
@@ -220,6 +223,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export class ApiClient {
+  skills(query = "", offset = 0): Promise<SkillPage> {
+    return request(`/skills?query=${encodeURIComponent(query)}&offset=${offset}&limit=50`);
+  }
+  rescanSkills(): Promise<SkillPage> { return this.write("/skills/rescan"); }
+  importSkill(body: {directory?: string; zip_base64?: string}): Promise<SkillItem> {
+    return this.write("/skills/import", body);
+  }
+  skillVersions(id: string): Promise<SkillPage> { return request(`/skills/${id}/versions`); }
+  skillResource(id: string, version: string, path = "SKILL.md", offset = 0, filesOffset = 0): Promise<SkillResource> {
+    return request(`/skills/${id}/versions/${version}/files?path=${encodeURIComponent(path)}&offset=${offset}&files_offset=${filesOffset}`);
+  }
+  updateSkill(id: string, body: components["schemas"]["SkillUpdate"]): Promise<SkillPage> {
+    return this.withSessionRetry(() => request(`/skills/${id}`, { method: "PATCH",
+      headers: {"Content-Type": "application/json", "X-Workbench-CSRF": this.csrf}, body: JSON.stringify(body) }));
+  }
+  activeSkills(session: string): Promise<components["schemas"]["SkillSessionRead"]> {
+    return request(`/sessions/${session}/skills`);
+  }
   private csrf = "";
 
   async health(): Promise<void> {
@@ -233,17 +254,33 @@ export class ApiClient {
     this.csrf = ticket.csrf_token;
   }
 
+  /**
+   * 写请求统一入口：会话缺失时先建立，遇 401/403（会话与 Cookie 错位、服务重启、
+   * 会话过期）时重新获取会话并重试一次。令牌在重试时重新读取，绝不缓存旧值。
+   */
+  private async withSessionRetry<T>(send: () => Promise<T>): Promise<T> {
+    try {
+      if (!this.csrf) await this.signIn();
+      return await send();
+    } catch (cause) {
+      if (!(cause instanceof ApiRequestError) || (cause.status !== 401 && cause.status !== 403)) throw cause;
+      await this.signIn();
+      return await send();
+    }
+  }
+
   private write<T>(path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
-    if (!this.csrf) throw new Error("本地会话尚未建立");
-    return request<T>(path, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Workbench-CSRF": this.csrf,
-        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    return this.withSessionRetry(() =>
+      request<T>(path, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Workbench-CSRF": this.csrf,
+          ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }),
+    );
   }
 
   projects(): Promise<{ projects: ProjectItem[] }> {
@@ -272,9 +309,11 @@ export class ApiClient {
     resources_note?: string;
   }> {
     const suffix = terminateResources ? "?terminate_resources=true" : "";
-    return request(`/sessions/${sessionId}${suffix}`, {
-      method: "DELETE", headers: { "X-Workbench-CSRF": this.csrf },
-    });
+    return this.withSessionRetry(() =>
+      request(`/sessions/${sessionId}${suffix}`, {
+        method: "DELETE", headers: { "X-Workbench-CSRF": this.csrf },
+      }),
+    );
   }
 
   snapshot(sessionId: string): Promise<Snapshot> {
@@ -433,7 +472,9 @@ export class ApiClient {
   }
 
   saveModelSettings(body: components["schemas"]["ModelSettingsUpdate"]): Promise<ModelSettings> {
-    return request("/settings/models", { method: "PUT", headers: { "Content-Type": "application/json", "X-Workbench-CSRF": this.csrf }, body: JSON.stringify(body) });
+    return this.withSessionRetry(() =>
+      request("/settings/models", { method: "PUT", headers: { "Content-Type": "application/json", "X-Workbench-CSRF": this.csrf }, body: JSON.stringify(body) }),
+    );
   }
 
   modelSettings(): Promise<ModelSettings> {
@@ -456,8 +497,8 @@ export class ApiClient {
     return request(`/sessions/${sessionId}/reports`);
   }
 
-  message(sessionId: string, content: string, model?: { provider_id: string; model_name: string }): Promise<{ run_id: string | null }> {
-    return this.write(`/sessions/${sessionId}/messages`, { content, ...model }, crypto.randomUUID());
+  message(sessionId: string, content: string, model?: { provider_id: string; model_name: string }, skillRefs?: string[]): Promise<{ run_id: string | null }> {
+    return this.write(`/sessions/${sessionId}/messages`, { content, ...model, ...(skillRefs?.length ? {skill_refs: skillRefs} : {}) }, crypto.randomUUID());
   }
 
   control(runId: string, action: "pause" | "resume" | "cancel", acknowledgeUnknown = false): Promise<unknown> {

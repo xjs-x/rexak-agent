@@ -119,16 +119,24 @@ def get_auth() -> LocalAuth:
 
 @router.post("/session", status_code=status.HTTP_200_OK, tags=["auth"])
 async def create_local_session(response: Response, request: Request) -> dict[str, Any]:
-    """签发本地会话 Cookie 与 CSRF 令牌。
+    """获取本地会话 Cookie 与 CSRF 令牌。
 
-    只允许从回环地址调用；同源校验在中间件里执行。
+    已持有有效会话时**复用当前会话**（不重新签发、不覆盖 Cookie）：控制台可能
+    同时存在多个页面实例（多标签页、断线重连），每个实例都会调用本接口。若每次
+    都签发新会话，最后签发的会覆盖浏览器共享的 Cookie，让其它页面内存中的 CSRF
+    令牌立即失效，表现为「保存类写操作全部 403」。只允许从回环地址调用；
+    同源校验在中间件里执行。
     """
     auth = get_auth()
     auth.check_origin(request)
-    ticket = auth.issue(response)
+    ticket = auth.verify_cookie(request)
+    reused = ticket is not None
+    if ticket is None:
+        ticket = auth.issue(response)
     return {
         "issued_at": ticket.issued_at,
         "csrf_token": ticket.csrf_token,
+        "reused": reused,
         "cookie": "workbench_session（HttpOnly, SameSite=Strict）",
         "note": (
             "写请求需带 X-Workbench-CSRF 头；服务只监听回环地址，"
@@ -266,6 +274,13 @@ async def create_session(
     settings = get_settings()
     preferences = read_preferences(settings)
     selected_provider = payload.provider_id or preferences.default_provider
+    if payload.initial_skill_refs:
+        from agent_workbench.skills.service import SkillService
+
+        try:
+            await SkillService(get_database()).validate_references(payload.initial_skill_refs, str(project_id))
+        except ValueError as exc:
+            raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from exc
     selected_model = payload.model_name or (
         preferences.default_model
         if selected_provider == preferences.default_provider
@@ -332,6 +347,7 @@ async def create_session(
                 "scope_revision": payload.scope.revision,
                 "policy_revision": payload.policy.revision,
                 "created_from_session_create": True,
+                "initial_skill_refs": payload.initial_skill_refs,
                 "model_binding": ModelBinding(
                     profile=profile, request_timeout_seconds=settings.model_request_timeout_seconds
                 ).to_snapshot(),
@@ -491,6 +507,7 @@ async def post_message(
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
     provider_id: Annotated[str | None, Body()] = None,
     model_name: Annotated[str | None, Body()] = None,
+    skill_refs: Annotated[list[str] | None, Body(max_length=20)] = None,
 ) -> dict[str, Any]:
     """**只写入指令并返回 202**，不在请求处理函数里驱动 Agent。"""
     auth = get_auth()
@@ -518,6 +535,24 @@ async def post_message(
         from agent_workbench.domain.run_state import find_active_run
 
         active = await find_active_run(session, session_id)
+        if skill_refs:
+            from agent_workbench.skills.service import SkillService
+
+            try:
+                service = SkillService(get_database())
+                await service.validate_references(skill_refs, str(row.project_id))
+                if active and (active.config_snapshot or {}).get("skill_catalog_artifact_id"):
+                    # 当前运行的目录已固定，刚安装的技能应在下一运行使用。
+                    from agent_workbench.persistence.tables import ArtifactRow
+
+                    artifact = await session.get(ArtifactRow, UUID(active.config_snapshot["skill_catalog_artifact_id"]))
+                    if artifact is None or not service.store.verify(artifact.relative_key, artifact.sha256):
+                        raise ValueError("skill_version_missing: 目录快照不可用")
+                    visible = {item["skill_id"] for item in json.loads(service.store.read_bytes(artifact.relative_key))}
+                    if any(reference not in visible for reference in skill_refs):
+                        raise ValueError("skill_not_found: 技能不在当前运行固定目录，请在下一运行使用")
+            except ValueError as exc:
+                raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from exc
         preferences = read_preferences(settings)
         selected_provider = provider_id or (
             active.provider_id if active else preferences.default_provider
@@ -555,9 +590,9 @@ async def post_message(
             provider_id=selected_provider,
             model_name=selected_model,
             config_snapshot=config,
-            payload={"provider_id": provider_id, "model_name": model_name}
-            if provider_id or model_name
-            else None,
+            payload=({"provider_id": provider_id, "model_name": model_name,
+                      **({"skill_refs": skill_refs} if skill_refs else {})}
+                     if provider_id or model_name or skill_refs else None),
         )
         if receipt.created and receipt.run_id:
             run = await session.get(RunRow, receipt.run_id)

@@ -27,6 +27,19 @@ class ScopeViolation(Exception):
         self.target = target
 
 
+class TargetMappingRequired(Exception):
+    """用户回环目标的机器归属尚未解析；不是目标连接失败。"""
+
+    def __init__(self, url: str) -> None:
+        self.target = url
+        super().__init__(
+            "尚未建立本机目标映射，未连接目标。localhost / 127.0.0.1 / ::1 在网络工具、"
+            "浏览器和命令中指执行岛本机，不能据此判断用户电脑上的服务是否运行。"
+            "请提供执行岛可访问的主机地址，或配置显式目标映射；"
+            "不要改用 curl、端口扫描、进程或容器检查来重复验证执行岛的回环地址。"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ParsedTarget:
     scheme: str
@@ -137,8 +150,36 @@ class ScopePolicy:
         return True
 
     def loopback_requires_mapping(self, url: str) -> bool:
-        """执行岛回环 ≠ 控制机回环。返回 True 表示必须依赖显式目标映射。"""
-        return parse_target(url).host in _LOOPBACK_HOSTS
+        """返回回环目标是否缺少匹配的显式映射（含端口与协议）。"""
+        target = parse_target(url)
+        try:
+            loopback = ipaddress.ip_address(target.host).is_loopback
+        except ValueError:
+            loopback = target.host in _LOOPBACK_HOSTS
+        if not loopback:
+            return False
+        for mapping in self._snapshot.target_mappings:
+            if mapping.get("from_host", "").lower().rstrip(".") != target.host:
+                continue
+            if mapping.get("scheme") and mapping["scheme"] != target.scheme:
+                continue
+            try:
+                if int(mapping.get("from_port", "0")) != target.port:
+                    continue
+                if not 1 <= int(mapping.get("to_port", "0")) <= 65535:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if mapping.get("to_host", "").strip():
+                return False
+        return True
+
+    def check_execution_url(self, url: str) -> ParsedTarget:
+        """聊天目标不能隐式落到执行岛回环；严格模式保留显式岛内测试。"""
+        target = self.check_url(url)
+        if self._snapshot.mode == "instruction" and self.loopback_requires_mapping(url):
+            raise TargetMappingRequired(url)
+        return target
 
 
 class ScopeDeniedError(Exception):

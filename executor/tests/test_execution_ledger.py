@@ -266,3 +266,85 @@ def test_fence_sync_ordering(tmp_path: Path) -> None:
             await ledger.close()
 
     run(scenario())
+
+
+def test_concurrent_fences_events_and_budget_do_not_share_transactions(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        ledger = Ledger(tmp_path / "ledger.sqlite3")
+        await ledger.open()
+        try:
+            async def cycle(index: int) -> None:
+                applied, _, _ = await ledger.sync_fence(
+                    session_id="s", run_id="r", owner="runner", owner_generation=1,
+                    control_version=1, revocations=[], expected_seq=None,
+                )
+                assert applied
+                await ledger.append_event(event_id=f"e-{index}", type="fixture", session_id="s")
+                await ledger.reserve_output_budget(
+                    resource_id=f"res-{index}", session_id="s", bytes_needed=10, session_budget=1000
+                )
+
+            await asyncio.gather(*(cycle(index) for index in range(32)))
+            fence = await ledger.get_fence("s")
+            assert fence is not None and fence["seq"] == 32
+            assert await ledger.max_event_seq() == 32
+            assert await ledger.session_budget_used("s") == 320
+            assert not ledger.db.in_transaction
+        finally:
+            await ledger.close()
+
+    run(scenario())
+
+
+def test_cancelled_transaction_rolls_back_before_next_access(tmp_path: Path, monkeypatch) -> None:
+    async def scenario() -> None:
+        ledger = Ledger(tmp_path / "ledger.sqlite3")
+        await ledger.open()
+        entered = asyncio.Event()
+        original = ledger.get_fence
+
+        async def blocked_get(_session: str):
+            entered.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(ledger, "get_fence", blocked_get)
+        try:
+            task = asyncio.create_task(ledger.sync_fence(
+                session_id="s", run_id="r", owner="runner", owner_generation=1,
+                control_version=1, revocations=[], expected_seq=None,
+            ))
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            monkeypatch.setattr(ledger, "get_fence", original)
+            assert not ledger.db.in_transaction
+            assert await ledger.get_fence("s") is None
+            applied, _, _ = await ledger.sync_fence(
+                session_id="s", run_id="r", owner="runner", owner_generation=1,
+                control_version=1, revocations=[], expected_seq=None,
+            )
+            assert applied
+        finally:
+            await ledger.close()
+
+    run(scenario())
+
+
+def test_failed_write_does_not_poison_following_transactions(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        ledger = Ledger(tmp_path / "ledger.sqlite3")
+        await ledger.open()
+        try:
+            await ledger.append_event(event_id="same", type="fixture")
+            with pytest.raises(aiosqlite.IntegrityError):
+                await ledger.append_event(event_id="same", type="fixture")
+            applied, _, _ = await ledger.sync_fence(
+                session_id="s", run_id="r", owner="runner", owner_generation=1,
+                control_version=1, revocations=[], expected_seq=None,
+            )
+            assert applied and not ledger.db.in_transaction
+        finally:
+            await ledger.close()
+
+    run(scenario())

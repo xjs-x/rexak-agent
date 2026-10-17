@@ -54,6 +54,13 @@ async def prepare_operation(
     `context_extra` 记录派发时**真实**的请求上下文（方法、入口、身份），
     供领域登记工具把证据关联到真实采集操作，而不是默认成 GET。
     """
+    context_extra = dict(context_extra or {})
+    presented = [ref for ref in getattr(toolbox, "skill_manifest", []) if ref.get("status") != "unavailable"]
+    if presented:
+        context_extra["contextual_skills"] = [{key: ref[key] for key in ("skill_id", "version_id", "package_hash")}
+                                               for ref in presented]
+    if arguments.get("skill_ref"):
+        context_extra["explicit_skill"] = arguments["skill_ref"]
     async with toolbox.db.transaction() as db:
         prepared = await OperationRegistry(db).prepare(
             run_id=toolbox.run_id,

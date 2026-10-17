@@ -1,6 +1,6 @@
 # 本文件由 scripts/generate_executor_contracts.py 自动生成，禁止手改。
 # 源文件：contracts/execution_runtime.py
-# 源 SHA256：fd02925d2cbe5804f9dadcb420b1172593163f97835f5c6e76e066b915fc3d2d
+# 源 SHA256：d45de45ccfc0d6f8a6c74e374e8d1c1e390ca4c7d23696132d4756d4457ba9aa
 # 重新生成：uv run python scripts/generate_executor_contracts.py
 """命令执行底座协议真源（`/execution/v1` 子协议）。
 
@@ -376,6 +376,7 @@ class WatchRule(_Base):
 
 
 class _CommonExecutionArguments(_InputBase):
+    skill_ref: dict[str, str] | None = None
     completion_role: Literal["work", "resource"] = "work"
     template_hash: str | None = None
     template_revision: int | None = None
@@ -666,6 +667,7 @@ class ExecutionCapabilityDetails(_Base):
     monitor: CapabilityState = CapabilityState.UNAVAILABLE
     durable_events: CapabilityState = CapabilityState.UNAVAILABLE
     detached_job_recovery: CapabilityState = CapabilityState.UNAVAILABLE
+    skill_packages: CapabilityState = CapabilityState.UNAVAILABLE
     output_limit_actions: list[str] = Field(default_factory=list)
     workspace_storage_enforcement: str = "unsupported"
     dependencies: dict[str, str] = Field(default_factory=dict)

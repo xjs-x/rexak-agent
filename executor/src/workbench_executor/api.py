@@ -644,6 +644,7 @@ def _execution_capability_details(state: ExecutorState) -> dict[str, Any]:
         "monitor": "available" if available else "unavailable",
         "durable_events": "available",
         "detached_job_recovery": "available" if available else "unavailable",
+        "skill_packages": "available" if available else "unavailable",
         "output_limit_actions": [item.value for item in proto.OutputLimitAction],
         "workspace_storage_enforcement": settings.workspace_storage_enforcement,
         "dependencies": {"pyte": _module_version("pyte")},

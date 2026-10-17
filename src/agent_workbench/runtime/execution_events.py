@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from agent_workbench.config.settings import Settings, get_settings
 from agent_workbench.contracts.enums import CommandKind, RunStatus
@@ -50,6 +50,7 @@ from agent_workbench.persistence.tables import (
     ExecutionWaitSetRow,
     RunRow,
     SessionRow,
+    ToolOperationRow,
 )
 
 log = get_logger("agent_workbench.execution_events")
@@ -78,6 +79,16 @@ _EVENT_LABELS = {
 _TERMINAL_RESOURCE_STATES = {"exited", "closed"}
 
 
+def _needs_resource_refresh():
+    return or_(
+        ExecutionResourceRow.state.in_(["starting", "running", "unknown"]),
+        select(ToolOperationRow.operation_id).where(
+            ToolOperationRow.operation_id == ExecutionResourceRow.origin_operation_id,
+            ToolOperationRow.status.in_(["accepted", "running", "unknown"]),
+        ).exists(),
+    )
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
@@ -89,7 +100,7 @@ async def sessions_with_execution_activity(db: Database) -> list[UUID]:
         rows = (
             await session.execute(
                 select(ExecutionResourceRow.session_id).where(
-                    ExecutionResourceRow.state.in_(["starting", "running", "unknown"])
+                    _needs_resource_refresh()
                 )
             )
         ).all()
@@ -162,7 +173,7 @@ async def refresh_resources(db: Database, *, settings: Settings, client: Any) ->
     """核对控制端已知活跃资源；事件接收本身不能替代状态同步。"""
     async with db.session() as session:
         rows = (await session.execute(select(ExecutionResourceRow).where(
-            ExecutionResourceRow.state.in_(["starting", "running", "unknown"])
+            _needs_resource_refresh()
         ).limit(1000))).scalars().all()
     for row in rows:
         try:

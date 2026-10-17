@@ -34,6 +34,7 @@ from agent_workbench.tools.history import search_history
 from agent_workbench.tools.http import HTTP_TOOLS
 from agent_workbench.tools.jobs import JOB_TOOLS
 from agent_workbench.tools.knowledge import KNOWLEDGE_TOOLS
+from agent_workbench.tools.skills import SKILL_TOOLS
 from agent_workbench.tools.task import TASK_TOOLS
 from agent_workbench.tools.terminals import TERMINAL_TOOLS
 from agent_workbench.tools.verification import VERIFICATION_TOOLS
@@ -90,7 +91,7 @@ class ToolSelection:
         reasons: dict[str, str] = {}
         if not self.command:
             reason = self.disabled_reasons.get("command", "命令能力当前关闭")
-            for name in ("run_command", "run_script", "start_monitor"):
+            for name in ("run_command", "run_script", "start_monitor", "run_skill_script"):
                 reasons[name] = reason
         if not self.terminals:
             reason = self.disabled_reasons.get("terminals", "终端能力当前关闭")
@@ -203,6 +204,7 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
         tools.extend(TASK_TOOLS)
     if chosen.knowledge:
         tools.extend(KNOWLEDGE_TOOLS)
+        tools.extend(item for item in SKILL_TOOLS if chosen.command or item.name != "run_skill_script")
     if chosen.completion:
         tools.extend(COMPLETION_TOOLS)
     if chosen.verification:

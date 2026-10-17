@@ -32,7 +32,8 @@ def test_needs_migration_only_for_older_supported_versions() -> None:
     assert needs_migration({"state_schema_version": 2})
     assert needs_migration({"state_schema_version": 3})
     assert not needs_migration({})
-    assert not needs_migration({"state_schema_version": 4})
+    assert needs_migration({"state_schema_version": 4})
+    assert not needs_migration({"state_schema_version": 5})
 
 
 def test_adapt_v2_only_accepts_explicit_v2() -> None:
@@ -200,7 +201,7 @@ async def test_v3_checkpoint_with_pending_node_keeps_it_after_migration() -> Non
     assert submitted == [], "迁移不得执行任何工具"
 
 
-async def test_v1_chain_reaches_current_version() -> None:
+async def test_pure_adapters_reach_v4_before_skill_migration() -> None:
     """1 -> 2 -> 3 -> 4 必须顺序执行，不允许跳过。"""
 
     # v1 迁移需要业务库投影（active_lead_ids），因此这里只校验纯函数层：
@@ -210,5 +211,21 @@ async def test_v1_chain_reaches_current_version() -> None:
     assert v2_update["state_schema_version"] == 3
     assert v2_update["current_focus"] is None
     v3_update = adapt_v3(v2_update, checkpoint_id="cp-2", next_nodes=())
-    assert v3_update["state_schema_version"] == CURRENT_STATE_SCHEMA_VERSION
+    assert v3_update["state_schema_version"] == 4
     assert v3_update["state_migration"]["from"] == 3
+
+
+async def test_v4_skill_migration_preserves_pending_tool_and_runs_once() -> None:
+    graph, submitted = _graph(InMemorySaver(), interrupt_before=["tools"])
+    config = {"configurable": {"thread_id": str(uuid4())}}
+    await graph.ainvoke(cast(Any, {"messages": [HumanMessage(content="保留目标", id="original")],
+                                 "state_schema_version": 4}), cast(Any, config))
+    before = await graph.aget_state(cast(Any, config))
+    assert submitted == [] and before.next == ("tools",)
+    after = await ensure_current_checkpoint(graph, config, before, database=None, session_id=None)
+    assert after.values["state_schema_version"] == 5
+    assert after.values["active_skills"] == {} and after.values["skill_directives"] == {}
+    assert [(m.id, m.content) for m in after.values["messages"]] == [(m.id, m.content) for m in before.values["messages"]]
+    assert after.next == before.next and submitted == []
+    await graph.ainvoke(None, cast(Any, config))
+    assert submitted == ["once"]

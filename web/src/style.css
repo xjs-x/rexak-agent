@@ -304,3 +304,7 @@ h1 { font-size: 16px; margin: 0; font-weight: 500; overflow: hidden; text-overfl
 .duty-form input, .duty-form select { padding: 6px 10px; border: 1px solid #d5d8dd; border-radius: 6px; }
 .delete-blocked { margin: 10px 0; padding: 10px 12px; border: 1px solid #e3b0b0; background: #fdf5f5; border-radius: 8px; }
 .delete-blocked ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+/* 技能库复用控制台主题，长资源列表和正文保持在面板内滚动。 */
+.skill-actions { display: flex; flex-wrap: wrap; gap: .65rem; align-items: center; margin: .7rem 0; }
+.skill-preview { white-space: pre-wrap; overflow: auto; max-height: 360px; }
+.skill-library { max-height: 75vh; overflow: auto; overflow-wrap: anywhere; padding-right: .5rem; }

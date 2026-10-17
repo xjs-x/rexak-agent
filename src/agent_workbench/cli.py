@@ -28,6 +28,7 @@ from agent_workbench.platform_compat import (
     configure_event_loop_policy,
     configure_stdio_utf8,
 )
+from agent_workbench.skills.cli import app as skills_app
 
 app = typer.Typer(
     name="workbench",
@@ -35,6 +36,7 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+app.add_typer(skills_app, name="skills")
 
 
 def _echo(message: str) -> None:

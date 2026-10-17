@@ -24,7 +24,7 @@ SOURCE_ROOT = ROOT / "src" / "agent_workbench"
 TARGET_PACKAGE = ROOT / "executor" / "src" / "workbench_executor" / "_generated"
 
 #: 需要复制到执行端的纯协议模块（其依赖闭包必须同样保持纯净）。
-SOURCES = ["contracts/execution_runtime.py"]
+SOURCES = ["contracts/execution_runtime.py", "contracts/skill_package.py"]
 
 #: 导入前缀改写规则。源模块当前自包含、无需改写；保留规则以便将来拆分时保持生成链可用。
 IMPORT_REWRITES = [

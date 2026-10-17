@@ -75,6 +75,43 @@ Web/API 自主黑盒测试工作台。设计基线在 `C:/xjs/xak-agent-rebuild-
 抓到了单元测试抓不到的缺陷：本轮 7 个修复里 **4 个**来自演练
 （404 崩溃、单 job 异常中断、核对串行过慢、stale 判定口径不符）。
 
+`scripts/executor_process_check.py` 同理：只在 Linux 才能验证的
+进程组/`/proc`/软链接语义，一键同步到执行岛跑（岛上 20 passed）。
+
+**写"一键验证脚本"时要特别小心它自己骗你**：已经踩过两次 ——
+解包路径写错导致测的是旧安装代码；`cmd | tail` 的退出码取 tail 的，
+测试失败也判成功（必须 `set -o pipefail`）。改造脚本后要先故意制造一次失败确认它真的会红。
+
+## 状态机与"确定结论"的语义
+
+- `unknown` **不是**确定结论：既不能证明完成、也不能证明没发生。
+  恢复与唤醒都不得据它继续推进；只能由用户显式确认（resume）后处理。
+- 所有状态迁移走 `set_run_status`，让 `ALLOWED_TRANSITIONS` 成为唯一真源。
+- 投影（`tool_jobs`）照实同步观察到的状态；**决策**另算 —— 两者不要混在一起写。
+
+## V3 弱点关系（已落地，`docs/plans/implementation-v3-weakness-chains.md`）
+
+- **Finding 就是弱点**：复用 `findings` 表，新增 `weakness_kind / applicability /
+  provided_conditions / connection_review / content_hash`；**不**另建同步写入的 Weakness 主表。
+- 关系表 `lead_weakness_links`：`role = basis | result`；`evidence_linked` 只表示
+  **关系**有依据，两个弱点分别成立**不代表**组合成立（组合必须另有验证记录）。
+- 条件 key 由领域层派生（`canonical_condition_key`：折叠空白 + casefold）；
+  **同内容重复写入不推进 `revision`**，`content_hash` 覆盖实质内容但不含用途判断元数据，
+  所以写"已分析后续用途"不会让自己立刻过期。
+- 关系/条件写入必须带 `source_weakness_revision`（或什么都不带）：**旧版本来源明确冲突**，
+  不自动升级为新版本判断；诚实比"看起来更完整"重要。
+- 顺序坑：**先建立关系，再写 `actionability_assessment`**。反了的话依据指纹当场不同，
+  判断立刻变 `needs_review`（这是设计，不是 bug）。
+- 结束判定由**程序**枚举复查集合（`domain/exploration_review`），
+  `blocked/deferred/outside_goal/not_required` 都不再豁免；分页只决定"这一次显示哪几项"，
+  每次 evaluate 都会重新全量核对。
+- "呈现"只认**真正进入最终 payload** 的条目：`manifest.presented_weakness_ids` 决定
+  checkpoint 游标，被预算裁掉的条目不推进游标（`_trim_working` 按整条对象裁剪）。
+- `presented_weakness_ids` 只在非空时写入 —— 这样最后一轮"没有新弱点"不会把
+  之前真的呈现过的记录清掉。
+- 状态 schema 3→4：`plan[].lead_ids/kind` + 呈现/召回进度字段；`adapt_v3` 只做映射与置空，
+  **不**回写虚构的关系或步骤类型。`snapshot.tasks` 要用 `getattr(..., None)` 取，测试替身可能没有。
+
 ## 常用命令
 
 ```bash

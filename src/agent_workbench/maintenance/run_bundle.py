@@ -26,6 +26,8 @@ from agent_workbench.persistence.bootstrap import open_checkpointer_connection
 from agent_workbench.persistence.db import Database
 
 _PROJECTION_FIELDS = (
+    "active_skills",
+    "skill_directives",
     "state_schema_version",
     "active_run_id",
     "segment_index",
@@ -70,6 +72,9 @@ async def collect_run_bundle(database: Database, run_id: UUID) -> dict[str, Any]
         "scope": "latest_checkpoint_at_export_not_historical_model_input",
     }
     payload["snapshot"]["combined_consistency"] = "non_atomic_database_checkpoint_artifacts"
+    from agent_workbench.skills.export import collect_skill_dependencies
+
+    await collect_skill_dependencies(database, payload, values)
     return payload
 
 
@@ -175,7 +180,7 @@ def _copy_evidence(
             "source_byte_size": artifact["byte_size"],
             "path": None,
         }
-        # 只复制来源明确的真实工具工件与报告；不从 checkpoint 或模型协议归档提取正文。
+        # 只复制有明确来源的工具、报告、审计和固定 Skill 依赖；不伪造目标证据。
         if (
             artifact.get("source_operation_id") not in operation_ids
             and artifact["id"] not in report_ids
@@ -188,6 +193,10 @@ def _copy_evidence(
             relative = (
                 f"manifests/{UUID(artifact['id'])}.json"
                 if audit_roles.get(artifact["id"]) == "request_manifest"
+                else f"skills/catalogs/{UUID(artifact['id'])}.json"
+                if audit_roles.get(artifact["id"]) == "skill_catalog"
+                else f"skills/packages/{UUID(artifact['id'])}.zip"
+                if audit_roles.get(artifact["id"]) == "skill_package"
                 else f"evidence/{UUID(artifact['id'])}.bin"
             )
             record["role"] = audit_roles.get(artifact["id"], "tool_or_report")
@@ -289,6 +298,7 @@ def write_run_bundle(
             },
         )
         _write_json(directory / "reports" / "index.json", payload["reports"])
+        _write_json(directory / "skills" / "index.json", payload.get("skills", {"versions": [], "errors": []}))
         stage_snapshots = []
         for report in payload["reports"]:
             if report.get("captured_snapshot") is None:
@@ -358,7 +368,7 @@ def write_run_bundle(
                     payload.get("pending_model_observations", [])
                 ),
                 "consistency": "non_atomic_database_checkpoint_artifacts",
-                "evidence_complete": all(row["status"] == "copied" for row in evidence),
+                "evidence_complete": all(row["status"] == "copied" for row in evidence) and not payload.get("skills", {}).get("errors"),
                 "missing_capabilities": [
                     *([] if stage_snapshots else ["historical_stage_snapshots"]),
                     *(["final_request_manifests"] if manifest_status != "available" else []),

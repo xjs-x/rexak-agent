@@ -19,6 +19,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from datetime import UTC, datetime
@@ -115,6 +116,23 @@ class CommandRuntime:
             return self._receipt_from_record(existing, deduplicated=True)
 
         session_id = envelope.session_id
+        if arguments.get("skill_ref"):
+            from workbench_executor._generated.contracts.skill_package import safe_skill_path
+            from workbench_executor.skill_packages import verify_materialized
+
+            ref = arguments["skill_ref"]
+            digest = ref.get("package_hash", "")
+            if not re.fullmatch(r"[a-f0-9]{64}", digest):
+                raise RuntimeRejected("skill_hash_mismatch", "Skill 哈希无效")
+            try:
+                root = self.session_workspace(session_id) / ".rexak" / "skills" / digest
+                script = safe_skill_path(ref.get("script", ""))
+                argv = arguments.get("argv") or []
+                if not script.startswith("scripts/") or len(argv) < 2 or Path(argv[1]).resolve() != (root / script).resolve():
+                    raise ValueError("skill_path_denied: 脚本与固定版本引用不一致")
+                verify_materialized(root, digest)
+            except (ValueError, OSError) as exc:
+                raise RuntimeRejected("skill_hash_mismatch", str(exc)) from exc
         job_id = str(uuid4())
 
         # 配额与磁盘预检（拒绝新建，不淘汰已有资源）。

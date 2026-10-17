@@ -372,6 +372,7 @@ class WatchRule(_Base):
 
 
 class _CommonExecutionArguments(_InputBase):
+    skill_ref: dict[str, str] | None = None
     completion_role: Literal["work", "resource"] = "work"
     template_hash: str | None = None
     template_revision: int | None = None
@@ -662,6 +663,7 @@ class ExecutionCapabilityDetails(_Base):
     monitor: CapabilityState = CapabilityState.UNAVAILABLE
     durable_events: CapabilityState = CapabilityState.UNAVAILABLE
     detached_job_recovery: CapabilityState = CapabilityState.UNAVAILABLE
+    skill_packages: CapabilityState = CapabilityState.UNAVAILABLE
     output_limit_actions: list[str] = Field(default_factory=list)
     workspace_storage_enforcement: str = "unsupported"
     dependencies: dict[str, str] = Field(default_factory=dict)

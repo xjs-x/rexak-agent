@@ -39,7 +39,7 @@ from agent_workbench.contracts.http import (
     classify_body_mode,
 )
 from agent_workbench.contracts.tool import ArtifactRef, ToolError, ToolResult
-from agent_workbench.domain.scope import ScopeViolation
+from agent_workbench.domain.scope import ScopeViolation, TargetMappingRequired
 from agent_workbench.evidence.artifacts import redact_text
 from agent_workbench.execution.client import (
     ExecutorConnectionError,
@@ -298,9 +298,19 @@ async def run_http_request(
 
     # 1) 范围预检：给出**清楚原因**；最终放行由执行岛 NetworkPolicy 决定
     try:
-        toolbox.scope.check_url(args.url)
+        toolbox.scope.check_execution_url(args.url)
         if args.csrf_source_url:
-            toolbox.scope.check_url(args.csrf_source_url)
+            toolbox.scope.check_execution_url(args.csrf_source_url)
+    except TargetMappingRequired as exc:
+        return _failed(
+            UUID(int=0),
+            ErrorCode.VALIDATION_FAILED,
+            str(exc),
+            category="target_mapping",
+            retryable=False,
+            recovery_hint="先明确目标所在机器及执行岛可访问的地址；不要据此要求用户启动服务。",
+            details={"target": exc.target, "connection_origin": "executor"},
+        )
     except ScopeViolation as exc:
         return _failed(
             UUID(int=0),

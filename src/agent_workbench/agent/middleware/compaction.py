@@ -75,7 +75,7 @@ class GuardedSummarizationMiddleware(SummarizationMiddleware):
 
     def _estimate_main(self, messages: list[Any], state: Any):
         assert self.profile is not None
-        context = _build_context_block(state)
+        context = _build_context_block(state) + str(state.get("_skill_context") or "")
         return estimate_request(
             messages,
             SystemMessage(content=self.system_prompt + "\n\n" + context),
@@ -88,6 +88,7 @@ class GuardedSummarizationMiddleware(SummarizationMiddleware):
         context = getattr(runtime, "context", None)
         working: Any = {
             **state,
+            "_skill_context": getattr(getattr(context, "toolbox", None), "skill_context", ""),
             "messages": [item.model_copy(deep=True) for item in state.get("messages", [])],
         }
         self._ensure_message_ids(working["messages"])

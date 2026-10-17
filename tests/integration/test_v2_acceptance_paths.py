@@ -29,9 +29,11 @@ from agent_workbench.api.app import create_app
 from agent_workbench.config.catalog import default_price_catalog
 from agent_workbench.config.settings import get_settings
 from agent_workbench.contracts.enums import JobState
+from agent_workbench.contracts.identity import ScopeRule, ScopeSnapshot
 from agent_workbench.contracts.tool import JobSnapshot, ToolError
 from agent_workbench.domain.leads import LeadService
 from agent_workbench.domain.reports import create_report_snapshot
+from agent_workbench.domain.scope import ScopePolicy
 from agent_workbench.evidence.artifacts import ArtifactStore
 from agent_workbench.models.invocation import InvocationScope, invoke_chat_model
 from agent_workbench.models.provider import ModelBinding
@@ -340,11 +342,8 @@ async def test_executor_failure_is_not_reported_as_target_response(
     toolbox.wait_for_terminal = terminal
     toolbox.assert_control_current = check
     toolbox.locks = SimpleNamespace(acquire=acquire)
-    toolbox.scope = SimpleNamespace(
-        check_url=lambda _url: None,
-        snapshot=SimpleNamespace(
-            revision=1, rules=[], target_mappings=[], denied_metadata_hosts=[]
-        ),
+    toolbox.scope = ScopePolicy(
+        ScopeSnapshot(rules=[ScopeRule(scheme="http", host="fixture.invalid", port=80)])
     )
     toolbox.scope_revision = toolbox.policy_revision = toolbox.control_version = (
         toolbox.owner_generation

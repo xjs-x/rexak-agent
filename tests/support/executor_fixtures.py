@@ -39,6 +39,7 @@ def fixture_capabilities(
             "monitor": monitor,
             "durable_events": "available",
             "detached_job_recovery": "available",
+            "skill_packages": "available",
             "output_limit_actions": ["preserve_process", "terminate"],
             "workspace_storage_enforcement": "accounting_only",
             "dependencies": {"pyte": "0.8.2"},

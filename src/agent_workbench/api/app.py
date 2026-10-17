@@ -170,6 +170,9 @@ def create_app() -> FastAPI:
     app.include_router(router)
     # 执行底座：会话资源 / 输出 / 值班 / 环境（不驱动 Agent，不把 stdout 塞 SSE）
     app.include_router(execution_router)
+    from agent_workbench.api.skills import router as skills_router
+
+    app.include_router(skills_router)
 
     # ------------------------------------------------------------------ #
     # 最小观察器（P2）与 P7 基础控制台

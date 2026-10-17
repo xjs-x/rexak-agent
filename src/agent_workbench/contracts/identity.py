@@ -124,6 +124,7 @@ class IdentityRef(_Base):
 
 
 class SessionCreate(_Base):
+    initial_skill_refs: list[str] = Field(default_factory=list, max_length=20)
     project_id: UUID
     title: str
     initial_objective: str

@@ -26,6 +26,7 @@ from agent_workbench.execution.client import (
     ExecutorConnectionError,
     ExecutorProtocolError,
 )
+from agent_workbench.persistence.execution_projection import execution_operation_status
 from agent_workbench.tools.execution_dispatch import (
     ExecutionUnavailable,
     build_envelope,
@@ -69,7 +70,7 @@ def _result_from_receipt(operation_id: Any, receipt: dict[str, Any]) -> ToolResu
     wait_reason = receipt.get("wait_reason")
     if state in {"exited", "closed"}:
         exit_code = receipt.get("exit_code")
-        succeeded = exit_code == 0
+        status = execution_operation_status(state, exit_code, receipt.get("termination_reason"))
         summary = (
             f"任务已结束（退出码 {exit_code}）；退出码只表示程序自身结果，"
             "不代表目标安全或任务目标达成。"
@@ -79,7 +80,7 @@ def _result_from_receipt(operation_id: Any, receipt: dict[str, Any]) -> ToolResu
         return ToolResult(
             operation_id=operation_id,
             job_id=_uuid_of(receipt.get("job_id") or receipt.get("resource_id")),
-            status=OperationStatus.SUCCEEDED if succeeded else OperationStatus.FAILED,
+            status=OperationStatus(status),
             summary=summary,
             data=dict(receipt),
             started_at=datetime.now(UTC),
@@ -163,23 +164,36 @@ async def run_execution_kernel(
             return failure
         assert receipt is not None
         receipt["completion_role"] = arguments.get("completion_role", "resource" if action == "start_monitor" else "work")
-        await project_resource(toolbox, str(receipt.get("resource_id") or ""), receipt)
         await _record_control_projection(toolbox, operation_id, receipt)
+        await project_resource(toolbox, str(receipt.get("resource_id") or ""), receipt)
         return _result_from_receipt(operation_id, receipt)
     except ExecutionUnavailable as exc:
-        return failure_result(operation_id, exc.code, exc.message, hint=exc.hint)
+        result = failure_result(operation_id, exc.code, exc.message, hint=exc.hint)
     except ValueError as exc:
-        return failure_result(
+        result = failure_result(
             operation_id, str(ErrorCode.VALIDATION_FAILED), f"参数非法：{exc}"
         )
-    except (ExecutorConnectionError, ExecutorProtocolError) as exc:
-        # 上面的派发路径已经处理；这里兜底能力读取阶段的基础设施故障。
-        return failure_result(
+    except ExecutorProtocolError as exc:
+        # 这里只覆盖派发前的能力读取、控制同步；派发后的不确定状态由 dispatch 处理。
+        result = failure_result(
+            operation_id,
+            str(ErrorCode.EXECUTOR_INCOMPATIBLE),
+            f"执行岛响应异常，未派发命令：{exc}",
+            hint="请检查执行岛服务日志；这不是目标不可达，也不是命令执行结果。",
+        )
+    except ExecutorConnectionError as exc:
+        result = failure_result(
             operation_id,
             str(ErrorCode.EXECUTOR_UNAVAILABLE),
-            f"执行岛不可达：{type(exc).__name__}",
-            hint="这是基础设施故障，不代表命令执行结果。",
+            f"派发前连接执行岛失败：{exc}",
+            hint="命令尚未派发；这是执行基础设施故障，不是目标测试结论。",
         )
+    if operation_id is not None:
+        from agent_workbench.persistence.repositories import ToolOperationRepository
+
+        async with toolbox.db.transaction() as db:
+            await ToolOperationRepository(db).mark_result(operation_id, status="failed")
+    return result
 
 
 async def _record_control_projection(
@@ -191,16 +205,20 @@ async def _record_control_projection(
     )
 
     job_id = _uuid_of(receipt.get("job_id") or receipt.get("resource_id"))
+    state = str(receipt.get("process_state") or "running")
+    status = execution_operation_status(
+        state, receipt.get("exit_code"), receipt.get("termination_reason")
+    )
     async with toolbox.db.transaction() as db:
         if job_id is not None:
             await ToolOperationRepository(db).attach_job(
-                operation_id, job_id, status="running"
+                operation_id, job_id, status=status
             )
             await ToolJobRepository(db).upsert(
                 job_id=job_id,
                 operation_id=operation_id,
                 executor_id=toolbox.settings.executor_id,
-                state=str(receipt.get("process_state") or "running"),
+                state=status if state in {"exited", "closed"} else state,
                 sync_status="in_sync",
                 executor_accepted_at=datetime.now(UTC),
             )
