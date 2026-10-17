@@ -1,0 +1,39 @@
+{
+  "baseline": "61f95f7c9336337c132c9b5ec02793b5732914d6",
+  "uv_sync_frozen": "PASS",
+  "ruff": "PASS",
+  "pyright": "PASS",
+  "encoding": "PASS",
+  "targeted_tests": {
+    "passed": 23,
+    "exit_code": 0
+  },
+  "full_control_tests": {
+    "passed": 673,
+    "skipped": 2,
+    "real_model_deselected": 1,
+    "warnings": 28,
+    "seconds": 212.63,
+    "exit_code": 0
+  },
+  "frontend_frozen_install": "PASS",
+  "frontend_build": "PASS",
+  "executor_wheel_build": "PASS",
+  "config_cli": {
+    "fresh_config_cli": "PASS",
+    "repeat_keeps_config": "PASS",
+    "existing_user_env_unchanged": true
+  },
+  "remote_first_install": "PASS",
+  "remote_reason": "SSH restored; isolated fresh and repeat installations passed; daily Executor unchanged",
+  "daily_executor_updated": false,
+  "model_called": false,
+  "target_accessed": false,
+  "control_log_sha256": "03198e8f023c851e13fcd1840b29e39529aa5723b9f778bde362ba1c661471c4",
+  "remote_repeat_install": "PASS",
+  "launcher_check_only": "PASS",
+  "remote_fixture_removed": true,
+  "fixture_database_removed": true,
+  "daily_executor_boot_unchanged": true,
+  "pip_index_override": "https://pypi.tuna.tsinghua.edu.cn/simple"
+}

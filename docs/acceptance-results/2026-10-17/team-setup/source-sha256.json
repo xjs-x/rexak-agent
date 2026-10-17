@@ -1,0 +1,17 @@
+{
+  "normalization": "UTF-8 source with CRLF normalized to LF",
+  "sha256": {
+    ".env.example": "45092c7d9d222e1a7dae4a7dea45fc7697c6702b5ec44056d70477c7e1a1a2f8",
+    "scripts/deploy_executor.py": "c0beccf45cd6c79bd3321d77146763da31c0c8b4206c7b074c2949dbfd2205b9",
+    "scripts/setup_workbench.py": "7ee263516a03afd36ba5c2709d2a402bd8a2e1cddb85a38accefd9e9a252b205",
+    "scripts/start_workbench.py": "65a435dae68b64ea067c5ea58b3f4cef84e68d8de20706e32c658cf182d02d65",
+    "src/agent_workbench/config/deployment.py": "dee02e6af08fcff165c26ddaeed9f0da122a1a499d78663e46306970126a0b81",
+    "src/agent_workbench/config/settings.py": "12e07d4bac5eb81a9449c2f569e855015232a9b54fd122653f95a341a4f1fef8",
+    "tests/unit/test_onboarding.py": "c0dba815d7d93cc35342b3eda1a92861c3dd9e7d7c414d25af8f897d5bce6d55",
+    "deploy/executor-requirements.txt": "19cdc29fb756ff764a96d03af407d70dd30c0ded125ebbf3277805354bd74dc0",
+    "executor/pyproject.toml": "0b68f310dd96d84e4700322220d6725e5751980f18047c8c7c0d63c80ce5d993",
+    "uv.lock": "bdc70c9e79e24418303e66ecaa031f07f83750f7bd35e778556a6270b7683484",
+    "web/package.json": "0c54bbc67f29130a46757b45b7b27a6d49f52580e09c47f0def1b254368acd84",
+    "web/pnpm-lock.yaml": "18baaa1934b1134995129f83aad3d3019b26c582d10c794a9d6f84134e27103c"
+  }
+}

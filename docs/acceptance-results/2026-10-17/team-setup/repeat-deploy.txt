@@ -1,0 +1,48 @@
+已上传 28 个文件；更新执行端并检查启动状态。
+上传文件哈希验证通过
+Looking in indexes: https://pypi.tuna.tsinghua.edu.cn/simple
+Requirement already satisfied: aiosqlite==0.22.1 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 3)) (0.22.1)
+Requirement already satisfied: annotated-doc==0.0.5 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 7)) (0.0.5)
+Requirement already satisfied: annotated-types==0.8.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 11)) (0.8.0)
+Requirement already satisfied: anyio==4.15.1 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 15)) (4.15.1)
+Requirement already satisfied: certifi==2026.7.22 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 22)) (2026.7.22)
+Requirement already satisfied: click==8.5.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 28)) (8.5.0)
+Requirement already satisfied: fastapi==0.143.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 32)) (0.143.0)
+Requirement already satisfied: greenlet==3.5.6 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 36)) (3.5.6)
+Requirement already satisfied: h11==0.16.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 59)) (0.16.0)
+Requirement already satisfied: httpcore==1.0.9 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 65)) (1.0.9)
+Requirement already satisfied: httptools==0.8.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 69)) (0.8.0)
+Requirement already satisfied: httpx==0.28.1 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 86)) (0.28.1)
+Requirement already satisfied: idna==3.20 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 90)) (3.20)
+Requirement already satisfied: opentelemetry-api==1.45.1 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 96)) (1.45.1)
+Requirement already satisfied: playwright==1.63.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 100)) (1.63.0)
+Requirement already satisfied: pydantic==2.14.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 110)) (2.14.0)
+Requirement already satisfied: pydantic-core==2.50.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 117)) (2.50.0)
+Requirement already satisfied: pydantic-settings==2.15.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 154)) (2.15.0)
+Requirement already satisfied: pyee==13.0.1 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 158)) (13.0.1)
+Requirement already satisfied: pyte==0.8.2 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 162)) (0.8.2)
+Requirement already satisfied: python-dotenv==1.2.4 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 166)) (1.2.4)
+Requirement already satisfied: pyyaml==6.0.3 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 172)) (6.0.3)
+Requirement already satisfied: regex==2026.9.29 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 195)) (2026.9.29)
+Requirement already satisfied: starlette==1.7.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 230)) (1.7.0)
+Requirement already satisfied: structlog==26.1.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 234)) (26.1.0)
+Requirement already satisfied: typing-extensions==4.16.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 238)) (4.16.0)
+Requirement already satisfied: typing-inspection==0.4.4 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 250)) (0.4.4)
+Requirement already satisfied: uvicorn==0.54.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 257)) (0.54.0)
+Requirement already satisfied: uvloop==0.23.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 261)) (0.23.0)
+Requirement already satisfied: watchfiles==1.3.0 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 276)) (1.3.0)
+Requirement already satisfied: wcwidth==0.9.2 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 293)) (0.9.2)
+Requirement already satisfied: websockets==16.1.1 in ./.venv/lib/python3.13/site-packages (from -r /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z/executor-requirements.txt (line 308)) (16.1.1)
+Executor 已停止
+Processing ./releases/20261017T105232450459Z/workbench_executor-0.1.0-py3-none-any.whl
+Installing collected packages: workbench-executor
+  Attempting uninstall: workbench-executor
+    Found existing installation: workbench-executor 0.1.0
+    Uninstalling workbench-executor-0.1.0:
+      Successfully uninstalled workbench-executor-0.1.0
+Successfully installed workbench-executor-0.1.0
+Executor 已启动并通过健康检查
+No broken requirements found.
+
+已安装 23 个文件哈希、启动实例、身份和协议核对通过。
+Kali 部署完成：192.168.72.134，发布目录 /home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z

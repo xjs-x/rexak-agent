@@ -1,69 +1,58 @@
-# 本机部署与启动
+# 部署、启动与更新
 
-当前 Windows 和 Kali 已配置完成。Kali 执行端地址：`192.168.72.134`。
+首次 clone 或换电脑，请先按[新成员部署指南](team-setup.md)完成个人配置、SSH 和初始化。Kali 地址放在自己的 `.env`，不修改源码；已有环境无需重新生成配置。
 
-## 日常使用
+## 首次安装
 
-1. 保持 Docker Desktop 和 Kali 虚拟机运行。
-2. 双击桌面的 **Rexak Agent**；也可双击仓库中的 `start-workbench.cmd`。
-3. 输入小米 API Key，等待自动打开控制台。
-4. 直接在聊天里发送目标网址或 IP 和测试要求；默认按指令运行，无需配置 scope。
-5. 暂停后直接发送新指令即可继续，也可以点击“新聊天”开展另一任务。
-
-启动窗口会自动检查数据库、启动 Kali Executor、检查数据库版本、启动 API 和 Runner。Key 仅本次使用，不写入文件，也不上传到 Kali。
-
-控制台地址：<http://127.0.0.1:8770/console/>。保留启动窗口，按 `Ctrl+C` 停止本次启动的 API 和 Runner。
-
-## 命令行启动
+准备 Git、uv、Docker Desktop、Node.js/pnpm，以及具备 SSH、Python 3.12/3.13、venv 和 Chromium 的 Kali 后：
 
 ```powershell
-cd C:\xjs\rexak-agent
-.\.venv\Scripts\python.exe scripts/start_workbench.py
-```
-
-只检查部署状态：
-
-```powershell
-.\.venv\Scripts\python.exe scripts/start_workbench.py --check-only
-```
-
-## 更新代码后
-
-先在启动窗口按 `Ctrl+C`。更新控制端依赖与前端（需要 uv、pnpm 在命令行可用）：
-
-```powershell
-cd C:\xjs\rexak-agent
 uv sync --frozen --all-packages --group dev
-cd web
-pnpm install --frozen-lockfile
-pnpm build
-cd ..
+uv run python scripts/setup_workbench.py configure --executor-host <自己的Kali地址> --executor-user <SSH用户名>
+uv run python scripts/setup_workbench.py install
 ```
 
-Executor 代码有变化时，构建并上传；脚本会检查活动任务、验证文件哈希、安装并重启执行端：
+configure 只新建配置和独立令牌，不覆盖旧文件；install 完成本机数据库/前端及 Kali 初始化，不启动模型任务。SSH 准备步骤见[完整指南](team-setup.md)。
+
+## 日常启动
+
+保持 Docker Desktop 和 Kali 运行，双击 `start-workbench.cmd`。已有桌面 **Rexak Agent**快捷方式可继续使用。模型和 Key 在 Web“模型设置”保存，不在终端输入。
+
+控制台：<http://127.0.0.1:8770/console/>。保留启动窗口，按 `Ctrl+C`停止本次 API 和 Runner；数据库和 Kali Executor 保留运行。
+
+只检查环境，不启动 API/Runner：
+
+```powershell
+uv run python scripts/start_workbench.py --check-only
+```
+
+## 更新代码
+
+先停止启动窗口并核对活动任务，再在项目根目录执行：
+
+```powershell
+git pull
+uv sync --frozen --all-packages --group dev
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web build
+uv run workbench db-init
+```
+
+Executor 有变化时构建并部署；脚本保留配置与数据，核对文件哈希后重启。有活动任务时停止更新：
 
 ```powershell
 uv build --wheel --package workbench-executor --out-dir data/tmp/deployment
-.\.venv\Scripts\python.exe scripts/deploy_executor.py --wheel data/tmp/deployment/workbench_executor-0.1.0-py3-none-any.whl
+uv run python scripts/deploy_executor.py --wheel data/tmp/deployment/workbench_executor-0.1.0-py3-none-any.whl
 ```
 
-完成后再次双击 **Rexak Agent**。
+包版本变化时使用构建命令实际输出的 wheel 文件名。首次部署使用安装器，或给部署命令加 `--bootstrap`创建缺失的专用 venv；系统依赖仍需事先准备。完成后重新运行 `start-workbench.cmd`。
 
-## 查看启动错误
+移动仓库时，检查 `.env`中的绝对数据/备份路径。未设置时默认跟随当前仓库，需要自行迁移原数据。
 
-本机日志：`C:\xjs\rexak-agent\data\logs\launcher\`。
+## 查看错误
 
-Kali 日志：
+- 初始化日志：当前数据目录 `logs/setup/`。
+- 启动日志：当前数据目录 `logs/launcher/`。
+- Kali 日志：安装目录下的 `executor.log`，默认 `~/rexak-agent-executor/executor.log`。
 
-```bash
-tail -n 50 ~/rexak-agent-executor/executor.log
-```
-
-需要停止数据库时：
-
-```powershell
-cd C:\xjs\rexak-agent
-docker compose stop postgres
-```
-
-完整容器化和网页配置向导尚未实现；当前双击入口使用已配置的本机环境。不要运行 `docker compose down -v`，它会删除数据库卷。
+只停止数据库使用 `docker compose stop postgres`。不要将 `docker compose down -v`当作日常操作，它会删除数据库卷。

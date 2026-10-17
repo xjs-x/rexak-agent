@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # ---------- 数据根目录 ----------
     data_root: Path = REPO_ROOT / "data"
-    remote_data_root: str = "/home/kali/rexak-agent-data"
+    remote_data_root: str = "~/rexak-agent-data"
     skills_root: Path | None = None
     skill_catalog_tokens: int = Field(default=2000, ge=256, le=10000)
     skill_context_tokens: int = Field(default=12000, ge=512, le=100000)
@@ -73,11 +73,14 @@ class Settings(BaseSettings):
 
     # ---------- Executor ----------
     executor_id: str = "kali-01"
-    executor_host: str = "192.168.72.134"
+    executor_host: str = ""
     executor_port: int = 22
     executor_user: str = "kali"
-    executor_ssh_key: Path = Path("~/.xak/id_ed25519")
-    executor_known_hosts: Path = Path("~/.xak/known_hosts")
+    executor_ssh_key: Path = Path("~/.ssh/id_ed25519")
+    executor_known_hosts: Path = Path("~/.ssh/known_hosts")
+    executor_install_root: str = "~/rexak-agent-executor"
+    executor_python: str = "python3"
+    executor_pip_index_url: str = ""
     executor_remote_port: int = 8791
     executor_local_port: int = 0
     executor_token: str = "change-me-executor-token"

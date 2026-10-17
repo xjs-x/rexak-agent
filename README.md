@@ -7,7 +7,7 @@
 结束本阶段，后续输入继续沿用同一任务记录。
 
 本仓库是独立新项目，**不 import 旧 `xak` 包、不依赖旧目录存在、不继承旧数据库结构**。
-编码方案与验收口径见 `../xak-agent-rebuild-plan/`。
+架构决策见 [docs/decisions](docs/decisions/)，实现和验收状态见 [docs/implementation-status.md](docs/implementation-status.md)。新成员部署不依赖其他本地项目目录。
 
 ---
 
@@ -33,14 +33,14 @@ Runner ──模型──> 小米/后续供应商
 
 ## 2. 环境要求
 
-快速部署步骤见 [简易部署指南](docs/deployment-quickstart.md)；Executor 的配置边界与浏览器登录细节见 [P3–P5 部署说明](docs/p3-p5-deployment.md)。
+首次 clone 请按 [新成员部署指南](docs/team-setup.md)准备自己的 Kali、SSH 和本地配置；日常启动/更新见 [部署指南](docs/deployment-quickstart.md)。Executor 的配置边界与浏览器登录细节见 [P3–P5 部署说明](docs/p3-p5-deployment.md)。
 
 | 组件 | 版本 | 说明 |
 |---|---|---|
 | Python | **3.12.x** | `.python-version` 锁定 `3.12`；由 uv 管理 |
-| uv | ≥ 0.9 | 依赖与虚拟环境管理（本机安装在 `~/.workbuddy/bin/uv/uv.exe`） |
+| uv | ≥ 0.9 | 依赖与虚拟环境管理，需在 PATH 中可用 |
 | Node.js | 22 LTS | 前端构建 |
-| pnpm | ≥ 10 | 前端包管理 |
+| pnpm | 与 `web/package.json` 的 `packageManager` 一致 | 前端包管理 |
 | Docker + Compose | ≥ 27 | 仅用于本地 PostgreSQL |
 | SSH 客户端 | OpenSSH | 连接执行岛 |
 
@@ -52,24 +52,15 @@ Runner ──模型──> 小米/后续供应商
 # 1) 依赖（锁定版本，禁止未锁定的 latest）
 uv sync --frozen --all-packages --group dev
 
-# 2) 配置
-Copy-Item .env.example .env
-#    编辑 .env：数据库、控制端令牌、执行岛地址与 SSH 密钥路径
+# 2) 配置：自己的 Kali 地址；生成独立令牌，不覆盖既有 .env
+uv run python scripts/setup_workbench.py configure --executor-host <自己的Kali地址> --executor-user <SSH用户名>
 #    模型和 API Key 在启动后的 Web 模型设置中配置并保存，不写入仓库。
 
-# 3) 启动 PostgreSQL（首次）
-docker compose up -d postgres
-
-# 4) 初始化数据库：框架表（checkpoint/store）+ 业务表（Alembic）
-uv run workbench db-init
-
-# 5) 自检：进程、数据库、模型、执行岛
-uv run workbench doctor --skip-model
-uv run workbench doctor --skip-model --target-url http://127.0.0.1:8899/ --scope-file deploy/scope-local-fixture.json
+# 3) 先按新成员指南完成 SSH 认证，再安装数据库、前端和 Kali Executor
+uv run python scripts/setup_workbench.py install
 ```
 
-第二条命令从执行岛探测 DNS 与 HTTP；此处的 `127.0.0.1` 是执行岛本机。
-目标映射、登录状态与已验证能力边界见 [P3–P5 部署说明](docs/p3-p5-deployment.md)。
+首次安装不启动 Runner，不调用模型或访问目标。每人的 `.env`被 Git 忽略；修改 Kali IP 无需修改源码。目标映射、登录状态与已验证能力边界见 [P3–P5 部署说明](docs/p3-p5-deployment.md)。
 
 日常使用保留唯一启动入口：双击桌面 **Rexak Agent**，或在本项目目录运行：
 

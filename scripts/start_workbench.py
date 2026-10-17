@@ -21,6 +21,10 @@ import httpx
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from agent_workbench.config.deployment import (  # noqa: E402
+    remote_path,
+    validate_executor_connection,
+)
 from agent_workbench.config.settings import Settings, get_settings  # noqa: E402
 from agent_workbench.platform_compat import (  # noqa: E402
     child_process_env,
@@ -98,8 +102,7 @@ def check_existing_runner() -> None:
 
 
 async def ensure_executor(settings: Settings) -> None:
-    if not settings.executor_known_hosts.exists():
-        raise RuntimeError("known_hosts 不存在，拒绝未验证的 SSH 连接")
+    validate_executor_connection(settings)
     async with asyncssh.connect(
         settings.executor_host,
         port=settings.executor_port,
@@ -109,7 +112,7 @@ async def ensure_executor(settings: Settings) -> None:
         connect_timeout=15,
     ) as connection:
         async with connection.start_sftp_client() as sftp:
-            remote_root = str(await sftp.realpath(".")) + "/rexak-agent-executor"
+            remote_root = remote_path(settings.executor_install_root, str(await sftp.realpath(".")))
         remote = shlex.quote(remote_root)
         result = await connection.run(
             f"cd {remote} && .venv/bin/python executor-control.py start",

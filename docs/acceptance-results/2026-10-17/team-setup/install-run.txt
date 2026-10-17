@@ -1,0 +1,9 @@
+正在执行 database，日志：C:\Users\HP\AppData\Local\Temp\rexak-team-onboarding-c5wnaksq\data\logs\setup\database.log
+正在执行 migration，日志：C:\Users\HP\AppData\Local\Temp\rexak-team-onboarding-c5wnaksq\data\logs\setup\migration.log
+正在执行 frontend-dependencies，日志：C:\Users\HP\AppData\Local\Temp\rexak-team-onboarding-c5wnaksq\data\logs\setup\frontend-dependencies.log
+正在执行 frontend-build，日志：C:\Users\HP\AppData\Local\Temp\rexak-team-onboarding-c5wnaksq\data\logs\setup\frontend-build.log
+正在执行 executor-wheel，日志：C:\Users\HP\AppData\Local\Temp\rexak-team-onboarding-c5wnaksq\data\logs\setup\executor-wheel.log
+正在执行 executor-install，日志：C:\Users\HP\AppData\Local\Temp\rexak-team-onboarding-c5wnaksq\data\logs\setup\executor-install.log
+正在执行 check，日志：C:\Users\HP\AppData\Local\Temp\rexak-team-onboarding-c5wnaksq\data\logs\setup\check.log
+安装与连接检查完成。运行 start-workbench.cmd，在 Web 模型设置填写自己的 Key。
+本次未启动 Runner，未调用模型或访问测试目标。

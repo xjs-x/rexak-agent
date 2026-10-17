@@ -1,0 +1,167 @@
+{
+  "captured_at": "2026-10-17T10:50:47.222749+00:00",
+  "model_called": false,
+  "target_accessed": false,
+  "status": "PASS",
+  "fresh_venv_created": true,
+  "repeat_kept_config": true,
+  "repeated_boot_changed": true,
+  "installed_hashes": 23,
+  "install_check_only_passed": true,
+  "production_boot_unchanged": true,
+  "local_env_unchanged": true,
+  "trusted": "trusted",
+  "first_install": {
+    "captured_at_utc": "2026-10-17T10:52:13.555464+00:00",
+    "remote_release": "/home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105115775738Z",
+    "remote_install_root": "/home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8",
+    "created_venv": true,
+    "wheel_sha256": "c99ab262b41627c411ecc21acf9889188db478662c6359dc0e2cd22c588753ae",
+    "uploaded_files_verified": 28,
+    "installed_source_sha256": {
+      "__init__.py": "66e58bcd51af3a4fc566a365fb8e2ac27ce611d8304add3f0a53c2d4c7dbe814",
+      "__main__.py": "e9ffc5647c7a7fecb9630764e381ca62d065ac6ce48a708c3a91ad7cd85547f1",
+      "_generated/__init__.py": "96a4960423ffedf30c3e800d4a6e315c1773c9700b4bd535330b96c9702364d4",
+      "_generated/contracts/__init__.py": "96a4960423ffedf30c3e800d4a6e315c1773c9700b4bd535330b96c9702364d4",
+      "_generated/contracts/execution_runtime.py": "5e834db687a9c2c01ff0b3c03655e17af6cd4481a436253255350549a3f37037",
+      "_generated/contracts/skill_package.py": "41e473494707ac21c987dc3143d8170d134f5555b9ac5288a50b468a8a18ed5a",
+      "api.py": "920fb54f3326555bd78df3a5b83043822aab6c7fab295c13e6ee5bee72c602c7",
+      "browser.py": "a776670155580f3389b9cf0f8d251b53edd0c4871d87335714106f8f548235ef",
+      "command_runtime.py": "0091fc9a77f5be17b56bf13296ac7cbbf433322fc1b8e3c7921b6a5cd7324925",
+      "execution_api.py": "b22046dae5f8c389ce0ba7dc5b5d2f00dd5e11adfa32df56b3440bb7c591810f",
+      "execution_environment.py": "8253237c9499171d66ff2c67c2ad6d9d5ac528d3a7dbe08c632eef69d13525a5",
+      "filesystem.py": "f78a5a10d3d7bfd486e80884b3930420e39e22d335e6ba07af4eb1ac91828f2e",
+      "http_encoding.py": "f0819f656df6a6d58464fe0c862c5ceb092b03103a539364f65f74eb93835554",
+      "http_sessions.py": "a19512a9f9c49c942d46dd747ca598b104a6bf95f4e60c67e8fc3fe50d1bf3a4",
+      "job_worker.py": "8d7409c31030cb28483c1f194e841a42a11351778d7220f90ba300cca2bb2847",
+      "ledger.py": "b21f76d203d97ebfa412125aafe4477940a88a102925850fb9d165e23c425863",
+      "output_store.py": "11fd21e06f471dda60da85b1b6d7781346603a009ea34d8746819346cf02126a",
+      "policy.py": "4f291d5118e4b5bceec17f251b8a90702b8d2d2963a8832df7ba8f3eb0eddcf6",
+      "processes.py": "1f098445e4ba1a49a0e5490b29dd6543904e3eaa294f43d28d7f2f557a42d80c",
+      "settings.py": "10ed4da5a2606caaa4618a81b6b68004db3b01c576c4489f23b6afcd9094473e",
+      "skill_packages.py": "7a37836fe9a15f6cd6ab7a86889c5e70328cc47e02305c457e9146b5abc76685",
+      "terminals.py": "f4eee656191aecd5bdeaf621e7605318a8aa34e94f3536dcf337710fe167f80f",
+      "watch.py": "26c329d4ecc09173fcec832d477db7c530b1233ce6720699f6ae38f07dd76102"
+    },
+    "previous_boot_id": null,
+    "boot_id": "2719725-33d6a309410c",
+    "executor_identity_matches": true,
+    "active_jobs": 0,
+    "protocol_version": 1,
+    "body_modes": [
+      "raw",
+      "json",
+      "form",
+      "multipart"
+    ],
+    "execution": {
+      "execution_mode": "trusted",
+      "execution_runtime_versions": [
+        1
+      ],
+      "command": "available",
+      "script": "available",
+      "pty": "available",
+      "screen": "available",
+      "monitor": "available",
+      "durable_events": "available",
+      "detached_job_recovery": "available",
+      "skill_packages": "available",
+      "output_limit_actions": [
+        "preserve_process",
+        "terminate"
+      ],
+      "workspace_storage_enforcement": "accounting_only",
+      "dependencies": {
+        "pyte": "0.8.2"
+      },
+      "unavailable_reasons": {},
+      "notes": [
+        "detached_job_recovery：非交互任务由独立包装进程承载，服务重启不影响其运行。",
+        "interactive PTY 在 Executor 重启后会失去交互能力：保留记录、核对残留进程，不自动重建。"
+      ]
+    },
+    "pip_check": "passed",
+    "real_target_testing_performed": false,
+    "real_model_call_performed": false
+  },
+  "repeat_install": {
+    "captured_at_utc": "2026-10-17T10:52:50.943362+00:00",
+    "remote_release": "/home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8/releases/20261017T105232450459Z",
+    "remote_install_root": "/home/kali/rexak-onboarding-fixture-74c7e9fb06244d7ea76f433c48aa2ba8",
+    "created_venv": false,
+    "wheel_sha256": "c99ab262b41627c411ecc21acf9889188db478662c6359dc0e2cd22c588753ae",
+    "uploaded_files_verified": 28,
+    "installed_source_sha256": {
+      "__init__.py": "66e58bcd51af3a4fc566a365fb8e2ac27ce611d8304add3f0a53c2d4c7dbe814",
+      "__main__.py": "e9ffc5647c7a7fecb9630764e381ca62d065ac6ce48a708c3a91ad7cd85547f1",
+      "_generated/__init__.py": "96a4960423ffedf30c3e800d4a6e315c1773c9700b4bd535330b96c9702364d4",
+      "_generated/contracts/__init__.py": "96a4960423ffedf30c3e800d4a6e315c1773c9700b4bd535330b96c9702364d4",
+      "_generated/contracts/execution_runtime.py": "5e834db687a9c2c01ff0b3c03655e17af6cd4481a436253255350549a3f37037",
+      "_generated/contracts/skill_package.py": "41e473494707ac21c987dc3143d8170d134f5555b9ac5288a50b468a8a18ed5a",
+      "api.py": "920fb54f3326555bd78df3a5b83043822aab6c7fab295c13e6ee5bee72c602c7",
+      "browser.py": "a776670155580f3389b9cf0f8d251b53edd0c4871d87335714106f8f548235ef",
+      "command_runtime.py": "0091fc9a77f5be17b56bf13296ac7cbbf433322fc1b8e3c7921b6a5cd7324925",
+      "execution_api.py": "b22046dae5f8c389ce0ba7dc5b5d2f00dd5e11adfa32df56b3440bb7c591810f",
+      "execution_environment.py": "8253237c9499171d66ff2c67c2ad6d9d5ac528d3a7dbe08c632eef69d13525a5",
+      "filesystem.py": "f78a5a10d3d7bfd486e80884b3930420e39e22d335e6ba07af4eb1ac91828f2e",
+      "http_encoding.py": "f0819f656df6a6d58464fe0c862c5ceb092b03103a539364f65f74eb93835554",
+      "http_sessions.py": "a19512a9f9c49c942d46dd747ca598b104a6bf95f4e60c67e8fc3fe50d1bf3a4",
+      "job_worker.py": "8d7409c31030cb28483c1f194e841a42a11351778d7220f90ba300cca2bb2847",
+      "ledger.py": "b21f76d203d97ebfa412125aafe4477940a88a102925850fb9d165e23c425863",
+      "output_store.py": "11fd21e06f471dda60da85b1b6d7781346603a009ea34d8746819346cf02126a",
+      "policy.py": "4f291d5118e4b5bceec17f251b8a90702b8d2d2963a8832df7ba8f3eb0eddcf6",
+      "processes.py": "1f098445e4ba1a49a0e5490b29dd6543904e3eaa294f43d28d7f2f557a42d80c",
+      "settings.py": "10ed4da5a2606caaa4618a81b6b68004db3b01c576c4489f23b6afcd9094473e",
+      "skill_packages.py": "7a37836fe9a15f6cd6ab7a86889c5e70328cc47e02305c457e9146b5abc76685",
+      "terminals.py": "f4eee656191aecd5bdeaf621e7605318a8aa34e94f3536dcf337710fe167f80f",
+      "watch.py": "26c329d4ecc09173fcec832d477db7c530b1233ce6720699f6ae38f07dd76102"
+    },
+    "previous_boot_id": "2719725-33d6a309410c",
+    "boot_id": "2720139-60d47b718755",
+    "executor_identity_matches": true,
+    "active_jobs": 0,
+    "protocol_version": 1,
+    "body_modes": [
+      "raw",
+      "json",
+      "form",
+      "multipart"
+    ],
+    "execution": {
+      "execution_mode": "trusted",
+      "execution_runtime_versions": [
+        1
+      ],
+      "command": "available",
+      "script": "available",
+      "pty": "available",
+      "screen": "available",
+      "monitor": "available",
+      "durable_events": "available",
+      "detached_job_recovery": "available",
+      "skill_packages": "available",
+      "output_limit_actions": [
+        "preserve_process",
+        "terminate"
+      ],
+      "workspace_storage_enforcement": "accounting_only",
+      "dependencies": {
+        "pyte": "0.8.2"
+      },
+      "unavailable_reasons": {},
+      "notes": [
+        "detached_job_recovery：非交互任务由独立包装进程承载，服务重启不影响其运行。",
+        "interactive PTY 在 Executor 重启后会失去交互能力：保留记录、核对残留进程，不自动重建。"
+      ]
+    },
+    "pip_check": "passed",
+    "real_target_testing_performed": false,
+    "real_model_call_performed": false
+  },
+  "pip_index": "https://pypi.tuna.tsinghua.edu.cn/simple",
+  "remote_fixture_removed": true,
+  "fixture_database_removed": true,
+  "checked_out_commit_before_amend": "e63787397c185caff9b20bf34bd7662390025c1b",
+  "source_note": "Tested worktree included uncommitted onboarding validation fixes; canonical source hashes are in source-sha256.json"
+}
