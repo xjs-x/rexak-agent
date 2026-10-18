@@ -14,8 +14,10 @@ import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 from langchain.agents import create_agent
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
 
@@ -48,6 +50,8 @@ from agent_workbench.persistence.bootstrap import (
     open_checkpointer_connection,
     open_store_connection,
 )
+from agent_workbench.persistence.db import Database
+from agent_workbench.runtime.checkpoint_fencing import FencedCheckpointSaver
 from agent_workbench.tools.registry import ToolSelection, build_tools, default_selection
 
 CODE_VERSION = "dev"
@@ -58,7 +62,7 @@ class AgentRuntime:
     """已装配好的图 + 其资源句柄。"""
 
     graph: Any
-    checkpointer: AsyncPostgresSaver
+    checkpointer: BaseCheckpointSaver
     store: AsyncPostgresStore
     binding: ModelBinding
     prompt_version: str
@@ -140,6 +144,12 @@ async def open_agent_runtime(
     selection: ToolSelection | None = None,
     price_catalog: PriceCatalog | None = None,
     secret_store: SecretStore | None = None,
+    thread_id: str | None = None,
+    run_id: UUID | None = None,
+    database: Database | None = None,
+    owner_generation: int = 0,
+    control_version: int = 0,
+    writer_epoch: int = 0,
 ) -> AsyncIterator[AgentRuntime]:
     """构建并持有一次进程运行期需要的 Agent 资源。
 
@@ -165,7 +175,19 @@ async def open_agent_runtime(
     async with contextlib.AsyncExitStack() as stack:
         checkpointer_conn = await stack.enter_async_context(open_checkpointer_connection(cfg))
         store_conn = await stack.enter_async_context(open_store_connection(cfg))
-        checkpointer = AsyncPostgresSaver(checkpointer_conn)
+        checkpointer: BaseCheckpointSaver = AsyncPostgresSaver(checkpointer_conn)
+        if run_id is not None:
+            if database is None or thread_id is None:
+                raise ValueError("fenced checkpointer 需要 database 与 thread_id")
+            checkpointer = FencedCheckpointSaver(
+                checkpointer,
+                database,
+                run_id=run_id,
+                thread_id=thread_id,
+                owner_generation=owner_generation,
+                control_version=control_version,
+                writer_epoch=writer_epoch,
+            )
         store = AsyncPostgresStore(store_conn)
         # 注意：`setup()` 只由 `workbench db-init` 执行；这里不重复建表。
 

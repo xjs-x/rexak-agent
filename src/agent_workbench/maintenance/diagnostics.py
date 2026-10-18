@@ -107,6 +107,14 @@ OPTIONAL_COLUMNS: dict[Any, tuple[str, ...]] = {
         "connection_review",
         "content_hash",
     ),
+    # P0 provenance fields are absent on baseline databases; export must list them
+    # as missing instead of failing or fabricating values.
+    ArtifactRow: (
+        "export_tool_call_id",
+        "producer_kind",
+        "source_trust",
+        "resolution_status",
+    ),
 }
 OPTIONAL_FIELD_NAMES = frozenset(
     field for columns in OPTIONAL_COLUMNS.values() for field in columns
@@ -449,7 +457,7 @@ async def collect_run_diagnostic(
             audit_artifacts = (
                 (
                     await session.execute(
-                        select(ArtifactRow).where(
+                        projection(ArtifactRow).where(
                             ArtifactRow.session_id == run.session_id,
                             ArtifactRow.summary.in_(
                                 [
@@ -468,7 +476,7 @@ async def collect_run_diagnostic(
         artifacts = (
             (
                 await session.execute(
-                    select(ArtifactRow)
+                    projection(ArtifactRow)
                     .where(
                         (
                             ArtifactRow.id.in_(artifact_ids)

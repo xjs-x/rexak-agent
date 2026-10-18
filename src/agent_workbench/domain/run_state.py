@@ -25,7 +25,7 @@ from agent_workbench.contracts.enums import (
     RunStatus,
 )
 from agent_workbench.contracts.errors import ApiError
-from agent_workbench.persistence.tables import RunRow, SessionRow
+from agent_workbench.persistence.tables import CheckpointHeadRow, RunRow, SessionRow
 
 # --------------------------------------------------------------------------- #
 # 合法状态迁移
@@ -259,6 +259,23 @@ async def bump_control_version(session: AsyncSession, *, run_id: UUID) -> int:
     row = await _lock_run(session, run_id)
     row.control_version = int(row.control_version) + 1
     await session.flush()
+    # 控制版本变化必须同时撤销旧的 writer epoch；否则旧 Saver 仍可写入。
+    session_row = await session.get(SessionRow, row.session_id)
+    if session_row is not None:
+        head = (
+            await session.execute(
+                select(CheckpointHeadRow)
+                .where(
+                    CheckpointHeadRow.thread_id == session_row.thread_id,
+                    CheckpointHeadRow.checkpoint_ns == "",
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if head is not None:
+            head.writer_epoch = int(head.writer_epoch) + 1
+            head.owner_generation = int(row.owner_generation)
+            head.control_version = int(row.control_version)
     return int(row.control_version)
 
 

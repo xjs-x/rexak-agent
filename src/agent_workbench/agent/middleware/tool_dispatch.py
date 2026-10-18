@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from uuid import UUID
 
 import structlog
 from langchain.agents.middleware import AgentMiddleware
@@ -24,6 +25,7 @@ from agent_workbench.agent.signals import StaleResponseError
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.contracts.enums import RunStatus
 from agent_workbench.contracts.events import EventType
+from agent_workbench.domain.integrations import canonical_request_hash, record_integration
 from agent_workbench.domain.run_state import is_current_owner
 from agent_workbench.observability.events import append_event
 from agent_workbench.persistence.tables import RunRow, ToolOperationRow
@@ -285,10 +287,64 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 "用户在此期间改变了方向；请基于最新状态重新决策。",
             )
         except Exception as exc:
+            if tool_name in {"record_lead", "record_weakness"}:
+                await self._record_rejected_integration(
+                    toolbox, tool_name, tool_call, args, exc
+                )
             return _tool_message(request, _render_tool_failure(tool_name, exc))
         finally:
             toolbox.bump(f"tool:{tool_name}")
             toolbox.bump("segment_work_units")
+
+    @staticmethod
+    async def _record_rejected_integration(
+        toolbox: Any,
+        tool_name: str,
+        tool_call: dict[str, Any],
+        args: dict[str, Any],
+        exc: Exception,
+    ) -> None:
+        """工具事务已回滚后，用独立事务留下被拒绝的整合回执。"""
+        entity_kind = "lead" if tool_name == "record_lead" else "weakness"
+        raw_entity = args.get("lead_id") or args.get("weakness_id")
+        entity_id: UUID | None = None
+        if raw_entity:
+            try:
+                entity_id = UUID(str(raw_entity))
+            except ValueError:
+                entity_id = None
+        source_tool_call_id = str(tool_call.get("id") or "")
+        if not source_tool_call_id:
+            return
+        try:
+            request_hash = canonical_request_hash(
+                action=tool_name,
+                arguments=args,
+                session_id=toolbox.session_id,
+                run_id=toolbox.run_id,
+            )
+            async with toolbox.db.transaction() as db:
+                await record_integration(
+                    db,
+                    session_id=toolbox.session_id,
+                    run_id=toolbox.run_id,
+                    entity_kind=entity_kind,
+                    entity_id=entity_id,
+                    action=tool_name,
+                    source_tool_call_id=source_tool_call_id,
+                    request_hash=request_hash,
+                    status="rejected",
+                    error_code=str(getattr(exc, "code", type(exc).__name__)),
+                    error_detail=str(exc)[:2000],
+                    retryable=False,
+                )
+        except Exception as record_exc:
+            # 审计回执失败不能覆盖原始工具错误；只记录实现故障。
+            log.warning(
+                "domain_integration_receipt_failed",
+                tool=tool_name,
+                error_type=type(record_exc).__name__,
+            )
 
     @staticmethod
     async def _emit_stale_block(

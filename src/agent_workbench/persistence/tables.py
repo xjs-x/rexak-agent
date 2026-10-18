@@ -649,10 +649,208 @@ class ArtifactRow(TimestampMixin, Base):
     #: 报告与有效发现引用的工件不能被普通清理任务删除
     protected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 产生该工件的本地工具调用（例如 export_execution_output 的 tool_call_id）。
+    #: 本地工具没有 Executor operation_id，不能把两者混为一谈。
+    export_tool_call_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: execution_output / history_archive / report / import / unknown
+    producer_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    #: ledger / derived / imported / unresolved
+    source_trust: Mapped[str] = mapped_column(String(32), nullable=False, default="unresolved")
+    #: resolved / legacy_unresolved / ambiguous
+    resolution_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unresolved"
+    )
 
     __table_args__ = (
         Index("ix_artifacts_source_operation", "source_operation_id"),
         Index("ix_artifacts_hash", "sha256"),
+        Index("ix_artifacts_export_call", "export_tool_call_id"),
+        Index("ix_artifacts_resolution", "resolution_status", "producer_kind"),
+    )
+
+
+class ArtifactProvenanceRow(TimestampMixin, Base):
+    """工件的来源断言：一个工件可以对应多个产生操作区间。
+
+    只记录“这些字节来自哪里”，不把输出内容当成事实。一个导出调用
+    （`export_tool_call_id`）与真正产生字节的 Executor 操作
+    （`origin_operation_id`）必须分开。
+    """
+
+    __tablename__ = "artifact_provenance"
+
+    provenance_id: Mapped[uuid.UUID] = _uuid_pk()
+    artifact_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.artifacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provenance_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    segment_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    export_tool_call_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    origin_operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    origin_run_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    resource_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    stream: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    artifact_byte_start: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    artifact_byte_end: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_byte_start: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_byte_end: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    identity_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    identity_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    connection_origin: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: execution_output / history_archive / report / import / derived
+    producer_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: ledger / derived / imported / unresolved
+    source_trust: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: resolved / legacy_unresolved / ambiguous
+    resolution_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: receipt_verified / ledger_verified / imported / legacy
+    confidence: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: unknown / complete / partial；只描述已存区间，不推断完整输出无丢失
+    total_stream_completeness: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unknown"
+    )
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "artifact_id",
+            "provenance_revision",
+            "segment_no",
+            name="uq_artifact_provenance_segment",
+        ),
+        CheckConstraint(
+            "artifact_byte_start >= 0 AND artifact_byte_end > artifact_byte_start",
+            name="artifact_range_valid",
+        ),
+        CheckConstraint(
+            "source_byte_start IS NULL OR source_byte_end > source_byte_start",
+            name="source_range_valid",
+        ),
+        Index("ix_artifact_provenance_origin", "origin_operation_id"),
+        Index("ix_artifact_provenance_resource", "resource_id"),
+        Index("ix_artifact_provenance_export", "export_tool_call_id"),
+    )
+
+
+class ArtifactLinkRow(TimestampMixin, Base):
+    """归档/报告与原始工件之间的有类型引用。"""
+
+    __tablename__ = "artifact_links"
+
+    link_id: Mapped[uuid.UUID] = _uuid_pk()
+    from_artifact_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.artifacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    to_artifact_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.artifacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: derived_from / archive_of / report_of
+    link_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "from_artifact_id", "to_artifact_id", "link_kind", name="uq_artifact_link"
+        ),
+        CheckConstraint("from_artifact_id <> to_artifact_id", name="artifact_link_not_self"),
+        Index("ix_artifact_links_to", "to_artifact_id", "link_kind"),
+    )
+
+
+class DomainIntegrationRow(TimestampMixin, Base):
+    """一次业务整合尝试的窄回执；不保存计划状态。"""
+
+    __tablename__ = "domain_integrations"
+
+    integration_id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    entity_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_tool_call_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: pending / integrated / retryable / conflict / rejected / superseded
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retryable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    result_event_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    successful_domain_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    success_outbox_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "action", "request_hash", name="uq_domain_integration_request"
+        ),
+        UniqueConstraint(
+            "session_id", "action", "source_tool_call_id", name="uq_domain_integration_call"
+        ),
+        Index("ix_domain_integrations_entity", "entity_kind", "entity_id"),
+        Index("ix_domain_integrations_status", "status"),
+    )
+
+
+class CheckpointHeadRow(Base):
+    """已接受的 checkpoint head；用于 writer fencing 与恢复选择。"""
+
+    __tablename__ = "checkpoint_heads"
+
+    thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    checkpoint_ns: Mapped[str] = mapped_column(Text, primary_key=True, default="")
+    accepted_checkpoint_id: Mapped[str] = mapped_column(Text, nullable=False)
+    writer_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    owner_generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    control_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CheckpointWriteReceiptRow(Base):
+    """pending writes 的 fencing 旁路收据；不推进 accepted head。"""
+
+    __tablename__ = "checkpoint_write_receipts"
+
+    receipt_id: Mapped[uuid.UUID] = _uuid_pk()
+    thread_id: Mapped[str] = mapped_column(Text, nullable=False)
+    checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    checkpoint_id: Mapped[str] = mapped_column(Text, nullable=False)
+    task_id: Mapped[str] = mapped_column(Text, nullable=False)
+    write_key: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    writer_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    owner_generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    control_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "thread_id",
+            "checkpoint_ns",
+            "checkpoint_id",
+            "task_id",
+            "write_key",
+            name="uq_checkpoint_write_receipt",
+        ),
+        Index(
+            "ix_checkpoint_write_receipts_head",
+            "thread_id",
+            "checkpoint_ns",
+            "checkpoint_id",
+        ),
     )
 
 

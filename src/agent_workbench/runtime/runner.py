@@ -59,7 +59,7 @@ from agent_workbench.observability.logging import get_logger
 from agent_workbench.observability.spans import SpanRecorder
 from agent_workbench.persistence.bootstrap import open_checkpointer_connection
 from agent_workbench.persistence.db import Database, get_database
-from agent_workbench.persistence.tables import RunRow, SessionRow
+from agent_workbench.persistence.tables import CheckpointHeadRow, RunRow, SessionRow
 from agent_workbench.tools.registry import default_selection
 from agent_workbench.tools.runtime import ResourceLocks, Toolbox
 
@@ -708,11 +708,22 @@ class AgentRunner:
             async with self._db.transaction() as db:
                 price_catalog = await price_catalog_for_run(db, run.id)
             binding = await self._capture_model_binding(run)
+            async with self._db.session() as db:
+                head = await db.get(
+                    CheckpointHeadRow, (session_row.thread_id, "")
+                )
+                writer_epoch = int(head.writer_epoch) if head is not None else 0
             runtime_ctx = open_agent_runtime(
                 settings=settings,
                 selection=selection,
                 price_catalog=price_catalog,
                 binding=binding,
+                thread_id=session_row.thread_id,
+                run_id=run.id,
+                database=self._db,
+                owner_generation=int(generation),
+                control_version=int(run.control_version),
+                writer_epoch=writer_epoch,
             )
             runtime = await runtime_ctx.__aenter__()
         except Exception as exc:

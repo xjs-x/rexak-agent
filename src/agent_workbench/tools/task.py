@@ -25,6 +25,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import Command
+from sqlalchemy import select
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.focus import focus_signature, resolve_focus
@@ -41,7 +42,9 @@ from agent_workbench.contracts.weaknesses import (
     WeaknessRelationRef,
 )
 from agent_workbench.domain.assets import record_asset
+from agent_workbench.domain.evidence import EvidenceUse, resolve_evidence
 from agent_workbench.domain.findings import CoverageService, FindingService
+from agent_workbench.domain.integrations import record_integration
 from agent_workbench.domain.leads import LeadService, lead_summary
 from agent_workbench.domain.observations import record_observation_ref
 from agent_workbench.domain.weakness_relations import refute_links, upsert_links
@@ -400,19 +403,11 @@ async def record_lead(
             return json.dumps(operation.row.result_snapshot, ensure_ascii=False, sort_keys=True)
         if observation_summary and not evidence_refs:
             raise ValueError("关键观察必须引用真实可用工件")
+        resolution = None
         if evidence_refs:
-            from agent_workbench.persistence.tables import ArtifactRow
-
-            for ref in evidence_refs:
-                artifact = await db.get(ArtifactRow, UUID(ref))
-                if (
-                    artifact is None
-                    or artifact.session_id != toolbox.session_id
-                    or artifact.source_operation_id is None
-                    or artifact.availability != "available"
-                    or not toolbox.artifacts.verify(artifact.relative_key, artifact.sha256)
-                ):
-                    raise ValueError("线索证据必须为当前会话真实工具工件")
+            resolution = await resolve_evidence(
+                db, toolbox, [str(item) for item in evidence_refs], use=EvidenceUse.LEAD
+            )
         asset_id: UUID | None = None
         asset_note: str | None = None
         evidence_context = await _evidence_operation_context(
@@ -505,6 +500,18 @@ async def record_lead(
         if merge_into_id:
             row = await service.merge(toolbox.session_id, row.id, UUID(merge_into_id))
             payload = lead_summary(row)
+        await record_integration(
+            db,
+            session_id=toolbox.session_id,
+            run_id=toolbox.run_id,
+            entity_kind="lead",
+            entity_id=row.id,
+            action="record_lead",
+            source_tool_call_id=tool_call_id,
+            request_hash=operation.row.request_digest,
+            status="integrated",
+            successful_domain_revision=int(row.revision),
+        )
         result = {
             "ok": True,
             "lead": payload,
@@ -514,6 +521,17 @@ async def record_lead(
             "evidence_source_operation_ids": evidence_context["source_operation_ids"],
             "evidence_source_ambiguous": evidence_context["ambiguous"],
             "asset_note": asset_note,
+            "evidence_resolution": (
+                {
+                    "trust": resolution.trust,
+                    "resolution": resolution.resolution,
+                    "legacy": resolution.legacy,
+                    "independent_operations": resolution.independent_operations,
+                    "origin_operation_ids": [str(item) for item in resolution.origin_operation_ids],
+                }
+                if resolution is not None
+                else None
+            ),
         }
         operation.row.result_snapshot = result
         operation.row.status = "succeeded"
@@ -1194,14 +1212,34 @@ async def _evidence_operation_context(
     - 否则从证据工件的 `source_operation_id` 推导，且**只在唯一时**采用；
     - 存在多个来源/多个方法时保留证据引用集合，**不任意选最后一次操作**作为全部来源。
     """
-    from agent_workbench.persistence.tables import ArtifactRow, ToolOperationRow
+    from agent_workbench.persistence.tables import (
+        ArtifactProvenanceRow,
+        ArtifactRow,
+        ToolOperationRow,
+    )
 
     operation_ids: list[UUID] = []
     for ref in evidence_refs:
         artifact = await db.get(ArtifactRow, UUID(ref))
-        if (
-            artifact is not None
-            and artifact.source_operation_id is not None
+        if artifact is None:
+            continue
+        provenance = list(
+            (
+                await db.execute(
+                    select(ArtifactProvenanceRow).where(
+                        ArtifactProvenanceRow.artifact_id == artifact.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if provenance:
+            for row in provenance:
+                if row.origin_operation_id is not None and row.origin_operation_id not in operation_ids:
+                    operation_ids.append(row.origin_operation_id)
+        elif (
+            artifact.source_operation_id is not None
             and artifact.source_operation_id not in operation_ids
         ):
             operation_ids.append(artifact.source_operation_id)

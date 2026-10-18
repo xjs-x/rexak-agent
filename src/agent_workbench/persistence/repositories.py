@@ -558,6 +558,10 @@ class ArtifactRepository:
         captured_by_identity: str | None = None,
         source_url: str | None = None,
         summary: str | None = None,
+        export_tool_call_id: str | None = None,
+        producer_kind: str = "unknown",
+        source_trust: str = "unresolved",
+        resolution_status: str = "unresolved",
     ) -> ArtifactRow:
         row = ArtifactRow(
             id=artifact_id or uuid4(),
@@ -574,6 +578,10 @@ class ArtifactRepository:
             captured_by_identity=captured_by_identity,
             source_url=source_url,
             summary=summary,
+            export_tool_call_id=export_tool_call_id,
+            producer_kind=producer_kind,
+            source_trust=source_trust,
+            resolution_status=resolution_status,
         )
         self._s.add(row)
         await self._s.flush()

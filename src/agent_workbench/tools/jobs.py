@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any
-from uuid import UUID, uuid5
+from typing import Annotated, Any
+from uuid import UUID, uuid4, uuid5
 
 from langchain.tools import ToolRuntime
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolCallId, tool
 from sqlalchemy import select
 
 from agent_workbench.agent.context import RunContext
@@ -30,10 +30,16 @@ from agent_workbench.execution.client import (
     ExecutorRejected,
 )
 from agent_workbench.persistence.repositories import (
+    ArtifactRepository,
     ExecutionResourceRepository,
     ToolJobRepository,
 )
-from agent_workbench.persistence.tables import ExecutionResourceRow, RunRow, ToolOperationRow
+from agent_workbench.persistence.tables import (
+    ArtifactProvenanceRow,
+    ExecutionResourceRow,
+    RunRow,
+    ToolOperationRow,
+)
 from agent_workbench.tools.execution_dispatch import (
     build_envelope,
     dispatch_operation,
@@ -527,8 +533,12 @@ def json_dumps(payload: object) -> str:
 
 @tool("export_execution_output")
 async def export_execution_output(
-    runtime: ToolRuntime[RunContext], job_id: str, stream: str = "stdout",
-    offset: int = 0, limit: int = 262144,
+    runtime: ToolRuntime[RunContext],
+    job_id: str,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+    stream: str = "stdout",
+    offset: int = 0,
+    limit: int = 262144,
 ) -> str:
     """将原始输出的一个区间保存为不可变证据工件（含非法 UTF-8 字节）。
 
@@ -541,9 +551,12 @@ async def export_execution_output(
     import base64
     import hashlib
 
-    from agent_workbench.persistence.repositories import ArtifactRepository
-
     toolbox = runtime.context.toolbox
+    export_call_id = (
+        tool_call_id
+        or str(getattr(runtime, "tool_call_id", "") or "")
+        or f"export-{uuid4()}"
+    )
     resolved = await _resolve_job_id(toolbox, job_id)
     snapshot = await toolbox.executor.execution_raw_output(
         str(resolved), session_id=str(toolbox.session_id), stream=stream,
@@ -554,7 +567,12 @@ async def export_execution_output(
         raise ExecutorProtocolError("原始日志快照 hash 不匹配")
     stored = toolbox.artifacts.write_bytes(data, media_type="application/octet-stream")
     artifact_id = uuid5(toolbox.session_id, f"execution-output:{resolved}:{stream}:{offset}:{stored.sha256}")
+    captured_at = _parse_executor_time(snapshot.get("captured_at"))
     async with toolbox.db.transaction() as db:
+        resource = await db.get(ExecutionResourceRow, resolved)
+        origin_operation_id = resource.origin_operation_id if resource is not None else None
+        origin_run_id = resource.origin_run_id if resource is not None else None
+        executor_id = resource.executor_id if resource is not None else None
         repository = ArtifactRepository(db)
         if await repository.get(artifact_id) is None:
             await repository.create(
@@ -563,9 +581,62 @@ async def export_execution_output(
                 session_id=toolbox.session_id, source_operation_id=None,
                 sensitivity="internal", availability="available", captured_at=stored.captured_at,
                 summary=f"资源 {resolved} {stream} 已存字节 {offset}:{snapshot['next_offset']} 的不可变快照",
+                export_tool_call_id=export_call_id,
+                producer_kind="execution_output",
+                source_trust="ledger" if origin_operation_id is not None else "unresolved",
+                resolution_status="resolved" if origin_operation_id is not None else "ambiguous",
+            )
+        existing_provenance = (
+            await db.execute(
+                select(ArtifactProvenanceRow).where(
+                    ArtifactProvenanceRow.artifact_id == artifact_id,
+                    ArtifactProvenanceRow.provenance_revision == 1,
+                    ArtifactProvenanceRow.segment_no == 0,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_provenance is None:
+            db.add(
+                ArtifactProvenanceRow(
+                    artifact_id=artifact_id,
+                    provenance_revision=1,
+                    segment_no=0,
+                    export_tool_call_id=export_call_id,
+                    origin_operation_id=origin_operation_id,
+                    origin_run_id=origin_run_id,
+                    resource_id=resolved,
+                    stream=stream,
+                    artifact_byte_start=0,
+                    artifact_byte_end=stored.byte_size,
+                    source_byte_start=max(0, offset),
+                    source_byte_end=int(snapshot["next_offset"]),
+                    snapshot_hash=stored.sha256,
+                    identity_id=None,
+                    identity_revision=None,
+                    connection_origin=(
+                        {"executor_id": executor_id} if executor_id is not None else {}
+                    ),
+                    producer_kind="execution_output",
+                    source_trust="ledger" if origin_operation_id is not None else "unresolved",
+                    resolution_status="resolved" if origin_operation_id is not None else "ambiguous",
+                    confidence="receipt_verified" if origin_operation_id is not None else "legacy",
+                    total_stream_completeness="unknown",
+                    captured_at=captured_at,
+                )
             )
     return _result({**{k: v for k, v in snapshot.items() if k != "data_base64"},
                     "artifact_id": str(artifact_id)}, "原始日志区间已保存为不可变工件", resolved)
+
+
+def _parse_executor_time(raw: Any) -> datetime:
+    """Executor 快照时间与工件登记时间分开保存；解析失败时明确回退。"""
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+        except ValueError:
+            pass
+    return datetime.now(UTC)
 
 
 JOB_TOOLS = [get_job, read_job_output, cancel_job, export_execution_output]

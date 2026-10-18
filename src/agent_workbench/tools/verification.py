@@ -14,8 +14,15 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import InjectedToolCallId, tool
 
 from agent_workbench.agent.context import RunContext
-from agent_workbench.contracts.enums import OperationStatus
+from agent_workbench.contracts.enums import FindingStatus, OperationStatus
 from agent_workbench.contracts.errors import ApiError
+from agent_workbench.domain.evidence import EvidencePolicyError, EvidenceUse, resolve_evidence
+from agent_workbench.domain.verification_recipes import (
+    RECIPES,
+    RecipeOutcome,
+    evaluate_recipe,
+    parse_checks,
+)
 from agent_workbench.domain.verifiers import (
     confirm_public_git_head,
     preflight_public_git_head,
@@ -23,6 +30,7 @@ from agent_workbench.domain.verifiers import (
 )
 from agent_workbench.observability.logging import get_logger
 from agent_workbench.observability.spans import Span, SpanRecorder
+from agent_workbench.persistence.tables import ArtifactRow, FindingRow
 from agent_workbench.tools.http import HttpRequestArgs, run_http_request
 from agent_workbench.tools.runtime import Toolbox
 
@@ -212,4 +220,209 @@ async def _verify_public_git_head_workflow(
     )
 
 
-VERIFICATION_TOOLS = [verify_public_git_head]
+@tool("verify_finding")
+async def verify_finding(
+    runtime: ToolRuntime[RunContext],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    finding_id: str,
+    recipe_id: str,
+    evidence_refs_json: list[str] | str,
+    checks_json: list[dict[str, Any]] | str,
+    claim_scope_json: dict[str, Any] | str | None = None,
+    statistics_json: dict[str, Any] | str | None = None,
+) -> str:
+    """用确定性 recipe 复核候选发现；只有 pass 才写 Verification 并提升 Finding。
+
+    Args:
+        finding_id: 当前会话的候选发现 ID。
+        recipe_id: command_echo / sentinel_read / identity_boundary /
+            paired_difference / public_read / default_login。
+        evidence_refs_json: 证据工件 ID 数组；必须来自当前会话且有 ledger provenance。
+        checks_json: 判据数组。每项
+            `{"artifact_id": "...", "role": "initial|recheck|control|...",
+              "must_match": ["正则"], "must_not_match": ["正则"], "sha256": "可选"}`。
+        claim_scope_json: 本次结论的适用范围（目标、身份、路径、条件），不会自动扩大。
+        statistics_json: 仅 paired_difference 使用；`{"pairs":[{"baseline":..,"treatment":..}],
+            "delta":..,"min_pairs":20}`，由工具重新计算效应与区间。
+
+    Returns:
+        `verified=true` 仅表示 recipe 的预登记判据与负对照通过，不表示影响范围外也成立。
+    """
+    from agent_workbench.domain.findings import VerificationService
+
+    toolbox: Toolbox = runtime.context.toolbox
+    try:
+        finding_uuid = UUID(finding_id)
+    except ValueError:
+        return _response(verified=False, outcome="invalid_evidence", reason="finding_id 不是合法 UUID")
+    try:
+        refs = _json_list(evidence_refs_json, "evidence_refs_json")
+        checks = parse_checks(_json_value(checks_json, "checks_json"))
+        claim_scope = _json_object(claim_scope_json, "claim_scope_json")
+        statistics_payload = _json_object(statistics_json, "statistics_json")
+    except ValueError as exc:
+        return _response(verified=False, outcome="invalid_evidence", reason=str(exc))
+    if not refs:
+        return _response(verified=False, outcome="invalid_evidence", reason="证据引用不能为空")
+
+    spans = SpanRecorder()
+    try:
+        with _verification_stage(spans, "verification.recipe.preflight", toolbox):
+            async with toolbox.db.transaction() as db:
+                finding = await db.get(FindingRow, finding_uuid)
+                if finding is None or finding.session_id != toolbox.session_id:
+                    return _response(
+                        verified=False, outcome="invalid_evidence", reason="发现不属于当前会话"
+                    )
+                try:
+                    resolution = await resolve_evidence(
+                        db, toolbox, refs, use=EvidenceUse.VERIFICATION
+                    )
+                except EvidencePolicyError as exc:
+                    return _response(
+                        verified=False, outcome="invalid_evidence", reason=str(exc)
+                    )
+                check_ids = {str(item["artifact_id"]) for item in checks}
+                if not check_ids <= set(resolution.refs):
+                    return _response(
+                        verified=False,
+                        outcome="invalid_evidence",
+                        reason="checks_json 引用了未在 evidence_refs_json 中提交的工件",
+                    )
+                role_by_id = {str(item["artifact_id"]): item["role"] for item in checks}
+                used_operations: set[str] = set()
+                control_operations: set[str] = set()
+                for artifact in resolution.artifacts:
+                    artifact_id = str(artifact.artifact_id)
+                    if artifact_id not in check_ids:
+                        continue
+                    operations = {str(item) for item in artifact.origin_operation_ids}
+                    if role_by_id.get(artifact_id) == "control":
+                        control_operations.update(operations)
+                    else:
+                        used_operations.update(operations)
+                if len(used_operations) < 2:
+                    return _response(
+                        verified=False,
+                        outcome="invalid_evidence",
+                        reason="参与判定的证据不足两个独立操作；额外无关工件不能凑独立性",
+                    )
+                if control_operations and control_operations & used_operations:
+                    return _response(
+                        verified=False,
+                        outcome="invalid_evidence",
+                        reason="负对照与目标证据共享操作，不能作为独立对照",
+                    )
+                artifact_bytes: dict[str, bytes] = {}
+                for ref in resolution.refs:
+                    row = await db.get(ArtifactRow, UUID(ref))
+                    if row is None:
+                        return _response(
+                            verified=False,
+                            outcome="invalid_evidence",
+                            reason=f"工件不存在：{ref}",
+                        )
+                    artifact_bytes[ref] = toolbox.artifacts.read_bytes(row.relative_key)
+                evaluation = evaluate_recipe(
+                    recipe_id,
+                    checks,
+                    artifact_bytes,
+                    claim_scope=claim_scope,
+                    statistics_payload=statistics_payload,
+                )
+
+        if evaluation.outcome is not RecipeOutcome.PASS:
+            runtime.context.note_progress(f"verification:{recipe_id}:{evaluation.outcome}")
+            return _response(
+                verified=False,
+                finding_id=finding_id,
+                recipe_id=recipe_id,
+                outcome=str(evaluation.outcome),
+                reason=evaluation.reason,
+                limitations=evaluation.limitations,
+                tested_conditions=evaluation.tested_conditions,
+            )
+
+        first_roles = {"initial", "anonymous", "baseline", "login"}
+        input_refs = [
+            str(item["artifact_id"]) for item in checks if item["role"] in first_roles
+        ]
+        recheck_refs = [
+            str(item["artifact_id"])
+            for item in checks
+            if item["role"] not in first_roles and item["role"] != "control"
+        ]
+        control_refs = [str(item["artifact_id"]) for item in checks if item["role"] == "control"]
+        if not input_refs:
+            input_refs = resolution.refs[:1]
+        if not recheck_refs:
+            recheck_refs = [ref for ref in resolution.refs if ref not in input_refs][:1]
+        if not recheck_refs:
+            recheck_refs = input_refs
+
+        with _verification_stage(spans, "verification.recipe.confirm", toolbox) as span:
+            async with toolbox.db.transaction() as db:
+                verification = await VerificationService(db).record(
+                    finding_id=finding_uuid,
+                    method_version=RECIPES[recipe_id].method_version,
+                    conclusion=FindingStatus.CONFIRMED,
+                    input_evidence_refs=[*input_refs, *control_refs],
+                    recheck_evidence_refs=recheck_refs,
+                    tested_conditions={
+                        **evaluation.tested_conditions,
+                        "claim_scope": claim_scope,
+                        "control_artifact_ids": control_refs,
+                        "source_tool_call_id": tool_call_id,
+                    },
+                    limitations=evaluation.limitations,
+                    performed_by="code",
+                )
+                span.attributes["verification_id"] = str(verification.id)
+        runtime.context.note_progress(f"verification:{verification.id}")
+        return _response(
+            verified=True,
+            finding_id=finding_id,
+            verification_id=str(verification.id),
+            recipe_id=recipe_id,
+            outcome=str(evaluation.outcome),
+            scope=claim_scope,
+            limitations=evaluation.limitations,
+        )
+    finally:
+        try:
+            async with toolbox.db.transaction() as db:
+                await spans.flush(db)
+        except Exception as exc:
+            log.warning(
+                "verification_span_persist_failed",
+                session_id=str(toolbox.session_id),
+                error_type=type(exc).__name__,
+            )
+
+
+def _json_value(raw: Any, field: str) -> Any:
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field} 不是合法 JSON") from exc
+    return raw
+
+
+def _json_list(raw: Any, field: str) -> list[str]:
+    value = _json_value(raw, field)
+    if not isinstance(value, list):
+        raise ValueError(f"{field} 必须是数组")
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _json_object(raw: Any, field: str) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    value = _json_value(raw, field)
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} 必须是对象")
+    return value
+
+
+VERIFICATION_TOOLS = [verify_public_git_head, verify_finding]
