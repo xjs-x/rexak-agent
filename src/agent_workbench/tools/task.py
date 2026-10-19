@@ -28,7 +28,7 @@ from langgraph.types import Command
 from sqlalchemy import select
 
 from agent_workbench.agent.context import RunContext
-from agent_workbench.agent.focus import focus_signature, resolve_focus
+from agent_workbench.agent.focus import contract_steps, focus_signature, resolve_focus
 from agent_workbench.agent.state import PlanStep, WorkAssessment
 from agent_workbench.contracts.enums import (
     CoverageStatus,
@@ -37,6 +37,7 @@ from agent_workbench.contracts.enums import (
     ToolEffectClass,
 )
 from agent_workbench.contracts.events import EventType
+from agent_workbench.contracts.plan import TaskContractCreate
 from agent_workbench.contracts.weaknesses import (
     ActionabilityAssessment,
     WeaknessRelationRef,
@@ -44,9 +45,11 @@ from agent_workbench.contracts.weaknesses import (
 from agent_workbench.domain.assets import record_asset
 from agent_workbench.domain.evidence import EvidenceUse, resolve_evidence
 from agent_workbench.domain.findings import CoverageService, FindingService
+from agent_workbench.domain.frontier import build_frontier, frontier_signature
 from agent_workbench.domain.integrations import record_integration
 from agent_workbench.domain.leads import LeadService, lead_summary
 from agent_workbench.domain.observations import record_observation_ref
+from agent_workbench.domain.plan_contracts import append_contract, load_contract_refs
 from agent_workbench.domain.weakness_relations import refute_links, upsert_links
 from agent_workbench.observability.events import append_event
 from agent_workbench.tools.operation import OperationRegistry, PreparedOperation
@@ -88,11 +91,14 @@ async def update_plan(
     rationale: str | None = None,
     focus_json: str | None = None,
     assessment_json: str | None = None,
+    contracts_json: list[Any] | str | None = None,
+    activate_contract_ids_json: list[str] | str | None = None,
 ) -> Command:
     """更新**当前计划**、焦点与最近判断（有界、可修订，不是预先锁死的 DAG）。
 
     Args:
-        steps_json: 计划步骤的 JSON 数组字符串。每项：
+        steps_json: **旧兼容入口**。会话一旦有 contract_refs 就会被拒绝；
+            新计划请用 contracts_json。每项：
             `{"step_id": "s1", "description": "...", "status": "pending|in_progress|done|dropped|blocked",
               "kind": "coverage|followup|mixed", "rationale": "为什么做这一步",
               "lead_ids": ["本步骤服务的线索 ID"], "lead_id": "可选，主线索（兼容字段）"}`。
@@ -106,12 +112,21 @@ async def update_plan(
             `{"changed": "这次结果改变了什么", "next_action": "下一步消除哪个不确定性",
               "uncertainty": "未测到/条件不成立/假设受反证", "evidence_refs": ["工件 ID"]}`。
             只在关键转折时补充，不必每轮都写；纯计划调整可以不写。
+        contracts_json: 可选 TaskContract 数组。每项需要 `contract_id`、`question`、
+            `acceptance`、`mutation_id`；追加不可变版本，不覆盖历史。
+        activate_contract_ids_json: 可选；必须包含在本次提交的合同 ID 中。
+            不传时激活本次追加的全部合同；传空数组表示只追加不激活。
         tool_call_id: 由框架注入，不要自己填写。
 
     Returns:
         更新确认（同时把计划、焦点与最近判断写回图状态）。
     """
     runtime.context.note_progress(f"plan:{rationale or ''}")
+    if steps_json is not None and runtime.state.get("contract_refs"):
+        raise ValueError(
+            "当前会话已使用 TaskContract；旧 steps_json 已冻结，不能再写旧计划。"
+            "请用 contracts_json 追加合同版本。"
+        )
     steps: list[PlanStep] | None = None
     seen: set[str] = set()
     if steps_json is not None:
@@ -188,13 +203,88 @@ async def update_plan(
         explicit_focus = parsed_focus
 
     previous_focus = runtime.state.get("current_focus")
-    focus, hint = resolve_focus(effective_plan, previous_focus, explicit_focus)
+
+    contracts_payload = (
+        _parse_object_list(contracts_json, "contracts_json")
+        if contracts_json is not None
+        else []
+    )
+    contract_refs: list[dict[str, Any]] = []
+    activated_contract_ids: list[str] = []
+    if contracts_payload:
+        existing_refs = {
+            str(item.get("contract_id")): dict(item)
+            for item in (runtime.state.get("contract_refs") or [])
+            if item.get("contract_id")
+        }
+        new_ids: list[str] = []
+        async with runtime.context.toolbox.db.transaction() as db:
+            for item in contracts_payload:
+                contract = TaskContractCreate.model_validate(item)
+                row = await append_contract(
+                    db,
+                    session_id=runtime.context.toolbox.session_id,
+                    run_id=runtime.context.toolbox.run_id,
+                    contract=contract,
+                )
+                ref = {
+                    "contract_id": str(row.contract_id),
+                    "contract_revision": int(row.contract_revision),
+                    "content_hash": row.content_hash,
+                }
+                existing_refs[ref["contract_id"]] = ref
+                new_ids.append(ref["contract_id"])
+        contract_refs = list(existing_refs.values())
+        existing_active = [
+            str(item) for item in (runtime.state.get("active_contract_ids") or [])
+        ]
+        if activate_contract_ids_json is None:
+            activated_contract_ids = list(dict.fromkeys([*existing_active, *new_ids]))
+        else:
+            activated_contract_ids = coerce_str_list(
+                activate_contract_ids_json, "activate_contract_ids_json"
+            )
+            unknown = [item for item in activated_contract_ids if item not in existing_refs]
+            if unknown:
+                raise ValueError(f"激活了未登记的合同：{unknown}")
+    elif activate_contract_ids_json is not None:
+        raise ValueError("activate_contract_ids_json 必须与 contracts_json 同时提交")
+
+    focus_plan = effective_plan
+    frontier_items = []
+    frontier_hash = None
+    if contract_refs:
+        async with runtime.context.toolbox.db.session() as db:
+            rows = await load_contract_refs(
+                db, runtime.context.toolbox.session_id, contract_refs
+            )
+        active_set = set(activated_contract_ids)
+        rows = [row for row in rows if str(row.contract_id) in active_set]
+        frontier_items = build_frontier(rows)
+        frontier_hash = frontier_signature(frontier_items)
+        focus_plan = contract_steps(
+            [
+                {
+                    "contract_id": str(row.contract_id),
+                    "question": row.question,
+                    "state": row.state,
+                    "lead_ids": list(row.lead_ids or []),
+                }
+                for row in rows
+            ]
+        )
+    focus, hint = resolve_focus(focus_plan, previous_focus, explicit_focus)
     focus_changed = focus_signature(focus) != focus_signature(previous_focus)
 
     update: dict[str, Any] = {"current_focus": focus}
     if steps is not None:
         update["plan"] = steps
         update["plan_revision"] = int(runtime.state.get("plan_revision") or 0) + 1
+    if contract_refs:
+        update["contract_refs"] = contract_refs
+        update["active_contract_ids"] = activated_contract_ids
+        if steps is None:
+            update["plan_revision"] = int(runtime.state.get("plan_revision") or 0) + 1
     assessment = None
     if assessment_json is not None:
         parsed_assessment = _parse_json(assessment_json, "assessment_json")
@@ -237,6 +327,10 @@ async def update_plan(
             "focus_hint": hint,
             "assessment_revision": assessment["revision"] if assessment else None,
             "steps": len(effective_plan),
+            "contracts": len(contracts_payload),
+            "active_contracts": len(activated_contract_ids),
+            "frontier": [item.as_dict() for item in frontier_items],
+            "frontier_signature": frontier_hash,
             "note": (
                 "计划/焦点/最近判断已写入图状态（LangGraph checkpoint 为权威）；"
                 "前端只做只读投影。自动承接的焦点只说明执行时的工作上下文，"

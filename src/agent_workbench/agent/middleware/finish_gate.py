@@ -67,6 +67,7 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     proposal=proposal,
                     plan=list(state.get("plan") or []),
                     review_cursor=state.get("weakness_review_cursor"),
+                    contract_refs=list(state.get("contract_refs") or []),
                 )
             span.finish()
             toolbox.spans.record(span, **decision.as_metadata())

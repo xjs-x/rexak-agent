@@ -315,23 +315,110 @@ class AssetRow(TimestampMixin, Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     identity_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: P1-C 资产规范化：canonical / alias / legacy_unresolved
+    record_role: Mapped[str] = mapped_column(String(32), nullable=False, default="canonical")
+    canonical_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.assets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    path_component: Mapped[str | None] = mapped_column(Text, nullable=True)
+    method_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    endpoint_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    normalizer_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    legacy_snapshot_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     __table_args__ = (
-        # 去重键包含 method 与身份：**不能**盲目合并不同 HTTP 方法或忽略身份
-        UniqueConstraint(
+        # 新规范端点键：只对 canonical 行生效；alias 共享同一端点不冲突。
+        Index(
+            "uq_assets_canonical_endpoint",
             "session_id",
             "scheme",
             "host",
             "port",
-            "path",
-            "method",
-            "identity_key",
-            name="uq_assets_endpoint_identity",
+            "path_component",
+            "method_token",
+            unique=True,
+            postgresql_where=text("record_role = 'canonical'"),
         ),
         Index("ix_assets_session_host", "session_id", "host"),
+        Index("ix_assets_canonical", "session_id", "canonical_asset_id"),
     )
     #: 身份集合的稳定序列化键（用于唯一约束；JSONB 不能作唯一键的稳定成分）
     identity_key: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+
+
+class RequestVariantRow(TimestampMixin, Base):
+    """请求形态的不可变快照；仅存展示/对账所需的最小结构。"""
+
+    __tablename__ = "request_variants"
+
+    variant_id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.assets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_artifact_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.artifacts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    raw_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    path: Mapped[str] = mapped_column(Text, nullable=False, default="/")
+    query_string: Mapped[str | None] = mapped_column(Text, nullable=True)
+    has_query_delimiter: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    method_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    identity_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    normalizer_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: original_request / legacy_structured / imported
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    __table_args__ = (
+        Index("ix_request_variants_asset", "session_id", "asset_id"),
+        Index("ix_request_variants_source", "source_artifact_id"),
+    )
+
+
+class ParameterRow(TimestampMixin, Base):
+    """参数实例；同名不同位置或重复出现不能合并。"""
+
+    __tablename__ = "parameters"
+
+    parameter_id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.assets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    location: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    occurrence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    normalizer_version: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "asset_id",
+            "location",
+            "name",
+            "position",
+            "occurrence",
+            name="uq_parameter_instance",
+        ),
+        Index("ix_parameters_asset", "session_id", "asset_id"),
+    )
 
 
 class LeadRow(TimestampMixin, Base):
@@ -540,6 +627,22 @@ class CoverageRow(TimestampMixin, Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: P1-C coverage cell 维度；旧行留空并标 legacy_unresolved。
+    subject_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="asset")
+    parameter_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.parameters.parameter_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    identity_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    condition_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    profile_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    freshness: Mapped[str] = mapped_column(String(32), nullable=False, default="current")
+    resolution_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="resolved"
+    )
+    evaluation_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     __table_args__ = (
         # 组合键去重：同一 资产/入口 + 身份 + 检查类别 只有一行
@@ -550,6 +653,22 @@ class CoverageRow(TimestampMixin, Base):
             "identity_id",
             "check_category",
             name="uq_coverage_combo",
+            postgresql_nulls_not_distinct=True,
+        ),
+        # 新 cell 唯一键；旧行没有 profile_id，不参与该约束。
+        Index(
+            "uq_coverage_cell_v2",
+            "session_id",
+            "asset_id",
+            "parameter_id",
+            "identity_id",
+            "identity_revision",
+            "check_category",
+            "condition_fingerprint",
+            "profile_id",
+            "profile_version",
+            unique=True,
+            postgresql_where=text("profile_id IS NOT NULL"),
             postgresql_nulls_not_distinct=True,
         ),
         Index("ix_coverage_session_category", "session_id", "check_category", "status"),
@@ -850,6 +969,70 @@ class CheckpointWriteReceiptRow(Base):
             "thread_id",
             "checkpoint_ns",
             "checkpoint_id",
+        ),
+    )
+
+
+class PlanContractRow(Base):
+    """不可变 TaskContract 版本；checkpoint 只保存当前选中的精确引用。"""
+
+    __tablename__ = "plan_contracts"
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    contract_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    contract_revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    parent_contract_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    parent_contract_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    goal_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="mixed")
+    lead_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    requires_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    expected_outcomes_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    produces_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    acceptance_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="proposed")
+    state_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resume_when_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    basis_versions: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    evidence_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    acceptance_result_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    mutation_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    based_on_checkpoint_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "mutation_id",
+            "contract_id",
+            name="uq_plan_contract_mutation",
+        ),
+        CheckConstraint("contract_revision > 0", name="contract_revision_positive"),
+        Index("ix_plan_contracts_goal", "session_id", "goal_ref"),
+        Index(
+            "ix_plan_contracts_parent",
+            "session_id",
+            "parent_contract_id",
+            "parent_contract_revision",
         ),
     )
 

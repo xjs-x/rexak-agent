@@ -140,6 +140,7 @@ async def build_review_inventory(
     cursor: str | None = None,
     page_size: int = REVIEW_PAGE_SIZE,
     focus_lead_id: str | None = None,
+    contracts: Sequence[Any] | None = None,
 ) -> ReviewInventory:
     """枚举**完整**复查集合，并返回其中的一页。
 
@@ -224,6 +225,57 @@ async def build_review_inventory(
                         "lead_ids": list(step.get("lead_ids") or []),
                         "rationale": step.get("rationale"),
                         "missing_conditions": [step["resume_note"]] if reviewed_block else [],
+                    },
+                ),
+            )
+        )
+
+    # 合同未收口项：contract_refs 存在时替代旧 plan 作为计划权威。
+    for contract in contracts or []:
+        state = str(getattr(contract, "state", "") or "")
+        if state in {"done", "dropped"}:
+            continue
+        contract_id = str(getattr(contract, "contract_id", ""))
+        revision = int(getattr(contract, "contract_revision", 0) or 0)
+        reason = str(getattr(contract, "state_reason", "") or "").strip()
+        if state in {"legacy_done", "stale", "needs_review"}:
+            unreviewed_count += 1
+            actionability = "needs_review"
+            stale = True
+        elif state == "blocked":
+            if reason:
+                waiting_count += 1
+                actionability = "needs_condition"
+            else:
+                unreviewed_count += 1
+                actionability = "needs_review"
+            stale = not reason
+        elif state == "running":
+            actionable_count += 1
+            actionability = "ready"
+            stale = False
+        else:
+            actionable_count += 1
+            actionability = "ready"
+            stale = False
+        rank = 0 if state == "running" else 1 if state in {"needs_review", "stale", "legacy_done"} else 2
+        candidates.append(
+            _Candidate(
+                key=f"contract:{contract_id}",
+                rank=rank,
+                item=ReviewInventoryItem(
+                    kind="contract",
+                    object_id=f"{contract_id}@{revision}",
+                    label=str(getattr(contract, "question", "") or "")[:120],
+                    status=state,
+                    actionability=actionability,
+                    stale=stale,
+                    actionable=actionability == "ready",
+                    detail={
+                        "contract_id": contract_id,
+                        "contract_revision": revision,
+                        "state_reason": reason or None,
+                        "missing_conditions": [reason] if reason else [],
                     },
                 ),
             )

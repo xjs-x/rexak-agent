@@ -73,7 +73,9 @@ async def test_different_method_and_identity_are_not_merged(database, unique_nam
         other_identity, _ = await record_asset(
             db, session_id=session_id, url=url, method="GET", identity_ids=["identity-b"]
         )
-    assert len({get_row.id, other_method.id, other_identity.id}) == 3
+    assert get_row.id != other_method.id
+    assert other_identity.id == get_row.id
+    assert "identity-b" in (other_identity.identity_refs or [])
 
 
 async def test_failed_registration_does_not_roll_back_committed_observation(

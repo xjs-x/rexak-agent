@@ -98,6 +98,7 @@ class FinishGate:
         proposal: Mapping[str, Any] | None,
         plan: Sequence[Mapping[str, Any]] | None = None,
         review_cursor: str | None = None,
+        contract_refs: Sequence[Mapping[str, Any]] | None = None,
     ) -> CompletionDecision:
         from agent_workbench.domain.exploration_lock import lock_exploration
 
@@ -118,6 +119,44 @@ class FinishGate:
                 decision="continue",
                 reasons=["结束提议必须包含目标回答和停止依据"],
             )
+
+        # 0) 合同未收口时不能结束；legacy_done 不能冒充 done。
+        contracts: list[Any] = []
+        if contract_refs:
+            from agent_workbench.domain.plan_contracts import (
+                ContractValidationError,
+                load_contract_refs,
+            )
+
+            try:
+                contracts = list(
+                    await load_contract_refs(self._s, session_id, list(contract_refs))
+                )
+            except ContractValidationError as exc:
+                return CompletionDecision(
+                    decision="continue",
+                    reasons=[f"合同引用不可校验：{exc}"],
+                )
+            open_contracts = []
+            for row in contracts:
+                if row.state == "done":
+                    if not row.acceptance_result_ref:
+                        open_contracts.append(
+                            f"{row.contract_id}@{row.contract_revision}:done_without_acceptance"
+                        )
+                    continue
+                if row.state != "dropped":
+                    open_contracts.append(
+                        f"{row.contract_id}@{row.contract_revision}:{row.state}"
+                    )
+            if open_contracts:
+                return CompletionDecision(
+                    decision="continue",
+                    reasons=[
+                        "仍有未收口或不可信的任务合同；legacy_done/stale/needs_review 不能放行结束。"
+                    ],
+                    blocking_objects={"open_contracts": open_contracts},
+                )
 
         # 1) 未处理的高优先级用户指令
         pending_command_ids = await self._pending_high_priority_commands(session_id)
@@ -149,10 +188,11 @@ class FinishGate:
         inventory = await build_review_inventory(
             self._s,
             session_id,
-            plan=plan or [],
+            plan=[] if contracts else (plan or []),
             cursor=review_cursor,
             page_size=REVIEW_PAGE_SIZE,
             focus_lead_id=proposal.get("focus_lead_id"),
+            contracts=contracts,
         )
         page_labels = [
             f"{item.kind}:{item.object_id}:{item.label[:60]}" for item in inventory.items

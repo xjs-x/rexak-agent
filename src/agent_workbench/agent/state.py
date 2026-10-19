@@ -95,6 +95,14 @@ def plan_step_kind(step: dict[str, Any]) -> str:
     return kind if kind in {"coverage", "followup", "mixed"} else "mixed"
 
 
+class ContractRef(TypedDict):
+    """checkpoint 对不可变合同版本的精确引用；ID 单独存在不足以恢复。"""
+
+    contract_id: str
+    contract_revision: int
+    content_hash: str
+
+
 class CurrentFocus(TypedDict):
     step_id: str | None
     lead_id: str | None
@@ -209,6 +217,9 @@ class AgentGraphState(AgentState):
     work_summary: NotRequired[WorkSummary]
     plan: NotRequired[list[PlanStep]]
     plan_revision: NotRequired[int]
+    #: 当前激活的合同精确引用；合同正文在 app.plan_contracts，不复制到 checkpoint。
+    contract_refs: NotRequired[list[ContractRef]]
+    active_contract_ids: NotRequired[list[str]]
     current_focus: NotRequired[CurrentFocus | None]
     #: 最近一次明确判断（解释，不是漏洞事实）。
     work_assessment: NotRequired[WorkAssessment | None]
@@ -286,6 +297,8 @@ def new_graph_state(
         user_constraints=list(user_constraints or []),
         plan=[],
         plan_revision=0,
+        contract_refs=[],
+        active_contract_ids=[],
         current_focus=None,
         work_assessment=None,
         presented_weakness_ids=[],

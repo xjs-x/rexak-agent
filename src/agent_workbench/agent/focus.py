@@ -143,6 +143,36 @@ __all__ = [
     "FOCUS_SOURCES",
     "INFERRED_REASON",
     "active_step_ids",
+    "contract_steps",
     "focus_signature",
     "resolve_focus",
 ]
+
+
+_CONTRACT_STATUS = {
+    "proposed": "pending",
+    "ready": "pending",
+    "running": "in_progress",
+    "done": "done",
+    "blocked": "blocked",
+    "needs_review": "blocked",
+    "stale": "blocked",
+    "legacy_done": "blocked",
+    "dropped": "dropped",
+}
+
+
+def contract_steps(contracts: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    """把合同投影成 focus 解析所需的只读步骤；不复制合同正文。"""
+    steps: list[dict[str, Any]] = []
+    for contract in contracts or []:
+        lead_ids = [str(item) for item in (contract.get("lead_ids") or [])]
+        steps.append(
+            {
+                "step_id": str(contract.get("contract_id") or ""),
+                "description": str(contract.get("question") or ""),
+                "status": _CONTRACT_STATUS.get(str(contract.get("state") or ""), "blocked"),
+                "lead_id": lead_ids[0] if lead_ids else None,
+            }
+        )
+    return steps

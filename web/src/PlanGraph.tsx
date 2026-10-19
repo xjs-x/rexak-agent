@@ -3,8 +3,33 @@ import { ReactFlow, Background, Controls, Position, type Edge, type Node } from 
 import "@xyflow/react/dist/style.css";
 import type { LeadItem, PlanRead } from "./api/client";
 
+interface ContractView {
+  contract_id: string;
+  contract_revision: number;
+  question: string;
+  state: string;
+  lead_ids: string[];
+  state_reason?: string | null;
+}
+
+interface FrontierView {
+  contract_id: string;
+  contract_revision: number;
+  state: string;
+  eligible: boolean;
+  reasons: string[];
+  missing_conditions: string[];
+}
+
+type PlanView = PlanRead & {
+  plan_source?: "plan_contracts" | "legacy_plan";
+  active_contract_ids?: string[];
+  contracts?: ContractView[];
+  frontier?: FrontierView[];
+};
+
 interface Props {
-  plan: PlanRead;
+  plan: PlanView;
   leads: LeadItem[];
 }
 
@@ -43,6 +68,18 @@ export function PlanGraph({ plan, leads }: Props) {
   const assessmentApplies = (plan.work_assessment?.step_id ?? null) === (plan.current_focus?.step_id ?? null)
     && (plan.work_assessment?.lead_id ?? null) === (plan.current_focus?.lead_id ?? null);
   return <>
+    {plan.plan_source === "plan_contracts" && <div className="tool-detail" aria-label="合同工作集">
+      <strong>合同工作集（{plan.contracts?.length ?? 0}）</strong>
+      {(plan.frontier ?? []).map(item => <p key={`frontier:${item.contract_id}`}>
+        frontier · {item.contract_id.slice(0, 8)} · {item.state} · {item.eligible ? "可推进" : "不可推进"}
+        {item.missing_conditions.length ? `（缺：${item.missing_conditions.join("; ")}）` : ""}
+      </p>)}
+      {(plan.contracts ?? []).map(contract => <details key={`contract:${contract.contract_id}`}>
+        <summary>{contract.contract_id.slice(0, 8)}@{contract.contract_revision} · {contract.question} · {contract.state}</summary>
+        {contract.state_reason && <p>状态说明：{contract.state_reason}</p>}
+        {contract.lead_ids.length > 0 && <p>关联线索：{contract.lead_ids.join(", ")}</p>}
+      </details>)}
+    </div>}
     {plan.current_focus && <div className="tool-detail" aria-label="当前行动焦点">
       <strong>当前行动：{plan.current_focus.intent}</strong>
       <p>理由：{plan.current_focus.reason}</p>
@@ -55,6 +92,7 @@ export function PlanGraph({ plan, leads }: Props) {
       {plan.work_assessment.uncertainty && <p>不确定性：{plan.work_assessment.uncertainty}</p>}
       <p>修订：v{plan.work_assessment.revision}（解释，不是漏洞事实）</p>
     </div> : <p className="empty">尚未记录判断</p>}
+    {plan.plan_source === "plan_contracts" && <p className="empty">以下为旧计划只读投影；当前权威是上方合同工作集。</p>}
     {nodes.length ? <div className="plan-graph" aria-label="计划步骤与关联线索的只读关系图">
     <ReactFlow nodes={nodes} edges={edges} fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}>
       <Background color="#34465c" gap={20} />

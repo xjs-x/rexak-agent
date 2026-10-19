@@ -617,25 +617,47 @@ class CoverageService:
         identity_id: UUID | None = None,
         reason: str | None = None,
         evidence_refs: list[str] | None = None,
+        subject_kind: str = "asset",
+        parameter_id: UUID | None = None,
+        identity_revision: int | None = None,
+        condition_fingerprint: str | None = None,
+        profile_id: str | None = None,
+        profile_version: str | None = None,
+        freshness: str = "current",
+        resolution_status: str = "resolved",
+        evaluation_ref: str | None = None,
     ) -> CoverageRow:
         """按组合键去重写入覆盖记录。
 
         组合键：`(session_id, asset_id, entry_label, identity_id, check_category)`。
         """
-        existing = (
-            await self._s.execute(
-                select(CoverageRow).where(
-                    CoverageRow.session_id == session_id,
-                    CoverageRow.asset_id.is_(asset_id)
-                    if asset_id is None
-                    else CoverageRow.asset_id == asset_id,
-                    CoverageRow.entry_label == entry_label,
-                    CoverageRow.identity_id.is_(identity_id)
-                    if identity_id is None
-                    else CoverageRow.identity_id == identity_id,
-                    CoverageRow.check_category == check_category,
-                )
+        conditions = [
+            CoverageRow.session_id == session_id,
+            CoverageRow.asset_id.is_(asset_id)
+            if asset_id is None
+            else CoverageRow.asset_id == asset_id,
+            CoverageRow.entry_label == entry_label,
+            CoverageRow.identity_id.is_(identity_id)
+            if identity_id is None
+            else CoverageRow.identity_id == identity_id,
+            CoverageRow.check_category == check_category,
+        ]
+        if profile_id is not None:
+            conditions.extend(
+                [
+                    CoverageRow.parameter_id.is_(parameter_id)
+                    if parameter_id is None
+                    else CoverageRow.parameter_id == parameter_id,
+                    CoverageRow.identity_revision.is_(identity_revision)
+                    if identity_revision is None
+                    else CoverageRow.identity_revision == identity_revision,
+                    CoverageRow.condition_fingerprint == condition_fingerprint,
+                    CoverageRow.profile_id == profile_id,
+                    CoverageRow.profile_version == profile_version,
+                ]
             )
+        existing = (
+            await self._s.execute(select(CoverageRow).where(*conditions))
         ).scalar_one_or_none()
 
         if existing is not None:
@@ -643,6 +665,15 @@ class CoverageService:
             existing.reason = reason
             existing.evidence_refs = _merge(existing.evidence_refs, evidence_refs)
             existing.revision = int(existing.revision) + 1
+            existing.subject_kind = subject_kind
+            existing.parameter_id = parameter_id
+            existing.identity_revision = identity_revision
+            existing.condition_fingerprint = condition_fingerprint
+            existing.profile_id = profile_id
+            existing.profile_version = profile_version
+            existing.freshness = freshness
+            existing.resolution_status = resolution_status
+            existing.evaluation_ref = evaluation_ref
             await self._s.flush()
             return existing
 
@@ -656,6 +687,15 @@ class CoverageService:
             status=str(status),
             reason=reason,
             evidence_refs=list(evidence_refs or []),
+            subject_kind=subject_kind,
+            parameter_id=parameter_id,
+            identity_revision=identity_revision,
+            condition_fingerprint=condition_fingerprint,
+            profile_id=profile_id,
+            profile_version=profile_version,
+            freshness=freshness,
+            resolution_status=resolution_status,
+            evaluation_ref=evaluation_ref,
         )
         self._s.add(row)
         await self._s.flush()
@@ -679,10 +719,40 @@ class CoverageService:
             str(CoverageStatus.CHECKED_POSITIVE), 0
         )
         denominator = len(rows)
+        v2_rows = [row for row in rows if row.profile_id is not None]
+        legacy_rows = [row for row in rows if row.profile_id is None]
+        applicable = [
+            row
+            for row in v2_rows
+            if not (row.status == str(CoverageStatus.NOT_APPLICABLE) and row.evidence_refs)
+        ]
+        v2_checked = [
+            row
+            for row in v2_rows
+            if row.status
+            in {str(CoverageStatus.CHECKED_NEGATIVE), str(CoverageStatus.CHECKED_POSITIVE)}
+            and row.freshness == "current"
+            and row.resolution_status == "resolved"
+        ]
         return {
             "total_entries": denominator,
             "by_status": by_status,
             "checked_ratio": (round(checked / denominator, 4) if denominator else None),
+            "coverage_v2": {
+                "total_cells": len(v2_rows),
+                "applicable_cells": len(applicable),
+                "checked_cells": len(v2_checked),
+                "checked_ratio": (
+                    round(len(v2_checked) / len(applicable), 4) if applicable else None
+                ),
+                "legacy_unresolved_cells": sum(
+                    1 for row in legacy_rows if row.resolution_status != "resolved"
+                ),
+                "denominator_definition": (
+                    "分母 = 冻结清单版本生成的有限 cell 集合 − 有有效证据的 not_applicable；"
+                    "blocked/not_checked/stale 留在分母。"
+                ),
+            },
             "ratio_definition": (
                 "分母 = 已登记的 资产/入口 × 身份 × 检查类别 组合数；"
                 "**不是**「网站漏洞覆盖率」，也不能外推到未发现的入口。"

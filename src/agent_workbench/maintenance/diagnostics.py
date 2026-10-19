@@ -21,6 +21,7 @@ from agent_workbench.evidence.artifacts import ArtifactError, ArtifactStore, red
 from agent_workbench.persistence.db import Database
 from agent_workbench.persistence.tables import (
     ArtifactRow,
+    AssetRow,
     CommandRow,
     CoverageRow,
     EventRow,
@@ -114,6 +115,26 @@ OPTIONAL_COLUMNS: dict[Any, tuple[str, ...]] = {
         "producer_kind",
         "source_trust",
         "resolution_status",
+    ),
+    AssetRow: (
+        "record_role",
+        "canonical_asset_id",
+        "path_component",
+        "method_token",
+        "endpoint_key",
+        "normalizer_version",
+        "legacy_snapshot_ref",
+    ),
+    CoverageRow: (
+        "subject_kind",
+        "parameter_id",
+        "identity_revision",
+        "condition_fingerprint",
+        "profile_id",
+        "profile_version",
+        "freshness",
+        "resolution_status",
+        "evaluation_ref",
     ),
 }
 OPTIONAL_FIELD_NAMES = frozenset(

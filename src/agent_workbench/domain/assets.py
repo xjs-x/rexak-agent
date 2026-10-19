@@ -1,7 +1,9 @@
 """资产与入口。
 
 去重规则（§5.2）：
-- 去重键包含 **method** 与 **身份集合**：不能盲目合并不同 HTTP 方法或忽略身份；
+- canonical 端点键为 session × scheme × host × port × path_component × method_token；
+  **不再**把 query 或身份集合放进端点唯一键；
+- alias 行通过 `canonical_asset_id` 指向 canonical，保留历史 ID 与来源；
 - 用于显示的归一化**不改变原始请求**；动态参数、重复参数及编码差异保存在原件里。
 """
 
@@ -12,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,7 +40,7 @@ async def record_asset(
     """登记一个入口。返回 `(row, created)`。
 
     **原子 upsert**（§4.1）：使用 PostgreSQL `INSERT ... ON CONFLICT DO UPDATE`，
-    继续以 `uq_assets_endpoint_identity` 为去重键（仍包含 method 与身份集合）。
+    以 canonical 端点部分唯一索引为去重键；身份与 query 不再拆成多个端点行。
 
     行为约束：
     - 冲突时**只更新** `last_seen_at`（取较大值）与缺失的 `source_artifact_id`；
@@ -53,6 +55,8 @@ async def record_asset(
     key = identity_key(identity_ids or [])
     now = datetime.now(UTC)
     new_id = uuid4()
+    path_component = target.path.split("?", 1)[0] or "/"
+    method_token = str(method).upper()
     table = cast(Any, AssetRow.__table__)
     stmt = pg_insert(table).values(
         id=new_id,
@@ -62,6 +66,11 @@ async def record_asset(
         port=target.port,
         path=target.path,
         method=method.upper(),
+        method_token=method_token,
+        path_component=path_component,
+        normalizer_version="v1",
+        record_role="canonical",
+        canonical_asset_id=None,
         query_keys=sorted(_query_keys(target.path)),
         source_artifact_id=source_artifact_id,
         first_seen_at=now,
@@ -71,12 +80,22 @@ async def record_asset(
         notes=notes,
     )
     stmt = stmt.on_conflict_do_update(
-        constraint="uq_assets_endpoint_identity",
+        index_elements=[
+            "session_id",
+            "scheme",
+            "host",
+            "port",
+            "path_component",
+            "method_token",
+        ],
+        index_where=text("record_role = 'canonical'"),
         set_={
             "last_seen_at": func.greatest(AssetRow.last_seen_at, stmt.excluded.last_seen_at),
             "source_artifact_id": func.coalesce(
                 AssetRow.source_artifact_id, stmt.excluded.source_artifact_id
             ),
+            # 身份不再拆成多个端点行；保留每次采集到的身份引用。
+            "identity_refs": AssetRow.identity_refs.op("||")(stmt.excluded.identity_refs),
         },
     ).returning(table.c.id)
     returned_id = (await session.execute(stmt)).scalar_one()

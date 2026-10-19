@@ -20,7 +20,9 @@ REVIEW_PAGE_SIZE = 5
 #: 关系分页上限。
 RELATION_PAGE_SIZE = 20
 
-ReviewItemKind = Literal["lead", "plan_step", "coverage_gap", "weakness", "stale_condition"]
+ReviewItemKind = Literal[
+    "lead", "plan_step", "contract", "coverage_gap", "weakness", "stale_condition"
+]
 RecallTrigger = Literal[
     "new_weakness",
     "condition_revised",

@@ -57,12 +57,16 @@ from agent_workbench.contracts.models import (
 )
 from agent_workbench.contracts.plan import (
     CurrentFocusRead,
+    FrontierRead,
     PlanRead,
     PlanStepRead,
+    TaskContractRead,
     WorkAssessmentRead,
 )
 from agent_workbench.domain.findings import FindingService
+from agent_workbench.domain.frontier import build_frontier
 from agent_workbench.domain.instruction_scope import scope_from_instructions, sync_instruction_scope
+from agent_workbench.domain.plan_contracts import load_contract_refs
 from agent_workbench.domain.prices import PriceUpdate
 from agent_workbench.domain.run_state import (
     assert_resumable,
@@ -808,6 +812,52 @@ async def session_plan(session_id: UUID, request: Request) -> PlanRead:
         )
     values = saved.checkpoint.get("channel_values", {}) if saved is not None else {}
     raw_steps = values.get("plan") or []
+    contract_refs = list(values.get("contract_refs") or [])
+    active_ids = [str(item) for item in (values.get("active_contract_ids") or [])]
+    contracts_payload: list[dict[str, Any]] = []
+    frontier_payload: list[dict[str, Any]] = []
+    if contract_refs:
+        async with get_database().session() as db:
+            rows = await load_contract_refs(db, session_id, contract_refs)
+        by_id = {str(row.contract_id): row for row in rows}
+        ordered = [by_id[item] for item in active_ids if item in by_id]
+        if not ordered:
+            ordered = rows
+        contracts_payload = [
+            _redact_api_value(
+                {
+                    "session_id": str(row.session_id),
+                    "contract_id": str(row.contract_id),
+                    "contract_revision": int(row.contract_revision),
+                    "schema_version": int(row.schema_version),
+                    "parent_contract_id": str(row.parent_contract_id)
+                    if row.parent_contract_id
+                    else None,
+                    "parent_contract_revision": row.parent_contract_revision,
+                    "goal_ref": row.goal_ref,
+                    "question": row.question,
+                    "kind": row.kind,
+                    "lead_ids": list(row.lead_ids or []),
+                    "requires": list(row.requires_json or []),
+                    "expected_outcomes": list(row.expected_outcomes_json or []),
+                    "produces": list(row.produces_json or []),
+                    "acceptance": dict(row.acceptance_json or {}),
+                    "state": row.state,
+                    "state_reason": row.state_reason,
+                    "resume_when": row.resume_when_json,
+                    "basis_versions": dict(row.basis_versions or {}),
+                    "evidence_refs": list(row.evidence_refs or []),
+                    "acceptance_result_ref": row.acceptance_result_ref,
+                    "mutation_id": str(row.mutation_id),
+                    "based_on_checkpoint_ref": row.based_on_checkpoint_ref,
+                    "content_hash": row.content_hash,
+                }
+            )
+            for row in ordered
+        ]
+        frontier_payload = [
+            _redact_api_value(item.as_dict()) for item in build_frontier(ordered)
+        ]
     return PlanRead(
         revision=int(values.get("plan_revision") or 0),
         steps=[
@@ -829,6 +879,10 @@ async def session_plan(session_id: UUID, request: Request) -> PlanRead:
         )
         if values.get("work_assessment")
         else None,
+        plan_source="plan_contracts" if contract_refs else "legacy_plan",
+        active_contract_ids=active_ids,
+        contracts=[TaskContractRead.model_validate(item) for item in contracts_payload],
+        frontier=[FrontierRead.model_validate(item) for item in frontier_payload],
     )
 
 
