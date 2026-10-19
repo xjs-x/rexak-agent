@@ -235,6 +235,35 @@ def _redact_dsn(dsn: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+@app.command("migrate-legacy-plan")
+def migrate_legacy_plan_command(
+    session_id: Annotated[str, typer.Argument(help="要迁移的 session id")],
+    apply: Annotated[bool, typer.Option("--apply", help="写入合同与 checkpoint；默认 dry-run")] = False,
+) -> None:
+    """把旧 checkpoint plan 迁移成不可变合同；默认只打印，不写库。"""
+    from agent_workbench.domain.plan_migration import migrate_legacy_checkpoint
+    from agent_workbench.persistence.db import Database
+
+    async def run() -> dict[str, Any]:
+        settings = get_settings()
+        database = Database(settings)
+        await database.start()
+        try:
+            return await migrate_legacy_checkpoint(
+                database, settings, UUID(session_id), apply=apply
+            )
+        finally:
+            await database.close()
+
+    configure_event_loop_policy()
+    try:
+        result = asyncio.run(run())
+    except ValueError as exc:
+        _echo(f"迁移参数错误：{exc}")
+        raise typer.Exit(code=2) from None
+    _echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 @app.command("doctor")
 def doctor(
     provider: Annotated[str | None, typer.Option(help="要探测的供应商")] = None,
