@@ -40,13 +40,14 @@ export function SkillLibrary({sessionId, projectId, selected, onSelected}: {
     setPreview(resource); setFileList(resource.files ?? []); setNextFiles(resource.next_file_offset ?? null);
   }
   return <div className="stack skill-library">
-    <p>将含 SKILL.md 的目录放入 <code>{page?.root || "配置的技能目录"}</code>，然后刷新。加载说明与运行脚本分别记录。</p>
+    <p>这里仅接入你提供的外部方法论，原有工作流程和内置 methods 保持独立。将含 SKILL.md 的目录放入 <code>{page?.root || "配置的技能目录"}</code> 后刷新，或导入 ZIP。</p>
     <div className="skill-actions"><input aria-label="搜索技能" value={query} onChange={e => setQuery(e.target.value)} placeholder="按名称或中文描述搜索" />
       <button disabled={busy} onClick={() => void action(async () => { const result = await api.rescanSkills(); setNotice((result.errors ?? []).join("；") || "技能目录已刷新；新版本供后续运行使用。"); })}>刷新目录</button>
       <label>导入 ZIP <input aria-label="导入技能 ZIP" type="file" accept=".zip" disabled={busy} onChange={e => { const file = e.target.files?.[0]; if (file) void action(() => upload(file)); e.target.value = ""; }} /></label></div>
     <div className="skill-actions"><input aria-label="技能目录路径" value={directory} onChange={e => setDirectory(e.target.value)} placeholder="已配置根目录内的完整技能目录路径" />
       <button disabled={busy || !directory.trim()} onClick={() => void action(() => api.importSkill({directory}))}>导入目录</button></div>
     {notice && <p role="status">{notice}</p>}
+    {page?.total === 0 && <p>尚未接入外部 Skill。当前任务继续使用原有工作流程。</p>}
     <p>已选 {selected.length} 项，将随下一条消息明确加载。正在运行的任务保留原目录和活跃版本。</p>
     {page?.skills.map(item => <article className="panel" key={item.skill_id}>
       <div className="panel-head"><label><input type="checkbox" checked={selected.includes(item.skill_id)} disabled={!item.enabled && !selected.includes(item.skill_id)}

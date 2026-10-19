@@ -374,3 +374,7 @@ P12 未追加产品代码；单会话与后续批次仍遵守[迁移门禁](plan
 用户另行授权完整迁移链路后，对 9 个合格旧会话实际执行 1 / 5 / 3 三批，新增 45 合同、保留 19 个 legacy_done，不恢复真实测试；逐项验收及停批对账过程见[批次记录](acceptance-results/2026-10-19/plan-rollout.md)。静态条件不足的其他会话继续保留，不自动迁移。
 
 桌面原入口 API-only 烟测、实际 HTTP / 静态资产核对、Kali 离线部署重启与 23 个源码哈希核对均通过，Linux 隔离专项 54 passed。凭据、真实模型调用数和暂停状态保留，未发起真实模型 / 目标测试。部署范围与限制见[双端验收](acceptance-results/2026-10-19/deployment.md)。
+
+## 2026-10-19 外部 Skill 边界恢复
+
+此前外部 Skill 修改留在 stash，当前分支仍含旧 builtin 发布和默认注入路径；已选择性恢复边界并补齐 GET/刷新防回归。空库存恢复原工具和官方循环，历史转换项只保留审计用途。全量 724 passed / 3 skipped，实际列表及显式刷新均为 0，46 张受保护表、凭据和暂停状态保持。最新边界见 [decision 0011](decisions/0011-external-skills-boundary.md)，证据见[本次验收](acceptance-results/2026-10-19/external-skills.md)。

@@ -90,12 +90,21 @@ def build_tool_manifest(selection: ToolSelection) -> dict[str, Any]:
     return manifest
 
 
+def checkpoint_needs_skill_bridge(checkpoint: dict[str, Any]) -> bool:
+    # 也覆盖“停在首次 Skill hook 之前、尚无目录快照”的旧 checkpoint。
+    return any("SkillsMiddleware." in str(key)
+               for field in ("versions_seen", "channel_versions", "channel_values")
+               for key in (checkpoint.get(field) or {}))
+
+
 def build_agent_middleware(
     model: Any,
     binding: ModelBinding,
     settings: Settings,
     tools: list[Any],
     price_catalog: PriceCatalog,
+    *,
+    legacy_skill_checkpoint: bool = False,
 ) -> list[Any]:
     """纯装配函数，捕获请求测试验证 wrap 顺序与最终视图。
 
@@ -103,9 +112,10 @@ def build_agent_middleware(
     `ResponseRecovery -> ContextBuilder -> ModelObserver -> 官方模型调用`。
     这样每次恢复尝试都会重新构造发送视图，并由 ModelObserver 独立入账。
     """
+    external_skills = any(getattr(item, "name", "") == "load_skill" for item in tools)
     return [
         CommandGuardMiddleware(),
-        SkillsMiddleware(),
+        *([SkillsMiddleware(enabled=external_skills)] if external_skills or legacy_skill_checkpoint else []),
         SegmentMiddleware(settings.segment_decision_rounds),
         ProgressMiddleware(),
         WorkingContextMiddleware(),
@@ -169,10 +179,6 @@ async def open_agent_runtime(
 
     model = build_chat_model(binding, secret_store=store_secrets, streaming=True)
     tools = build_tools(chosen)
-    middleware = build_agent_middleware(
-        model, binding, cfg, tools, price_catalog or default_price_catalog()
-    )
-
     async with contextlib.AsyncExitStack() as stack:
         checkpointer_conn = await stack.enter_async_context(open_checkpointer_connection(cfg))
         store_conn = await stack.enter_async_context(open_store_connection(cfg))
@@ -192,6 +198,12 @@ async def open_agent_runtime(
             )
         store = AsyncPostgresStore(store_conn)
         # 注意：`setup()` 只由 `workbench db-init` 执行；这里不重复建表。
+        saved = (await checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+                 if thread_id else None)
+        middleware = build_agent_middleware(
+            model, binding, cfg, tools, price_catalog or default_price_catalog(),
+            legacy_skill_checkpoint=bool(saved and checkpoint_needs_skill_bridge(dict(saved.checkpoint))),
+        )
 
         graph = create_agent(
             model=model,

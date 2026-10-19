@@ -101,6 +101,7 @@ async def test_explicit_and_project_default_are_real_presented_versions(database
         project = (await db.get(SessionRow, box.session_id)).project_id
     await service.update(card.skill_id, {"default_for_projects": [str(project)]})
     update = await prepare_skill_context({}, box)
+    assert update is not None
     assert update["active_skills"][card.skill_id]["source"] == "project_default"
     assert box.skill_manifest[0]["package_hash"] == card.package_hash
 
@@ -142,13 +143,16 @@ async def test_explicit_unload_is_not_reactivated_and_visibility_is_rechecked(da
     state = {"messages": [HumanMessage(content="使用技能", id="explicit-1",
               additional_kwargs={"skill_refs": [card.skill_id]})]}
     first = await prepare_skill_context(state, box)
+    assert first is not None
     assert card.skill_id in first["active_skills"]
     # 同一用户指令已消费；下一轮卸载后不能由旧消息重新激活。
     second = await prepare_skill_context({**state, **first, "active_skills": {card.skill_id: None}}, box)
+    assert second is not None
     assert card.skill_id not in second["active_skills"]
     assert len(second["skill_directives"]) <= 2
     await service.update(card.skill_id, {"project_ids": [str(uuid4())]})
     third = await prepare_skill_context({**state, **first}, box)
+    assert third is not None
     assert "固定的技能指导" not in box.skill_context
     assert box.skill_manifest[0]["status"] == "unavailable"
     with pytest.raises(ValueError, match="skill_disabled"):

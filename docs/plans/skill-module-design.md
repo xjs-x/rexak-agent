@@ -1,8 +1,8 @@
 # Rexak Skill 模块完整设计方案
 
-日期：2026-10-17。原设计提案已进入代码落地；实际第一版机制、明确边界与操作方法见 [Skill 使用说明](../skills.md)，验证范围见[验收记录](../acceptance-results/2026-10-17/skills/README.md)。下文保留设计依据，不将设计条目本身当作验证证据。
+日期：2026-10-17，2026-10-19 恢复边界。本方案已按用户澄清修正：只接入用户提供的外部方法论，撤销宿主 methods 转换和空库存默认接入。操作方法见 [Skill 使用说明](../skills.md)，当前验证见[外部 Skill 边界恢复验收](../acceptance-results/2026-10-19/external-skills.md)。
 
-本方案设计 Skill 的发现、选择、加载、资源读取、脚本执行、版本更新和运行恢复机制，不编写具体测试 Skill 内容。依据当前工作区（基线提交 3f6d258，包含已有未提交修复）及当日读取的官方文档制定。
+本方案设计 Skill 的发现、选择、加载、资源读取、脚本执行、版本更新和运行恢复机制，不编写具体测试 Skill 内容。初版依据 3f6d258 基线及当日读取的官方文档制定；当前边界以 [decision 0011](../decisions/0011-external-skills-boundary.md) 和实际代码为准。
 
 ## 1. 建议采用的方案
 
@@ -111,7 +111,7 @@ entrypoints:
 
 ### 5.1 用户维护与运行数据分开
 
-建议配置 `WORKBENCH_SKILLS_ROOT`，默认位于 `WORKBENCH_DATA_ROOT/skills/user`。也可把用户自有 Skill 根目录显式加入配置。应用内置资料放在 Python 包的 `skills_builtin/`，随应用版本发布。
+配置 `WORKBENCH_SKILLS_ROOT`，默认位于 `WORKBENCH_DATA_ROOT/skills/user`。只扫描用户配置的外部资料根目录，不包含应用内置资料。
 
 ```text
 WORKBENCH_DATA_ROOT/
@@ -132,7 +132,7 @@ package_hash 使用规范化相对路径、文件字节长度与原始字节哈�
 
 metadata.version 是人类标签，package_hash 是实际内容身份；相同标签不同内容仍是不同版本。
 
-安装项有稳定 skill_id，来源和显示名称分开。跨来源同名不覆盖；UI 显示 user:my-skill、builtin:my-skill 等限定名，模型最终调用使用 skill_id。已保存任务不会因后来出现同名包而改用其他内容。
+安装项有稳定 skill_id，来源和显示名称分开。跨来源同名不覆盖；UI 显示 user:my-skill、zip:my-skill 等限定名，模型最终调用使用 skill_id。已保存任务不会因后来出现同名包而改用其他内容。
 
 ### 5.3 更新生效
 
@@ -329,13 +329,13 @@ executor/src/workbench_executor/
 
 SkillsMiddleware 的职责限制为引用状态/可见目录的准备；正文装配进入现有 ContextBuilder。不能新增独立 awrap_model_call 再次调用模型，不改变已锁定的 ResponseRecovery → ContextBuilder → ModelObserver 次序。压缩所用预算视图也必须包含活跃 Skill，避免主请求和摘要触发使用两套不同预算。
 
-## 14. 从 search_methods 平滑迁移
+## 14. 保持原 methods 和原循环独立
 
-现有 methods/*.md 转为 builtin Skill，每份保留原内容、原方法名与原版本来源。因为它们没有标准 frontmatter，首次迁移通过显式 adapter 构造元数据，不要求用户手动修复历史正文。
+现有 methods/*.md 保持原文件和原入口，不包装成 Skill，不建立 adapter，不重新分配原工作流的职责。Skill 只处理用户提供的外部资料。空库存不启用 Skill 工具和中间件，也不注入目录或指导。
 
 search_methods 保留兼容入口，旧调用与 operation identity 不变；新运行推荐 search_skills/load_skill。旧 search_methods 历史仍按“读取资料”解释，不追溯伪造 active_skills 或使用事件。
 
-旧任务恢复不强制加载新增 Skill。需要采用新机制时在新指令边界显式加载。内置“硬约束”继续由系统和代码维护，不因禁用某个方法 Skill 而消失。
+旧任务恢复不强制加载新增 Skill。需要采用新机制时在新指令边界选择外部方法。内置硬约束和原 methods 继续由原体系维护，不受外部 Skill 的启停影响。
 
 ## 15. 错误处理与可观测性
 
@@ -387,7 +387,7 @@ V2 按实际需要增加 MCP 工具 resolver、Git 来源更新、技能关联�
 ## 18. 第一版默认决策清单
 
 - 格式：通用 SKILL.md；无必需 Rexak 私有文件。
-- 来源：内置包和用户显式配置根目录；目录与 ZIP 共用发布管线。
+- 来源：用户显式配置根目录及主动导入的 ZIP；不提供宿主设计的内置 Skill。
 - 选择：用户显式指定 + 主 Agent 按描述选择；不另设分类模型。
 - 内容：目录、正文、附件分层加载；正文按活跃版本每轮重建。
 - 版本：整个包内容寻址；run 目录快照与 session 活跃版本分别固定。
@@ -396,5 +396,5 @@ V2 按实际需要增加 MCP 工具 resolver、Git 来源更新、技能关联�
 - 数据：checkpoint 管活跃引用，业务表管安装/版本，工件管内容，Executor 管执行。
 - 更新：刷新生成新版本，默认下一 run 可见；已有活跃版本显式升级。
 - 管理：技能库页面 + CLI；后续添加 Skill 不改主循环或 Python 注册表。
-- 迁移：现有方法资料成为 builtin Skill；search_methods 兼容保留。
+- 迁移：原 search_methods 保持独立；撤销旧 builtin 转换项的可用性，保留历史审计和 checkpoint 兼容。
 - 范围：第一版完成纯说明、附件和脚本三种能力；MCP 等高级集成作为后续明确扩展。

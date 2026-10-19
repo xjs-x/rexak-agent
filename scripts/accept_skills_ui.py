@@ -29,6 +29,7 @@ async def verify(url: str, output: Path) -> None:
     second = {**card, "version_id": "v2", "label": "2.0", "package_hash": "b" * 64}
     calls: list[str] = []
     errors: list[str] = []
+    installed = False
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(channel="msedge", headless=True)
         try:
@@ -36,6 +37,7 @@ async def verify(url: str, output: Path) -> None:
             page.on("pageerror", lambda error: errors.append(str(error)))
 
             async def fixture(route):
+                nonlocal installed
                 request = route.request
                 parsed = urlparse(request.url)
                 path = parsed.path
@@ -43,6 +45,7 @@ async def verify(url: str, output: Path) -> None:
                 if path == "/api/session":
                     value = {"csrf_token": "fixture-only"}
                 elif path.endswith("/skills/import"):
+                    installed = True
                     value = card
                 elif path.endswith("/skills/rescan"):
                     value = {"skills": [card], "total": 1, "errors": ["bad-package: name 无效"]}
@@ -58,15 +61,19 @@ async def verify(url: str, output: Path) -> None:
                         "text": "中文参考资料" if name.startswith("references/") else "旧版固定指导" if "/v1/" in path else "新版指导",
                         "files": ["SKILL.md", "references/detail.md", "assets/logo.bin"], "files_total": 3}
                 elif path.endswith("/sessions/fixture/skills"):
-                    value = {"active": [{"skill_id": "fixture-skill", "package_hash": "a" * 64}]}
+                    value = {"active": [{"skill_id": "fixture-skill", "package_hash": "a" * 64}] if installed else []}
                 elif path == "/api/skills":
-                    value = {"root": "C:/fixture/skills", "skills": [card], "total": 1}
+                    value = {"root": "C:/fixture/skills", "skills": [card] if installed else [], "total": 1 if installed else 0}
                 else:
                     raise AssertionError(f"未声明 fixture 请求：{request.method} {path}")
                 await route.fulfill(json=value)
 
             await page.route(url.rsplit("/console/", 1)[0] + "/api/**", fixture)
             await page.goto(url, wait_until="networkidle")
+            await expect(page.get_by_text("尚未接入外部 Skill。当前任务继续使用原有工作流程。", exact=True)).to_be_visible()
+            assert not any("/skills/rescan" in call for call in calls)
+            await page.get_by_label("导入技能 ZIP").set_input_files({"name": "first-external.zip",
+                "mimeType": "application/zip", "buffer": b"fixture-only"})
             await expect(page.get_by_text("中文技能描述", exact=True)).to_be_visible()
             await page.get_by_label("搜索技能").fill("中文")
             await page.get_by_role("checkbox").check()
@@ -92,10 +99,10 @@ async def verify(url: str, output: Path) -> None:
                 "mimeType": "application/zip", "buffer": b"fixture-only"})
             await expect(page.get_by_role("button", name="刷新目录", exact=True)).to_be_enabled()
             await page.screenshot(path=str(output / "skill-library.png"), full_page=True)
-            assert sum(call.endswith("/skills/import") for call in calls) == 2
+            assert sum(call.endswith("/skills/import") for call in calls) == 3
             assert not errors, errors
             (output / "ui-results.json").write_text(json.dumps({"status": "PASS", "api_mode": "fixture",
-                "checks": ["中文检索", "显式选择", "正文与附件预览", "固定版本切换", "停用后取消选择",
+                "checks": ["空库存保持原流程且不自动扫描", "中文检索", "显式选择", "正文与附件预览", "固定版本切换", "停用后取消选择",
                            "项目默认", "刷新诊断", "目录与 ZIP 导入", "无脚本异常"],
                 "calls": calls, "real_model_called": False}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         finally:

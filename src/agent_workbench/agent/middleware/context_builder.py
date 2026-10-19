@@ -73,7 +73,9 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         system_text = base_system.content if base_system is not None else ""
 
         def compose(context_text: str) -> SystemMessage:
-            context_text += getattr(getattr(ctx, "toolbox", None), "skill_context", "")
+            external = getattr(getattr(ctx, "toolbox", None), "skill_context", "")
+            if external:
+                context_text += external
             if isinstance(system_text, list):
                 return SystemMessage(content=[*system_text, {"type": "text", "text": context_text}])
             if system_text:
@@ -161,7 +163,8 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 ensure_fits(budget)
             manifest = _build_manifest(state, selected, str(merged.content))
         manifest.update(
-            skills=getattr(getattr(ctx, "toolbox", None), "skill_manifest", []),
+            **({"skills": ctx.toolbox.skill_manifest}
+               if ctx is not None and getattr(ctx.toolbox, "skill_manifest", []) else {}),
             manifest_version=3,
             selected_messages=message_inventory(selected),
             replacements=replacements,

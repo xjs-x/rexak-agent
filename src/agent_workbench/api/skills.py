@@ -65,12 +65,9 @@ async def list_skills(request: Request, query: str = "", offset: int = Query(0, 
                       limit: int = Query(50, ge=1, le=200)) -> SkillList:
     service = guard(request)
     rows = await service.list()
-    errors: list[str] = []
-    if not rows:
-        rows, errors = await service.rescan()
     rows = [row for row in rows if query.casefold() in f"{row.name} {row.description}".casefold()]
     return SkillList(skills=rows[offset:offset + limit], total=len(rows),
-        next_cursor=str(offset + limit) if offset + limit < len(rows) else None, root=str(service.root), errors=errors)
+        next_cursor=str(offset + limit) if offset + limit < len(rows) else None, root=str(service.root))
 
 
 @router.post("/skills/rescan", response_model=SkillList)
@@ -152,4 +149,6 @@ async def session_skills(request: Request, session_id: UUID) -> SkillSessionRead
     async with open_checkpointer_connection(get_settings()) as connection:
         saved = await AsyncPostgresSaver(connection).aget_tuple({"configurable": {"thread_id": thread}})
     values: dict[str, Any] = saved.checkpoint.get("channel_values", {}) if saved else {}
-    return SkillSessionRead(active=[ref for ref in (values.get("active_skills") or {}).values() if ref])
+    refs = {key: ref for key, ref in (values.get("active_skills") or {}).items() if ref}
+    legacy = await service.legacy_ids(refs)
+    return SkillSessionRead(active=[ref for key, ref in refs.items() if key not in legacy])
