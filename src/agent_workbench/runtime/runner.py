@@ -724,6 +724,7 @@ class AgentRunner:
                 owner_generation=int(generation),
                 control_version=int(run.control_version),
                 writer_epoch=writer_epoch,
+                writer_owner=self._owner,
             )
             runtime = await runtime_ctx.__aenter__()
         except Exception as exc:

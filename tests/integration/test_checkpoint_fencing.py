@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -22,6 +23,33 @@ from agent_workbench.runtime.checkpoint_fencing import (
 from tests.integration.test_request_budget import context_for
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize("method", ["aput", "aput_writes"])
+@pytest.mark.parametrize("invalid", ["released", "missing_lease", "expired"])
+async def test_all_write_paths_require_current_owner_and_live_lease(
+    database, unique_name, method, invalid
+):
+    from agent_workbench.domain.run_state import release_run
+
+    context = await context_for(database, unique_name)
+    saver = await _saver(context, database)
+    async with database.transaction() as db:
+        row = await db.get(RunRow, context.toolbox.run_id)
+        assert row is not None
+        if invalid == "released":
+            await release_run(db, run_id=row.id, owner="test-writer")
+        elif invalid == "missing_lease":
+            row.lease_until = None
+        else:
+            row.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+    config: Any = {"configurable": {"thread_id": context.thread_id, "checkpoint_ns": ""}}
+    with pytest.raises(StaleWriterError):
+        if method == "aput":
+            await saver.aput(config, _empty(), _empty(), _empty())
+        else:
+            await saver.aput_writes(config, [("channel", "late")], "late-task")
+    assert not cast(Any, saver)._inner.saved and not cast(Any, saver)._inner.writes
 
 
 def _empty() -> Any:
@@ -184,9 +212,7 @@ async def test_unreceipted_pending_write_is_not_recovered(database, unique_name)
     assert len(recovered.pending_writes) == 1
 
 
-async def test_pending_write_receipts_are_idempotent_and_conflict_on_content(
-    database, unique_name
-):
+async def test_pending_write_receipts_are_idempotent_and_conflict_on_content(database, unique_name):
     context = await context_for(database, unique_name)
     saver = await _saver(context, database)
     config: Any = {"configurable": {"thread_id": context.thread_id, "checkpoint_ns": ""}}
@@ -195,12 +221,16 @@ async def test_pending_write_receipts_are_idempotent_and_conflict_on_content(
     await saver.aput_writes(config, [("channel", {"x": 1})], "task-1")
     async with database.session() as db:
         receipts = (
-            await db.execute(
-                select(CheckpointWriteReceiptRow).where(
-                    CheckpointWriteReceiptRow.thread_id == context.thread_id
+            (
+                await db.execute(
+                    select(CheckpointWriteReceiptRow).where(
+                        CheckpointWriteReceiptRow.thread_id == context.thread_id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert len(receipts) == 1
     with pytest.raises(CheckpointFenceError):
         await saver.aput_writes(config, [("channel", {"x": 2})], "task-1")

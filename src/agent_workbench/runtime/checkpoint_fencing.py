@@ -93,11 +93,9 @@ class FencedCheckpointSaver(BaseCheckpointSaver):
             raise StaleWriterError("run 所有权或控制版本已变化，拒绝旧 writer 写入")
         if self._writer_owner is not None and run.owner != self._writer_owner:
             raise StaleWriterError("迁移/写入 owner 已变化，拒绝旧 writer 写入")
-        if (
-            run.owner is not None
-            and run.lease_until is not None
-            and run.lease_until <= datetime.now(UTC)
-        ):
+        if run.owner is None or run.lease_until is None:
+            raise StaleWriterError("writer 无有效 owner 或租约，拒绝 checkpoint 写入")
+        if run.lease_until <= datetime.now(UTC):
             raise StaleWriterError("租约已过期，拒绝旧 writer 写入")
 
         head = (

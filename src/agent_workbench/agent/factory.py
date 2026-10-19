@@ -150,6 +150,7 @@ async def open_agent_runtime(
     owner_generation: int = 0,
     control_version: int = 0,
     writer_epoch: int = 0,
+    writer_owner: str | None = None,
 ) -> AsyncIterator[AgentRuntime]:
     """构建并持有一次进程运行期需要的 Agent 资源。
 
@@ -187,6 +188,7 @@ async def open_agent_runtime(
                 owner_generation=owner_generation,
                 control_version=control_version,
                 writer_epoch=writer_epoch,
+                writer_owner=writer_owner,
             )
         store = AsyncPostgresStore(store_conn)
         # 注意：`setup()` 只由 `workbench db-init` 执行；这里不重复建表。
