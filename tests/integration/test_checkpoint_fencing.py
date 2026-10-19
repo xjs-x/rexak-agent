@@ -8,7 +8,7 @@ import pytest
 from langgraph.checkpoint.base import CheckpointTuple
 from sqlalchemy import select
 
-from agent_workbench.domain.run_state import bump_control_version
+from agent_workbench.domain.run_state import bump_control_version, claim_run
 from agent_workbench.persistence.tables import (
     CheckpointHeadRow,
     CheckpointWriteReceiptRow,
@@ -68,6 +68,11 @@ class _FakeSaver:
 
 
 async def _saver(context, database, *, writer_epoch=0, control_version=None):
+    async with database.transaction() as db:
+        acquired, generation = await claim_run(
+            db, run_id=context.toolbox.run_id, owner="test-writer", lease_seconds=300
+        )
+        assert acquired
     async with database.session() as db:
         run = await db.get(RunRow, context.toolbox.run_id)
         assert run is not None
@@ -77,7 +82,7 @@ async def _saver(context, database, *, writer_epoch=0, control_version=None):
             database,
             run_id=run.id,
             thread_id=context.thread_id,
-            owner_generation=int(run.owner_generation),
+            owner_generation=int(generation),
             control_version=version,
             writer_epoch=writer_epoch,
         )
@@ -149,6 +154,11 @@ class _PendingSaver(_FakeSaver):
 
 async def test_unreceipted_pending_write_is_not_recovered(database, unique_name):
     context = await context_for(database, unique_name)
+    async with database.transaction() as db:
+        acquired, generation = await claim_run(
+            db, run_id=context.toolbox.run_id, owner="test-writer", lease_seconds=300
+        )
+        assert acquired
     async with database.session() as db:
         run = await db.get(RunRow, context.toolbox.run_id)
         assert run is not None
@@ -157,7 +167,7 @@ async def test_unreceipted_pending_write_is_not_recovered(database, unique_name)
             database,
             run_id=run.id,
             thread_id=context.thread_id,
-            owner_generation=int(run.owner_generation),
+            owner_generation=int(generation),
             control_version=int(run.control_version),
             writer_epoch=0,
         )

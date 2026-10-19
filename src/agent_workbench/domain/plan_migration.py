@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
 
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import StateGraph
 from sqlalchemy import or_, select
@@ -15,7 +16,7 @@ from sqlalchemy import or_, select
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.config.settings import Settings
 from agent_workbench.domain.legacy_plan import migrate_legacy_plan
-from agent_workbench.domain.plan_contracts import append_contract
+from agent_workbench.domain.plan_contracts import ContractMutationConflict, append_contract
 from agent_workbench.domain.run_state import claim_run
 from agent_workbench.persistence.bootstrap import open_checkpointer_connection
 from agent_workbench.persistence.db import Database
@@ -42,11 +43,32 @@ async def _latest_run(db: Any, session_id: Any) -> RunRow | None:
     ).scalar_one_or_none()
 
 
-async def _session_blockers(db: Any, session_id: Any) -> dict[str, list[str]]:
+async def _session_blockers(
+    db: Any, session_id: Any, *, ignore_owner: str | None = None
+) -> dict[str, list[str]]:
     """迁移前对整个 session 做只读对账；有未决副作用就不 apply。"""
     from agent_workbench.runtime.jobs import UNRESOLVED_JOB_STATES
 
     blockers: dict[str, list[str]] = {}
+    now = datetime.now(UTC)
+    leases = (
+        await db.execute(
+            select(RunRow.id, RunRow.owner).where(
+                RunRow.session_id == session_id,
+                RunRow.lease_until.is_not(None),
+                RunRow.lease_until > now,
+            )
+        )
+    ).all()
+    leases = [
+        (run_id, owner)
+        for run_id, owner in leases
+        if ignore_owner is None or owner != ignore_owner
+    ]
+    if leases:
+        blockers["active_run_leases"] = [
+            f"{run_id}:{owner or 'ownerless'}" for run_id, owner in leases
+        ]
     jobs = (
         await db.execute(
             select(ToolJobRow.job_id, ToolJobRow.state, ToolJobRow.sync_status)
@@ -110,6 +132,23 @@ def _plan_digest(plan: list[Any], revision: int) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _checkpoint_blockers(values: dict[str, Any]) -> dict[str, list[str]]:
+    messages = list(values.get("messages") or [])
+    result_ids: set[str] = set()
+    calls: dict[str, str] = {}
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            result_ids.add(str(message.tool_call_id))
+            continue
+        if isinstance(message, AIMessage):
+            for call in message.tool_calls or []:
+                call_id = str(call.get("id") or "")
+                if call_id:
+                    calls[call_id] = str(call.get("name") or "")
+    unpaired = [f"{call_id}:{name}" for call_id, name in calls.items() if call_id not in result_ids]
+    return {"unpaired_tool_calls": unpaired} if unpaired else {}
 
 
 def _admission(
@@ -206,6 +245,7 @@ async def migrate_legacy_checkpoint(
     plan = list(values.get("plan") or [])
     if not plan:
         return {"status": "no_legacy_plan", "session_id": str(session_id)}
+    blockers = {**blockers, **_checkpoint_blockers(values)}
 
     contracts = migrate_legacy_plan(session_id, plan)
     base_checkpoint_id = (
@@ -230,6 +270,12 @@ async def migrate_legacy_checkpoint(
             ],
         }
 
+    if "active_run_leases" in blockers:
+        return {
+            "status": "refused_active_lease",
+            "session_id": str(session_id),
+            "blockers": blockers,
+        }
     if blockers:
         return {
             "status": "needs_reconcile",
@@ -254,7 +300,9 @@ async def migrate_legacy_checkpoint(
         # claim 后复检：状态/租约/blockers 任一变化都要停下。
         async with database.session() as db:
             current_run = await db.get(RunRow, run.id, populate_existing=True)
-            current_blockers = await _session_blockers(db, session_id)
+            current_blockers = await _session_blockers(
+                db, session_id, ignore_owner=migration_owner
+            )
             current_head = await db.get(CheckpointHeadRow, (thread_id, ""))
         if current_run is None or not _admission(
             current_run,
@@ -272,6 +320,10 @@ async def migrate_legacy_checkpoint(
         current_values = (
             current_saved.checkpoint.get("channel_values", {}) if current_saved else {}
         )
+        current_blockers = {
+            **current_blockers,
+            **_checkpoint_blockers(current_values),
+        }
         current_plan = list(current_values.get("plan") or [])
         current_digest = _plan_digest(
             current_plan, int(current_values.get("plan_revision") or 0)
@@ -293,18 +345,25 @@ async def migrate_legacy_checkpoint(
             }
 
         refs: list[dict[str, Any]] = []
-        async with database.transaction() as db:
-            for contract in contracts:
-                row = await append_contract(
-                    db, session_id=session_id, run_id=run.id, contract=contract
-                )
-                refs.append(
-                    {
-                        "contract_id": str(row.contract_id),
-                        "contract_revision": int(row.contract_revision),
-                        "content_hash": row.content_hash,
-                    }
-                )
+        try:
+            async with database.transaction() as db:
+                for contract in contracts:
+                    row = await append_contract(
+                        db, session_id=session_id, run_id=run.id, contract=contract
+                    )
+                    refs.append(
+                        {
+                            "contract_id": str(row.contract_id),
+                            "contract_revision": int(row.contract_revision),
+                            "content_hash": row.content_hash,
+                        }
+                    )
+        except ContractMutationConflict as exc:
+            return {
+                "status": "migration_conflict",
+                "session_id": str(session_id),
+                "reason": str(exc),
+            }
 
         async with open_checkpointer_connection(settings) as connection:
             raw = AsyncPostgresSaver(connection)
@@ -318,7 +377,8 @@ async def migrate_legacy_checkpoint(
                 writer_epoch=int(current_head.writer_epoch)
                 if current_head is not None
                 else 0,
-                expected_checkpoint_id=base_checkpoint_id if current_head is not None else None,
+                expected_checkpoint_id=base_checkpoint_id,
+                writer_owner=migration_owner,
             )
             graph = StateGraph(AgentGraphState)
             graph.add_node(

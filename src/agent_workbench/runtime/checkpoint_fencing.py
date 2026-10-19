@@ -64,6 +64,7 @@ class FencedCheckpointSaver(BaseCheckpointSaver):
         control_version: int,
         writer_epoch: int,
         expected_checkpoint_id: str | None = None,
+        writer_owner: str | None = None,
     ) -> None:
         super().__init__(serde=inner.serde)
         self._inner = inner
@@ -75,6 +76,7 @@ class FencedCheckpointSaver(BaseCheckpointSaver):
         self._control_version = int(control_version)
         self._writer_epoch = int(writer_epoch)
         self._expected_checkpoint_id = expected_checkpoint_id
+        self._writer_owner = writer_owner
 
     @property
     def config_specs(self):  # type: ignore[no-untyped-def]
@@ -89,6 +91,14 @@ class FencedCheckpointSaver(BaseCheckpointSaver):
             or int(run.control_version) != self._control_version
         ):
             raise StaleWriterError("run 所有权或控制版本已变化，拒绝旧 writer 写入")
+        if self._writer_owner is not None and run.owner != self._writer_owner:
+            raise StaleWriterError("迁移/写入 owner 已变化，拒绝旧 writer 写入")
+        if (
+            run.owner is not None
+            and run.lease_until is not None
+            and run.lease_until <= datetime.now(UTC)
+        ):
+            raise StaleWriterError("租约已过期，拒绝旧 writer 写入")
 
         head = (
             await session.execute(
@@ -105,7 +115,7 @@ class FencedCheckpointSaver(BaseCheckpointSaver):
             head = CheckpointHeadRow(
                 thread_id=self._thread_id,
                 checkpoint_ns=self._checkpoint_ns,
-                accepted_checkpoint_id="",
+                accepted_checkpoint_id=self._expected_checkpoint_id or "",
                 writer_epoch=self._writer_epoch,
                 owner_generation=self._owner_generation,
                 control_version=self._control_version,
@@ -151,6 +161,9 @@ class FencedCheckpointSaver(BaseCheckpointSaver):
     ) -> None:
         async with self._db.transaction() as session:
             head = await self._lock_head(session)
+            run = await session.get(RunRow, self._run_id, with_for_update=True)
+            if run is None or run.owner is None:
+                raise StaleWriterError("pending writes 需要有效 writer owner，拒绝无主写入")
             checkpoint_id = str(
                 config.get("configurable", {}).get("checkpoint_id")
                 or head.accepted_checkpoint_id
