@@ -19,7 +19,9 @@ from agent_workbench.agent.context_sources import persist_history
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.agent.state_migration import ensure_current_checkpoint
 from agent_workbench.agent.working_context import assemble_working_context
+from agent_workbench.contracts.plan import AcceptanceSpec, TaskContractCreate
 from agent_workbench.domain.leads import LeadService
+from agent_workbench.domain.plan_contracts import append_contract
 from agent_workbench.evidence.artifacts import ArtifactStore
 from agent_workbench.persistence.bootstrap import open_checkpointer_connection
 from agent_workbench.persistence.tables import FindingRow, LeadRow, ObservationRow, ToolOperationRow
@@ -280,3 +282,40 @@ async def test_official_v1_migration_keeps_messages_plan_sources_and_pending_nod
         final = await graph.aget_state(cast(Any, config))
         calls = [m for m in final.values["messages"] if isinstance(m, ToolMessage)]
         assert len(calls) == 1
+
+
+async def test_working_context_uses_active_contract_lead_bindings(database, unique_name):
+    context = await context_for(database, unique_name)
+    async with database.transaction() as db:
+        lead = await LeadService(db).upsert(
+            session_id=context.toolbox.session_id, hypothesis="合同绑定线索"
+        )
+        contract = await append_contract(
+            db,
+            session_id=context.toolbox.session_id,
+            run_id=context.toolbox.run_id,
+            contract=TaskContractCreate(
+                contract_id=str(uuid4()),
+                question="沿合同线索推进",
+                lead_ids=[str(lead.id)],
+                acceptance=AcceptanceSpec(evaluator_id="test", evaluator_version="v1"),
+                state="running",
+                mutation_id=str(uuid4()),
+            ),
+        )
+    state: dict[str, Any] = {
+        "objective": "合同上下文",
+        "contract_refs": [
+            {
+                "contract_id": str(contract.contract_id),
+                "contract_revision": contract.contract_revision,
+                "content_hash": contract.content_hash,
+            }
+        ],
+        "active_contract_ids": [str(contract.contract_id)],
+        "current_focus": {"step_id": str(contract.contract_id), "lead_id": None},
+    }
+    async with database.session() as db:
+        view = await assemble_working_context(db, context.toolbox.session_id, state)
+    selected = view["judgment"]["leads"]
+    assert any(item["lead_id"] == str(lead.id) for item in selected)

@@ -55,18 +55,41 @@ def cursor_for(row: LeadRow) -> str:
     return f"{row.created_at.isoformat()}|{row.id}"
 
 
-def _review_triggers(state: dict[str, Any], focus: dict[str, Any]) -> list[str]:
+def _review_triggers(
+    state: dict[str, Any],
+    focus: dict[str, Any],
+    contracts: list[Any] | None = None,
+) -> list[str]:
     """明确的召回触发条件（§7.2）。
 
     正常轮转只是**兜底**，不能只依赖字符串精确包含整个目标句。
     """
     triggers: list[str] = []
-    plan = list(state.get("plan") or [])
-    focus_step = next(
-        (step for step in plan if step.get("step_id") == (focus or {}).get("step_id")), None
-    )
-    if focus_step is not None and focus_step.get("status") in {"done", "dropped", "blocked"}:
-        triggers.append("mainline_finished_or_blocked")
+    if contracts:
+        focus_id = str((focus or {}).get("step_id") or "")
+        focus_contract = next(
+            (row for row in contracts if str(row.contract_id) == focus_id), None
+        )
+        if focus_contract is not None and focus_contract.state in {
+            "done",
+            "dropped",
+            "blocked",
+            "stale",
+            "legacy_done",
+            "needs_review",
+        }:
+            triggers.append("mainline_finished_or_blocked")
+    else:
+        plan = list(state.get("plan") or [])
+        focus_step = next(
+            (step for step in plan if step.get("step_id") == (focus or {}).get("step_id")), None
+        )
+        if focus_step is not None and focus_step.get("status") in {
+            "done",
+            "dropped",
+            "blocked",
+        }:
+            triggers.append("mainline_finished_or_blocked")
     assessment = state.get("work_assessment") or {}
     if assessment and int(assessment.get("revision") or 0) > 0:
         # 关键判断发生变化（假设被否定、条件不成立、需要换方向）。
@@ -85,6 +108,18 @@ async def assemble_working_context(
     limit = max(2, min(limit, 4))
     focus = state.get("current_focus") or {}
     turn = int(state.get("completed_decision_rounds") or 0)
+    contract_rows: list[Any] = []
+    if state.get("contract_refs"):
+        from agent_workbench.domain.plan_contracts import load_contract_refs
+
+        try:
+            loaded = await load_contract_refs(db, session_id, state.get("contract_refs") or [])
+        except Exception:
+            loaded = []
+        active = {str(item) for item in (state.get("active_contract_ids") or [])}
+        contract_rows = [
+            row for row in loaded if not active or str(row.contract_id) in active
+        ]
     base = select(LeadRow).where(
         LeadRow.session_id == session_id,
         LeadRow.status.in_(UNFINISHED),
@@ -111,13 +146,21 @@ async def assemble_working_context(
         if row is not None:
             add(row, "current_focus" if raw == focus.get("lead_id") else "retained_alternative")
 
-    # 计划步骤已绑定的线索：关系检索优先于关键词。
-    plan_lead_ids = [
-        raw
-        for step in (state.get("plan") or [])
-        if step.get("status") not in {"done", "dropped"}
-        for raw in plan_step_lead_ids(step)
-    ]
+    # 计划步骤/合同已绑定的线索：关系检索优先于关键词。
+    if contract_rows:
+        plan_lead_ids = [
+            str(lead_id)
+            for row in contract_rows
+            for lead_id in (row.lead_ids or [])
+            if str(lead_id).strip()
+        ]
+    else:
+        plan_lead_ids = [
+            raw
+            for step in (state.get("plan") or [])
+            if step.get("status") not in {"done", "dropped"}
+            for raw in plan_step_lead_ids(step)
+        ]
     for raw in plan_lead_ids:
         if len(selected) >= limit - 1:
             break
@@ -180,11 +223,13 @@ async def assemble_working_context(
                 "assessment_revision": int(assessment.get("revision") or 0),
                 "active_identity_id": state.get("active_identity_id"),
                 "plan_revision": int(state.get("plan_revision") or 0),
+                "contract_refs": state.get("contract_refs") or [],
+                "active_contract_ids": state.get("active_contract_ids") or [],
             },
             sort_keys=True,
         ).encode()
     ).hexdigest()
-    triggers = _review_triggers(state, focus)
+    triggers = _review_triggers(state, focus, contract_rows)
     # 发生方向/状态变化、获得新判断、或每八个完成轮次回顾；新输入无旧候选也要选一页。
     previous = state.get("last_review_turn")
     retained_ids = {item["lead_id"] for item in selected}
