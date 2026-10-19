@@ -16,6 +16,7 @@ from agent_workbench.domain.findings import CoverageService
 from agent_workbench.domain.reports import create_report_snapshot
 from agent_workbench.evidence.artifacts import ArtifactStore
 from agent_workbench.persistence.tables import (
+    ArtifactRow,
     AssetRow,
     CoverageRow,
     IdentityRow,
@@ -308,7 +309,7 @@ async def test_report_snapshot_uses_checklist_denominator(database, unique_name)
             evidence_refs=["e1"],
         )
     store = ArtifactStore(database.settings)
-    await create_report_snapshot(database, store, context.toolbox.session_id)
+    result = await create_report_snapshot(database, store, context.toolbox.session_id)
     async with database.session() as db:
         report = (
             await db.execute(
@@ -322,3 +323,13 @@ async def test_report_snapshot_uses_checklist_denominator(database, unique_name)
     assert coverage["checklist"] is not None
     assert coverage["checklist"]["total_cells"] == 4
     assert coverage["checklist"]["checked_cells"] == 1
+    async with database.session() as db:
+        artifact = await db.get(ArtifactRow, result.markdown_artifact_id)
+    assert artifact is not None
+    markdown = store.read_bytes(artifact.relative_key).decode("utf-8")
+    assert "清单口径" in markdown
+    async with database.session() as db:
+        artifact = await db.get(ArtifactRow, result.markdown_artifact_id)
+    assert artifact is not None
+    markdown = store.read_bytes(artifact.relative_key).decode("utf-8")
+    assert "清单口径" in markdown

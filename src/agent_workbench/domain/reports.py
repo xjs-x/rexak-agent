@@ -987,10 +987,24 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
             f"已检查 {coverage['checked']} / 已登记 {coverage['registered']}；"
             f"受阻 {coverage['blocked']}；未检查 {coverage['not_checked']}。",
             "",
-            coverage["note"],
-            "",
         ]
     )
+    checklist = coverage.get("checklist")
+    if isinstance(checklist, dict) and "total_cells" in checklist:
+        ratio = checklist.get("checked_ratio")
+        lines.append(
+            f"清单口径：已检查 {checklist.get('checked_cells', 0)} / "
+            f"适用 {checklist.get('applicable_cells', 0)}"
+            + (f"（{round(float(ratio) * 100, 1)}%）" if ratio is not None else "")
+            + f"；缺失/未检查 {len(checklist.get('missing_cells') or [])}；"
+            f"不适用 {checklist.get('not_applicable_cells', 0)}。"
+        )
+        signature = checklist.get("checklist_signature")
+        if signature:
+            lines.append(f"清单签名：`{signature[:16]}`（同一分母用于前后比较）。")
+    elif isinstance(checklist, dict) and checklist.get("error"):
+        lines.append(f"清单口径未合并：{checklist.get('error')}。")
+    lines.extend([coverage["note"], ""])
     return "\n".join(lines)
 
 
