@@ -225,17 +225,9 @@ async def test_concurrent_same_profile_registration_is_idempotent(database, uniq
     barrier = asyncio.Barrier(2)
 
     async def register():
+        await barrier.wait()
         async with database.transaction() as db:
-            class AfterSelectBarrier:
-                async def execute(self, statement):
-                    result = await db.execute(statement)
-                    await barrier.wait()
-                    return result
-                def add(self, row):
-                    db.add(row)
-                async def flush(self):
-                    await db.flush()
-            row = await CoverageService(cast(Any, AfterSelectBarrier())).register_profile(
+            row = await CoverageService(db).register_profile(
                 context.toolbox.session_id,
                 profile=CoverageProfile("web", "v1", ("configuration", "auth")), condition_fingerprint="f" * 64)
             return row.profile_row_id

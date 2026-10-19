@@ -360,3 +360,9 @@ Earth 自然目标测试尚未完成：10 次成功 HTTP 操作和 25 个哈希�
 ## 2026-10-17 新成员部署整理
 
 增加个人配置生成及首次安装入口，移除共享模板中的维护者 IP/固定目录，支持按 SSH 用户解析远端路径、选择兼容 Python/公开包源和创建首次 venv。日常启动入口保留，个人凭据不覆盖。SSH 恢复后，在 Kali 全新独立目录完成首次及重复安装、23 个安装源码哈希和启动器检查，原配置与日常服务启动身份保持，fixture 和测试库已清理。操作见[新成员指南](team-setup.md)，证据与系统前置条件见[本轮记录](acceptance-results/2026-10-17/team-setup/README.md)；不包含虚拟机/系统软件自动安装或真实模型/靶场实验。
+
+## 2026-10-19 profile 原子登记与迁移复验
+
+profile 登记改为数据库唯一键原子幂等，删除进程缓存和锁；补齐独立进程 HTTP 竞争、事务回滚、GET 提交可见性和旧空 hash 判据。实现见 [decision 0008](decisions/0008-coverage-profile-registration.md)。本轮独立审计 24、旧审计 13、主探针 8 通过；集成 378 passed / 1 skipped，单元 331 passed / 2 skipped，Pyright 无错误。
+
+P12 未追加产品代码；单会话与后续批次仍遵守[迁移门禁](plan-migration-rollout.md)，工程回归不自动批准真实批量 apply。真实 canary 的授权、备份与运行证据另存本机验收目录，不将个人会话或目标数据写入共享说明。

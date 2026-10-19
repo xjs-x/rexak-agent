@@ -22,7 +22,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -31,6 +30,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_workbench.contracts.enums import (
@@ -630,10 +630,6 @@ def profile_definition_hash(profile: CoverageProfile) -> str:
     ).hexdigest()
 
 
-_PROFILE_LOCKS: dict[str, asyncio.Lock] = {}
-_PROFILE_CACHE: dict[str, CoverageProfileRow] = {}
-
-
 class CoverageService:
     def __init__(self, session: AsyncSession) -> None:
         self._s = session
@@ -808,59 +804,63 @@ class CoverageService:
         profile: CoverageProfile,
         condition_fingerprint: str,
     ) -> CoverageProfileRow:
-        """登记冻结 profile；同一 profile 版本不同类别定义直接拒绝。"""
+        """由唯一键原子登记；竞争者重读已提交定义，不修改冻结内容。"""
+        definition_hash = profile_definition_hash(profile)
+        inserted = (
+            await self._s.execute(
+                insert(CoverageProfileRow)
+                .values(
+                    session_id=session_id,
+                    profile_id=profile.profile_id,
+                    profile_version=profile.profile_version,
+                    condition_fingerprint=condition_fingerprint,
+                    definition_hash=definition_hash,
+                    categories=list(profile.check_categories),
+                    include_parameter_cells=profile.include_parameter_cells,
+                    include_anonymous=profile.include_anonymous,
+                )
+                .on_conflict_do_nothing(constraint="uq_coverage_profile")
+                .returning(CoverageProfileRow)
+            )
+        ).scalar_one_or_none()
+        if inserted is not None:
+            return inserted
+
+        # READ COMMITTED 下，新语句能读取唯一键竞争者刚提交的行。
+        # 行锁串行化旧空 hash 的兼容回填；不回滚调用方的整个事务。
         existing = (
             await self._s.execute(
-                select(CoverageProfileRow).where(
+                select(CoverageProfileRow)
+                .where(
                     CoverageProfileRow.session_id == session_id,
                     CoverageProfileRow.profile_id == profile.profile_id,
                     CoverageProfileRow.profile_version == profile.profile_version,
                     CoverageProfileRow.condition_fingerprint == condition_fingerprint,
                 )
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
-        ).scalar_one_or_none()
-        categories = list(profile.check_categories)
-        definition_hash = profile_definition_hash(profile)
-        if existing is not None:
-            if not existing.definition_hash:
-                existing.definition_hash = definition_hash
-                await self._s.flush()
-                return existing
-            if existing.definition_hash != definition_hash:
-                raise ValueError(
-                    "coverage_profile_conflict: 同一 profile/version/fingerprint "
-                    "不能携带不同定义"
-                ) from None
-            return existing
-        # 同进程内串行化首次登记；跨进程唯一键仍是最终约束。
-        lock_key = (
-            f"coverage-profile:{session_id}:{profile.profile_id}:"
-            f"{profile.profile_version}:{condition_fingerprint}"
-        )
-        lock = _PROFILE_LOCKS.setdefault(lock_key, asyncio.Lock())
-        async with lock:
-            cached = _PROFILE_CACHE.get(lock_key)
-            if cached is not None:
-                if cached.definition_hash != definition_hash:
-                    raise ValueError(
-                        "coverage_profile_conflict: 同一 profile/version/fingerprint "
-                        "不能携带不同定义"
-                    )
-                return cached
-            row = CoverageProfileRow(
-                session_id=session_id,
-                profile_id=profile.profile_id,
-                profile_version=profile.profile_version,
-                condition_fingerprint=condition_fingerprint,
-                definition_hash=definition_hash,
-                categories=categories,
-                include_parameter_cells=profile.include_parameter_cells,
-                include_anonymous=profile.include_anonymous,
+        ).scalar_one()
+        existing_hash = existing.definition_hash
+        if not existing_hash:
+            existing_hash = profile_definition_hash(
+                CoverageProfile(
+                    profile_id=existing.profile_id,
+                    profile_version=existing.profile_version,
+                    check_categories=tuple(existing.categories or []),
+                    include_parameter_cells=bool(existing.include_parameter_cells),
+                    include_anonymous=bool(existing.include_anonymous),
+                )
             )
-            self._s.add(row)
+        if existing_hash != definition_hash:
+            raise ValueError(
+                "coverage_profile_conflict: 同一 profile/version/fingerprint "
+                "不能携带不同定义"
+            )
+        if not existing.definition_hash:
+            existing.definition_hash = existing_hash
             await self._s.flush()
-            _PROFILE_CACHE[lock_key] = row
-            return row
+        return existing
 
     async def get_profile(
         self,
