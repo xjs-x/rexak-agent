@@ -229,8 +229,8 @@ class ReportService:
         else:
             # 不从已登记 coverage 行反推类别；否则分母会变小、比例会变高。
             coverage_checklist = {
-                "error": "profile_not_frozen",
-                "note": "报告未收到完整 profile 定义，不能由已登记行推断分母。",
+                "error": "profile_not_registered",
+                "note": "报告没有已登记的冻结 profile，不能由已登记行推断分母。",
             }
         link_rows = list(
             (

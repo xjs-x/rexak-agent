@@ -620,6 +620,7 @@ class CoverageProfileRow(Base):
     profile_id: Mapped[str] = mapped_column(String(64), nullable=False)
     profile_version: Mapped[str] = mapped_column(String(32), nullable=False)
     condition_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    definition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     categories: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     include_parameter_cells: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     include_anonymous: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -612,6 +614,21 @@ class VerificationService:
         )
 
 
+def _profile_definition_hash(profile: CoverageProfile) -> str:
+    payload = {
+        "profile_id": profile.profile_id,
+        "profile_version": profile.profile_version,
+        "categories": list(profile.check_categories),
+        "include_parameter_cells": profile.include_parameter_cells,
+        "include_anonymous": profile.include_anonymous,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
 class CoverageService:
     def __init__(self, session: AsyncSession) -> None:
         self._s = session
@@ -798,15 +815,12 @@ class CoverageService:
             )
         ).scalar_one_or_none()
         categories = list(profile.check_categories)
+        definition_hash = _profile_definition_hash(profile)
         if existing is not None:
-            if (
-                list(existing.categories or []) != categories
-                or bool(existing.include_parameter_cells) != profile.include_parameter_cells
-                or bool(existing.include_anonymous) != profile.include_anonymous
-            ):
+            if existing.definition_hash != definition_hash:
                 raise ValueError(
                     "coverage_profile_conflict: 同一 profile/version/fingerprint "
-                    "不能携带不同类别定义"
+                    "不能携带不同定义"
                 )
             return existing
         row = CoverageProfileRow(
@@ -814,6 +828,7 @@ class CoverageService:
             profile_id=profile.profile_id,
             profile_version=profile.profile_version,
             condition_fingerprint=condition_fingerprint,
+            definition_hash=definition_hash,
             categories=categories,
             include_parameter_cells=profile.include_parameter_cells,
             include_anonymous=profile.include_anonymous,
@@ -821,6 +836,25 @@ class CoverageService:
         self._s.add(row)
         await self._s.flush()
         return row
+
+    async def get_profile(
+        self,
+        session_id: UUID,
+        *,
+        profile_id: str,
+        profile_version: str,
+        condition_fingerprint: str,
+    ) -> CoverageProfileRow | None:
+        return (
+            await self._s.execute(
+                select(CoverageProfileRow).where(
+                    CoverageProfileRow.session_id == session_id,
+                    CoverageProfileRow.profile_id == profile_id,
+                    CoverageProfileRow.profile_version == profile_version,
+                    CoverageProfileRow.condition_fingerprint == condition_fingerprint,
+                )
+            )
+        ).scalar_one_or_none()
 
     async def latest_profile(
         self, session_id: UUID
@@ -852,7 +886,7 @@ class CoverageService:
         *,
         profile: CoverageProfile,
         condition_fingerprint: str,
-        persist_profile: bool = True,
+        persist_profile: bool = False,
     ) -> dict[str, Any]:
         """用冻结清单生成 Uᵥ，再对账 coverage rows；不是扫描总结展开。"""
         if persist_profile:

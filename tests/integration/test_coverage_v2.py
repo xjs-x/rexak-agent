@@ -256,6 +256,46 @@ async def test_coverage_api_checklist_mode(database, unique_name):
         await db.flush()
     with TestClient(create_app()) as client:
         client.post("/api/session")
+        missing = client.get(
+            f"/api/sessions/{context.toolbox.session_id}/coverage",
+            params={
+                "profile_id": "web",
+                "profile_version": "v1",
+                "condition_fingerprint": "f" * 64,
+                "categories": "configuration,auth",
+            },
+        )
+        assert missing.status_code == 409
+        registered = client.post(
+            f"/api/sessions/{context.toolbox.session_id}/coverage/profile",
+            json={
+                "profile_id": "web",
+                "profile_version": "v1",
+                "condition_fingerprint": "f" * 64,
+                "categories": ["configuration", "auth"],
+            },
+        )
+        assert registered.status_code == 200, registered.text
+        again = client.post(
+            f"/api/sessions/{context.toolbox.session_id}/coverage/profile",
+            json={
+                "profile_id": "web",
+                "profile_version": "v1",
+                "condition_fingerprint": "f" * 64,
+                "categories": ["configuration", "auth"],
+            },
+        )
+        assert again.status_code == 200, again.text
+        conflict = client.post(
+            f"/api/sessions/{context.toolbox.session_id}/coverage/profile",
+            json={
+                "profile_id": "web",
+                "profile_version": "v1",
+                "condition_fingerprint": "f" * 64,
+                "categories": ["configuration"],
+            },
+        )
+        assert conflict.status_code == 409
         response = client.get(
             f"/api/sessions/{context.toolbox.session_id}/coverage",
             params={

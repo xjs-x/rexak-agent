@@ -265,6 +265,7 @@ class ErrorCode(StrEnum):
     CONTEXT_OVERFLOW = "context_overflow"
     GRAPH_RECURSION_LIMIT = "graph_recursion_limit"
     INTERNAL_ERROR = "internal_error"
+    PROFILE_NOT_REGISTERED = "profile_not_registered"
 
 
 class Phase(StrEnum):

@@ -24,6 +24,7 @@ ERROR_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.RUN_ALREADY_ACTIVE: 409,
     ErrorCode.LEASE_LOST: 409,
     ErrorCode.OPERATION_CONFLICT: 409,
+    ErrorCode.PROFILE_NOT_REGISTERED: 409,
     ErrorCode.EXECUTOR_UNAVAILABLE: 503,
     ErrorCode.EXECUTOR_INCOMPATIBLE: 503,
     ErrorCode.TIMEOUT: 504,

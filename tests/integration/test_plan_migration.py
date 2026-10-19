@@ -15,7 +15,12 @@ from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.api.app import create_app
 from agent_workbench.domain.plan_migration import migrate_legacy_checkpoint
 from agent_workbench.persistence.bootstrap import open_checkpointer_connection
-from agent_workbench.persistence.tables import CheckpointHeadRow, PlanContractRow, RunRow
+from agent_workbench.persistence.tables import (
+    CheckpointHeadRow,
+    DomainIntegrationRow,
+    PlanContractRow,
+    RunRow,
+)
 from tests.integration.test_request_budget import context_for
 
 pytestmark = pytest.mark.integration
@@ -124,3 +129,37 @@ async def test_migration_advances_existing_accepted_head(database, settings, uni
         ).json()
     assert payload["plan_source"] == "plan_contracts"
     assert len(payload["contracts"]) == 2
+
+
+async def test_migration_blocks_on_pending_integration(database, settings, unique_name):
+    context, _ = await _seed_plan(database, settings, unique_name)
+    async with database.transaction() as db:
+        db.add(
+            DomainIntegrationRow(
+                session_id=context.toolbox.session_id,
+                entity_kind="lead",
+                action="upsert",
+                source_tool_call_id="pending-call",
+                request_hash="a" * 64,
+                status="pending",
+            )
+        )
+        run = await db.get(RunRow, context.toolbox.run_id)
+        assert run is not None
+        run.status = "paused"
+    dry = await migrate_legacy_checkpoint(database, settings, context.toolbox.session_id)
+    assert dry["apply_eligible"] is False
+    assert dry["blockers"]["pending_integrations"]
+    applied = await migrate_legacy_checkpoint(
+        database, settings, context.toolbox.session_id, apply=True
+    )
+    assert applied["status"] == "needs_reconcile"
+    async with database.session() as db:
+        count = (
+            await db.execute(
+                select(func.count()).select_from(PlanContractRow).where(
+                    PlanContractRow.session_id == context.toolbox.session_id
+                )
+            )
+        ).scalar_one()
+    assert count == 0

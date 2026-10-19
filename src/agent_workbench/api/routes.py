@@ -41,6 +41,7 @@ from agent_workbench.config.catalog import PriceCatalog
 from agent_workbench.config.model_settings import read_preferences
 from agent_workbench.config.settings import get_settings
 from agent_workbench.contracts.conversation import ConversationBody, ConversationPage
+from agent_workbench.contracts.coverage import CoverageProfileCreate
 from agent_workbench.contracts.diagnostics import ModelCallPage, OperationPage, SpanPage
 from agent_workbench.contracts.enums import ACTIVE_RUN_STATUSES, CommandKind, ErrorCode, RunStatus
 from agent_workbench.contracts.errors import ApiError
@@ -1845,26 +1846,85 @@ async def get_coverage(
             "checklist 模式需要同时提供 profile_id/profile_version/"
             "condition_fingerprint/categories",
         )
-    async with get_database().transaction() as session:
+    async with get_database().session() as session:
         await _require_session_row(session, session_id)
         service = CoverageService(session)
         if all(params):
-            profile = CoverageProfile(
+            registered = await service.get_profile(
+                session_id,
                 profile_id=str(profile_id),
                 profile_version=str(profile_version),
-                check_categories=tuple(
-                    item.strip() for item in str(categories).split(",") if item.strip()
-                ),
+                condition_fingerprint=str(condition_fingerprint),
+            )
+            if registered is None:
+                raise ApiError(
+                    ErrorCode.PROFILE_NOT_REGISTERED,
+                    "coverage profile 未登记；请先 POST /coverage/profile",
+                )
+            requested = tuple(
+                item.strip() for item in str(categories).split(",") if item.strip()
+            )
+            if requested != tuple(registered.categories or []):
+                raise ApiError(
+                    ErrorCode.CONFLICT,
+                    "profile 定义与已登记版本冲突；请使用已登记类别或登记新版本",
+                )
+            profile = CoverageProfile(
+                profile_id=registered.profile_id,
+                profile_version=registered.profile_version,
+                check_categories=tuple(registered.categories or []),
+                include_parameter_cells=bool(registered.include_parameter_cells),
+                include_anonymous=bool(registered.include_anonymous),
             )
             summary = await service.checklist_summary(
                 session_id,
                 profile=profile,
-                condition_fingerprint=str(condition_fingerprint),
-                persist_profile=True,
+                condition_fingerprint=registered.condition_fingerprint,
             )
             return {"mode": "checklist", **summary}
         summary = await service.summary(session_id)
     return dict(summary)
+
+
+@router.post("/sessions/{session_id}/coverage/profile", tags=["read"])
+async def register_coverage_profile(
+    session_id: UUID,
+    request: Request,
+    body: CoverageProfileCreate,
+) -> dict[str, Any]:
+    """显式登记冻结 profile；重复相同定义幂等，不同定义冲突。"""
+    get_auth().require_session(request)
+    from agent_workbench.domain.coverage_checklist import CoverageProfile
+    from agent_workbench.domain.findings import CoverageService
+    from agent_workbench.persistence.db import get_database
+
+    profile = CoverageProfile(
+        profile_id=body.profile_id,
+        profile_version=body.profile_version,
+        check_categories=tuple(body.categories),
+        include_parameter_cells=body.include_parameter_cells,
+        include_anonymous=body.include_anonymous,
+    )
+    try:
+        async with get_database().transaction() as session:
+            await _require_session_row(session, session_id)
+            row = await CoverageService(session).register_profile(
+                session_id,
+                profile=profile,
+                condition_fingerprint=body.condition_fingerprint,
+            )
+            return {
+                "profile_row_id": str(row.profile_row_id),
+                "profile_id": row.profile_id,
+                "profile_version": row.profile_version,
+                "condition_fingerprint": row.condition_fingerprint,
+                "definition_hash": row.definition_hash,
+                "categories": list(row.categories or []),
+                "include_parameter_cells": bool(row.include_parameter_cells),
+                "include_anonymous": bool(row.include_anonymous),
+            }
+    except ValueError as exc:
+        raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
 
 
 @router.get("/sessions/{session_id}/jobs", tags=["read"])
