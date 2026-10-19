@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -614,7 +615,7 @@ class VerificationService:
         )
 
 
-def _profile_definition_hash(profile: CoverageProfile) -> str:
+def profile_definition_hash(profile: CoverageProfile) -> str:
     payload = {
         "profile_id": profile.profile_id,
         "profile_version": profile.profile_version,
@@ -627,6 +628,10 @@ def _profile_definition_hash(profile: CoverageProfile) -> str:
             "utf-8"
         )
     ).hexdigest()
+
+
+_PROFILE_LOCKS: dict[str, asyncio.Lock] = {}
+_PROFILE_CACHE: dict[str, CoverageProfileRow] = {}
 
 
 class CoverageService:
@@ -815,27 +820,47 @@ class CoverageService:
             )
         ).scalar_one_or_none()
         categories = list(profile.check_categories)
-        definition_hash = _profile_definition_hash(profile)
+        definition_hash = profile_definition_hash(profile)
         if existing is not None:
+            if not existing.definition_hash:
+                existing.definition_hash = definition_hash
+                await self._s.flush()
+                return existing
             if existing.definition_hash != definition_hash:
                 raise ValueError(
                     "coverage_profile_conflict: 同一 profile/version/fingerprint "
                     "不能携带不同定义"
-                )
+                ) from None
             return existing
-        row = CoverageProfileRow(
-            session_id=session_id,
-            profile_id=profile.profile_id,
-            profile_version=profile.profile_version,
-            condition_fingerprint=condition_fingerprint,
-            definition_hash=definition_hash,
-            categories=categories,
-            include_parameter_cells=profile.include_parameter_cells,
-            include_anonymous=profile.include_anonymous,
+        # 同进程内串行化首次登记；跨进程唯一键仍是最终约束。
+        lock_key = (
+            f"coverage-profile:{session_id}:{profile.profile_id}:"
+            f"{profile.profile_version}:{condition_fingerprint}"
         )
-        self._s.add(row)
-        await self._s.flush()
-        return row
+        lock = _PROFILE_LOCKS.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            cached = _PROFILE_CACHE.get(lock_key)
+            if cached is not None:
+                if cached.definition_hash != definition_hash:
+                    raise ValueError(
+                        "coverage_profile_conflict: 同一 profile/version/fingerprint "
+                        "不能携带不同定义"
+                    )
+                return cached
+            row = CoverageProfileRow(
+                session_id=session_id,
+                profile_id=profile.profile_id,
+                profile_version=profile.profile_version,
+                condition_fingerprint=condition_fingerprint,
+                definition_hash=definition_hash,
+                categories=categories,
+                include_parameter_cells=profile.include_parameter_cells,
+                include_anonymous=profile.include_anonymous,
+            )
+            self._s.add(row)
+            await self._s.flush()
+            _PROFILE_CACHE[lock_key] = row
+            return row
 
     async def get_profile(
         self,

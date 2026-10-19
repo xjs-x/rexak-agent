@@ -20,7 +20,7 @@ from agent_workbench.contracts.enums import ErrorCode, Sensitivity
 from agent_workbench.contracts.errors import ApiError
 from agent_workbench.contracts.events import EventType
 from agent_workbench.domain.coverage_checklist import CoverageProfile
-from agent_workbench.domain.findings import CoverageService
+from agent_workbench.domain.findings import CoverageService, profile_definition_hash
 from agent_workbench.evidence.artifacts import (
     ArtifactError,
     ArtifactStore,
@@ -210,22 +210,41 @@ class ReportService:
 
         checked = sum(row.status in {"checked_negative", "checked_positive"} for row in coverage)
         coverage_checklist: dict[str, Any] | None = None
+        explicit_profile = coverage_profile is not None
         if coverage_profile is None:
             latest = await CoverageService(self._s).latest_profile(session_id)
             if latest is not None:
                 coverage_profile, condition_fingerprint = latest
         if coverage_profile is not None and condition_fingerprint:
-            try:
-                coverage_checklist = await CoverageService(self._s).checklist_summary(
+            if explicit_profile:
+                registered = await CoverageService(self._s).get_profile(
                     session_id,
-                    profile=coverage_profile,
+                    profile_id=coverage_profile.profile_id,
+                    profile_version=coverage_profile.profile_version,
                     condition_fingerprint=condition_fingerprint,
                 )
-            except Exception:
-                coverage_checklist = {
-                    "error": "checklist_unavailable",
-                    "note": "冻结 profile 存在，但清单输入无法完整读取。",
-                }
+                if registered is None:
+                    coverage_checklist = {
+                        "error": "profile_not_registered",
+                        "note": "显式传入的报告 profile 未登记。",
+                    }
+                elif registered.definition_hash != profile_definition_hash(coverage_profile):
+                    coverage_checklist = {
+                        "error": "profile_definition_mismatch",
+                        "note": "显式传入的 profile 定义与已登记版本不一致。",
+                    }
+            if coverage_checklist is None:
+                try:
+                    coverage_checklist = await CoverageService(self._s).checklist_summary(
+                        session_id,
+                        profile=coverage_profile,
+                        condition_fingerprint=condition_fingerprint,
+                    )
+                except Exception:
+                    coverage_checklist = {
+                        "error": "checklist_unavailable",
+                        "note": "冻结 profile 存在，但清单输入无法完整读取。",
+                    }
         else:
             # 不从已登记 coverage 行反推类别；否则分母会变小、比例会变高。
             coverage_checklist = {
