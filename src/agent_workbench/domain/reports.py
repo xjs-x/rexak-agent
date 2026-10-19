@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agent_workbench.contracts.enums import ErrorCode, Sensitivity
 from agent_workbench.contracts.errors import ApiError
 from agent_workbench.contracts.events import EventType
+from agent_workbench.domain.coverage_checklist import CoverageProfile
+from agent_workbench.domain.findings import CoverageService
 from agent_workbench.evidence.artifacts import (
     ArtifactError,
     ArtifactStore,
@@ -202,6 +204,33 @@ class ReportService:
             finding_revisions[finding.id] = finding.revision
 
         checked = sum(row.status in {"checked_negative", "checked_positive"} for row in coverage)
+        coverage_checklist: dict[str, Any] | None = None
+        groups: dict[tuple[str, str, str], list[CoverageRow]] = {}
+        for row in coverage:
+            if row.profile_id and row.profile_version and row.condition_fingerprint:
+                groups.setdefault(
+                    (row.profile_id, row.profile_version, row.condition_fingerprint), []
+                ).append(row)
+        if len(groups) == 1:
+            (profile_id, profile_version, fingerprint), rows = next(iter(groups.items()))
+            categories = tuple(sorted({row.check_category for row in rows}))
+            try:
+                coverage_checklist = await CoverageService(self._s).checklist_summary(
+                    session_id,
+                    profile=CoverageProfile(
+                        profile_id=profile_id,
+                        profile_version=profile_version,
+                        check_categories=categories,
+                    ),
+                    condition_fingerprint=fingerprint,
+                )
+            except Exception:
+                coverage_checklist = None
+        elif len(groups) > 1:
+            coverage_checklist = {
+                "error": "multiple_checklist_profiles",
+                "note": "存在多组 profile/fingerprint，报告不合并成一个分母。",
+            }
         link_rows = list(
             (
                 await self._s.execute(
@@ -295,6 +324,7 @@ class ReportService:
                 "registered": len(coverage),
                 "blocked": sum(row.status == "blocked" for row in coverage),
                 "not_checked": sum(row.status == "not_checked" for row in coverage),
+                "checklist": coverage_checklist,
                 "note": "分母仅为已登记的资产/入口 × 身份 × 检查类别，不代表网站漏洞覆盖率。",
             },
             # 受阻与暂缓事项保留在报告里：不能靠改状态消除缺口。

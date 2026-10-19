@@ -13,11 +13,14 @@ from agent_workbench.api.app import create_app
 from agent_workbench.contracts.enums import CoverageStatus
 from agent_workbench.domain.coverage_checklist import CoverageProfile
 from agent_workbench.domain.findings import CoverageService
+from agent_workbench.domain.reports import create_report_snapshot
+from agent_workbench.evidence.artifacts import ArtifactStore
 from agent_workbench.persistence.tables import (
     AssetRow,
     CoverageRow,
     IdentityRow,
     ParameterRow,
+    ReportVersionRow,
     RequestVariantRow,
     SessionRow,
 )
@@ -265,3 +268,57 @@ async def test_coverage_api_checklist_mode(database, unique_name):
     assert payload["mode"] == "checklist"
     assert payload["total_cells"] == 2
     assert payload["checked_cells"] == 0
+
+
+async def test_report_snapshot_uses_checklist_denominator(database, unique_name):
+    context = await context_for(database, unique_name)
+    async with database.transaction() as db:
+        session_row = await db.get(SessionRow, context.toolbox.session_id)
+        assert session_row is not None
+        asset = _asset(context)
+        db.add(asset)
+        await db.flush()
+        parameter = ParameterRow(
+            session_id=context.toolbox.session_id,
+            asset_id=asset.id,
+            location="query",
+            name="token",
+            occurrence=0,
+            normalizer_version="v1",
+        )
+        identity = IdentityRow(
+            project_id=session_row.project_id,
+            display_name="user-a",
+            auth_revision=3,
+        )
+        db.add_all([parameter, identity])
+        await db.flush()
+        await CoverageService(db).record(
+            session_id=context.toolbox.session_id,
+            asset_id=asset.id,
+            entry_label="/a",
+            identity_id=identity.id,
+            identity_revision=3,
+            check_category="configuration",
+            status=CoverageStatus.CHECKED_NEGATIVE,
+            parameter_id=parameter.parameter_id,
+            condition_fingerprint="f" * 64,
+            profile_id="web",
+            profile_version="v1",
+            evidence_refs=["e1"],
+        )
+    store = ArtifactStore(database.settings)
+    await create_report_snapshot(database, store, context.toolbox.session_id)
+    async with database.session() as db:
+        report = (
+            await db.execute(
+                select(ReportVersionRow)
+                .where(ReportVersionRow.session_id == context.toolbox.session_id)
+                .order_by(ReportVersionRow.version.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+    coverage = report.captured_snapshot["body"]["coverage"]
+    assert coverage["checklist"] is not None
+    assert coverage["checklist"]["total_cells"] == 4
+    assert coverage["checklist"]["checked_cells"] == 1
