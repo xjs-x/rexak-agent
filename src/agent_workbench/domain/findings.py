@@ -54,6 +54,7 @@ from agent_workbench.domain.coverage_checklist import (
 )
 from agent_workbench.persistence.tables import (
     AssetRow,
+    CoverageProfileRow,
     CoverageRow,
     FindingRow,
     IdentityRow,
@@ -778,14 +779,88 @@ class CoverageService:
             ],
         }
 
+    async def register_profile(
+        self,
+        session_id: UUID,
+        *,
+        profile: CoverageProfile,
+        condition_fingerprint: str,
+    ) -> CoverageProfileRow:
+        """登记冻结 profile；同一 profile 版本不同类别定义直接拒绝。"""
+        existing = (
+            await self._s.execute(
+                select(CoverageProfileRow).where(
+                    CoverageProfileRow.session_id == session_id,
+                    CoverageProfileRow.profile_id == profile.profile_id,
+                    CoverageProfileRow.profile_version == profile.profile_version,
+                    CoverageProfileRow.condition_fingerprint == condition_fingerprint,
+                )
+            )
+        ).scalar_one_or_none()
+        categories = list(profile.check_categories)
+        if existing is not None:
+            if (
+                list(existing.categories or []) != categories
+                or bool(existing.include_parameter_cells) != profile.include_parameter_cells
+                or bool(existing.include_anonymous) != profile.include_anonymous
+            ):
+                raise ValueError(
+                    "coverage_profile_conflict: 同一 profile/version/fingerprint "
+                    "不能携带不同类别定义"
+                )
+            return existing
+        row = CoverageProfileRow(
+            session_id=session_id,
+            profile_id=profile.profile_id,
+            profile_version=profile.profile_version,
+            condition_fingerprint=condition_fingerprint,
+            categories=categories,
+            include_parameter_cells=profile.include_parameter_cells,
+            include_anonymous=profile.include_anonymous,
+        )
+        self._s.add(row)
+        await self._s.flush()
+        return row
+
+    async def latest_profile(
+        self, session_id: UUID
+    ) -> tuple[CoverageProfile, str] | None:
+        row = (
+            await self._s.execute(
+                select(CoverageProfileRow)
+                .where(CoverageProfileRow.session_id == session_id)
+                .order_by(CoverageProfileRow.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        return (
+            CoverageProfile(
+                profile_id=row.profile_id,
+                profile_version=row.profile_version,
+                check_categories=tuple(row.categories or []),
+                include_parameter_cells=bool(row.include_parameter_cells),
+                include_anonymous=bool(row.include_anonymous),
+            ),
+            row.condition_fingerprint,
+        )
+
     async def checklist_summary(
         self,
         session_id: UUID,
         *,
         profile: CoverageProfile,
         condition_fingerprint: str,
+        persist_profile: bool = True,
     ) -> dict[str, Any]:
         """用冻结清单生成 Uᵥ，再对账 coverage rows；不是扫描总结展开。"""
+        if persist_profile:
+            await self.register_profile(
+                session_id,
+                profile=profile,
+                condition_fingerprint=condition_fingerprint,
+            )
         session_row = await self._s.get(SessionRow, session_id)
         if session_row is None:
             raise ValueError("session 不存在")

@@ -132,7 +132,11 @@ async def test_plan_endpoint_projects_contracts_and_frontier(
         session_id = task.id
 
     graph = StateGraph(AgentGraphState)
-    graph.add_node("noop", lambda _state: {"plan_revision": 1})
+
+    def contract_noop(state: AgentGraphState) -> dict[str, int]:
+        return {"plan_revision": int(state.get("plan_revision") or 0)}
+
+    graph.add_node("noop", contract_noop)
     graph.set_entry_point("noop")
     graph.set_finish_point("noop")
     async with open_checkpointer_connection(settings) as connection:

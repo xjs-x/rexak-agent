@@ -606,6 +606,39 @@ class VerificationRow(TimestampMixin, Base):
     __table_args__ = (Index("ix_verifications_finding", "finding_id"),)
 
 
+class CoverageProfileRow(Base):
+    """冻结的 coverage 清单定义；API 与报告读取同一版本。"""
+
+    __tablename__ = "coverage_profiles"
+
+    profile_row_id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    profile_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    condition_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    categories: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    include_parameter_cells: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    include_anonymous: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "profile_id",
+            "profile_version",
+            "condition_fingerprint",
+            name="uq_coverage_profile",
+        ),
+        Index("ix_coverage_profiles_session", "session_id", "created_at"),
+    )
+
+
 class CoverageRow(TimestampMixin, Base):
     __tablename__ = "coverage"
 

@@ -15,6 +15,7 @@ import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Annotated, Any
+from typing import cast as type_cast
 from uuid import UUID
 
 from fastapi import (
@@ -92,6 +93,7 @@ from agent_workbench.persistence.repositories import (
 from agent_workbench.persistence.tables import (
     ArtifactRow,
     AssetRow,
+    CheckpointHeadRow,
     CommandRow,
     CoverageRow,
     FindingRow,
@@ -805,11 +807,14 @@ async def session_plan(session_id: UUID, request: Request) -> PlanRead:
         if session_row is None or session_row.status == "deleted":
             raise ApiError(ErrorCode.NOT_FOUND, f"session 不存在：{session_id}")
         thread_id = session_row.thread_id
+        head = await db.get(CheckpointHeadRow, (thread_id, ""))
+
+    checkpoint_config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+    if head is not None and head.accepted_checkpoint_id:
+        checkpoint_config["configurable"]["checkpoint_id"] = head.accepted_checkpoint_id
 
     async with open_checkpointer_connection(get_settings()) as connection:
-        saved = await AsyncPostgresSaver(connection).aget_tuple(
-            {"configurable": {"thread_id": thread_id}}
-        )
+        saved = await AsyncPostgresSaver(connection).aget_tuple(type_cast(Any, checkpoint_config))
     values = saved.checkpoint.get("channel_values", {}) if saved is not None else {}
     raw_steps = values.get("plan") or []
     contract_refs = list(values.get("contract_refs") or [])
@@ -1840,7 +1845,7 @@ async def get_coverage(
             "checklist 模式需要同时提供 profile_id/profile_version/"
             "condition_fingerprint/categories",
         )
-    async with get_database().session() as session:
+    async with get_database().transaction() as session:
         await _require_session_row(session, session_id)
         service = CoverageService(session)
         if all(params):
@@ -1855,6 +1860,7 @@ async def get_coverage(
                 session_id,
                 profile=profile,
                 condition_fingerprint=str(condition_fingerprint),
+                persist_profile=True,
             )
             return {"mode": "checklist", **summary}
         summary = await service.summary(session_id)

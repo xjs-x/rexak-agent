@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from agent_workbench.api.app import create_app
@@ -18,6 +18,7 @@ from agent_workbench.evidence.artifacts import ArtifactStore
 from agent_workbench.persistence.tables import (
     ArtifactRow,
     AssetRow,
+    CoverageProfileRow,
     CoverageRow,
     IdentityRow,
     ParameterRow,
@@ -269,6 +270,15 @@ async def test_coverage_api_checklist_mode(database, unique_name):
     assert payload["mode"] == "checklist"
     assert payload["total_cells"] == 2
     assert payload["checked_cells"] == 0
+    async with database.session() as db:
+        profiles = (
+            await db.execute(
+                select(func.count()).select_from(CoverageProfileRow).where(
+                    CoverageProfileRow.session_id == context.toolbox.session_id
+                )
+            )
+        ).scalar_one()
+    assert profiles == 1
 
 
 async def test_report_snapshot_uses_checklist_denominator(database, unique_name):
@@ -294,7 +304,8 @@ async def test_report_snapshot_uses_checklist_denominator(database, unique_name)
         )
         db.add_all([parameter, identity])
         await db.flush()
-        await CoverageService(db).record(
+        service = CoverageService(db)
+        await service.record(
             session_id=context.toolbox.session_id,
             asset_id=asset.id,
             entry_label="/a",
@@ -307,6 +318,15 @@ async def test_report_snapshot_uses_checklist_denominator(database, unique_name)
             profile_id="web",
             profile_version="v1",
             evidence_refs=["e1"],
+        )
+        await service.register_profile(
+            context.toolbox.session_id,
+            profile=CoverageProfile(
+                profile_id="web",
+                profile_version="v1",
+                check_categories=("configuration", "auth"),
+            ),
+            condition_fingerprint="f" * 64,
         )
     store = ArtifactStore(database.settings)
     result = await create_report_snapshot(database, store, context.toolbox.session_id)
@@ -321,7 +341,7 @@ async def test_report_snapshot_uses_checklist_denominator(database, unique_name)
         ).scalar_one()
     coverage = report.captured_snapshot["body"]["coverage"]
     assert coverage["checklist"] is not None
-    assert coverage["checklist"]["total_cells"] == 4
+    assert coverage["checklist"]["total_cells"] == 8
     assert coverage["checklist"]["checked_cells"] == 1
     async with database.session() as db:
         artifact = await db.get(ArtifactRow, result.markdown_artifact_id)

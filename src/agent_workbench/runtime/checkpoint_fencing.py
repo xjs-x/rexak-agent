@@ -213,7 +213,63 @@ class FencedCheckpointSaver(BaseCheckpointSaver):
                 elif session_row is None:
                     raise StaleWriterError("thread 不存在，拒绝恢复")
             config = {**config, "configurable": configurable}
-        return await self._inner.aget_tuple(config)
+        result = await self._inner.aget_tuple(config)
+        if result is None:
+            return None
+        return await self._filter_pending_writes(result)
+
+    async def _filter_pending_writes(self, result: CheckpointTuple) -> CheckpointTuple:
+        """只保留有已提交收据、内容哈希与所有权匹配的 pending writes。"""
+        pending = list(result.pending_writes or [])
+        if not pending:
+            return result
+        checkpoint_id = str(
+            (result.config.get("configurable") or {}).get("checkpoint_id")
+            or (result.checkpoint or {}).get("id")
+            or ""
+        )
+        if not checkpoint_id:
+            return result._replace(pending_writes=[])
+        async with self._db.session() as session:
+            receipts = list(
+                (
+                    await session.execute(
+                        select(CheckpointWriteReceiptRow).where(
+                            CheckpointWriteReceiptRow.thread_id == self._thread_id,
+                            CheckpointWriteReceiptRow.checkpoint_ns == self._checkpoint_ns,
+                            CheckpointWriteReceiptRow.checkpoint_id == checkpoint_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        by_key = {(row.task_id, row.write_key): row for row in receipts}
+        kept = []
+        for item in pending:
+            if isinstance(item, tuple):
+                task_id = str(item[0] if len(item) > 0 else "")
+                channel = str(item[1] if len(item) > 1 else "")
+                value = item[2] if len(item) > 2 else None
+            else:
+                task_id = str(getattr(item, "task_id", "") or "")
+                channel = str(getattr(item, "channel", "") or "")
+                value = getattr(item, "value", None)
+            receipt = by_key.get((task_id, channel))
+            if receipt is None:
+                continue
+            if receipt.content_hash != _content_hash(value):
+                continue
+            if (
+                int(receipt.writer_epoch) != self._writer_epoch
+                or int(receipt.owner_generation) != self._owner_generation
+                or int(receipt.control_version) != self._control_version
+            ):
+                continue
+            kept.append(item)
+        if len(kept) == len(pending):
+            return result
+        return result._replace(pending_writes=kept)
 
     def alist(
         self,

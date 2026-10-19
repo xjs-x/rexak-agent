@@ -20,7 +20,7 @@ _STATE_RANK = {
     "legacy_done": -1,
     "dropped": -1,
 }
-_ELIGIBLE = frozenset({"running", "ready", "needs_review", "blocked"})
+_ELIGIBLE = frozenset({"running", "ready", "needs_review"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +75,7 @@ def build_frontier(
         if state not in _STATE_RANK:
             continue
         missing = _missing_conditions(contract)
+        # blocked 一律不可执行；条件解除后必须追加 ready 版本。
         eligible = state in _ELIGIBLE and not missing
         reasons: list[str] = []
         if state == "running":

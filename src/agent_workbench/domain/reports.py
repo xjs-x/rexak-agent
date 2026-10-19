@@ -75,7 +75,12 @@ class ReportService:
         self._s = session
 
     async def capture(
-        self, session_id: UUID, stage_metadata: dict[str, Any] | None = None
+        self,
+        session_id: UUID,
+        stage_metadata: dict[str, Any] | None = None,
+        *,
+        coverage_profile: CoverageProfile | None = None,
+        condition_fingerprint: str | None = None,
     ) -> CapturedReport:
         # 串行分配版本；报告正文只使用本次捕获的字段和修订号。
         target = (
@@ -205,31 +210,27 @@ class ReportService:
 
         checked = sum(row.status in {"checked_negative", "checked_positive"} for row in coverage)
         coverage_checklist: dict[str, Any] | None = None
-        groups: dict[tuple[str, str, str], list[CoverageRow]] = {}
-        for row in coverage:
-            if row.profile_id and row.profile_version and row.condition_fingerprint:
-                groups.setdefault(
-                    (row.profile_id, row.profile_version, row.condition_fingerprint), []
-                ).append(row)
-        if len(groups) == 1:
-            (profile_id, profile_version, fingerprint), rows = next(iter(groups.items()))
-            categories = tuple(sorted({row.check_category for row in rows}))
+        if coverage_profile is None:
+            latest = await CoverageService(self._s).latest_profile(session_id)
+            if latest is not None:
+                coverage_profile, condition_fingerprint = latest
+        if coverage_profile is not None and condition_fingerprint:
             try:
                 coverage_checklist = await CoverageService(self._s).checklist_summary(
                     session_id,
-                    profile=CoverageProfile(
-                        profile_id=profile_id,
-                        profile_version=profile_version,
-                        check_categories=categories,
-                    ),
-                    condition_fingerprint=fingerprint,
+                    profile=coverage_profile,
+                    condition_fingerprint=condition_fingerprint,
                 )
             except Exception:
-                coverage_checklist = None
-        elif len(groups) > 1:
+                coverage_checklist = {
+                    "error": "checklist_unavailable",
+                    "note": "冻结 profile 存在，但清单输入无法完整读取。",
+                }
+        else:
+            # 不从已登记 coverage 行反推类别；否则分母会变小、比例会变高。
             coverage_checklist = {
-                "error": "multiple_checklist_profiles",
-                "note": "存在多组 profile/fingerprint，报告不合并成一个分母。",
+                "error": "profile_not_frozen",
+                "note": "报告未收到完整 profile 定义，不能由已登记行推断分母。",
             }
         link_rows = list(
             (
@@ -639,9 +640,17 @@ async def create_report_snapshot(
     session_id: UUID,
     *,
     stage_metadata: dict[str, Any] | None = None,
+    coverage_profile: CoverageProfile | None = None,
+    condition_fingerprint: str | None = None,
 ) -> ReportResult:
     if not stage_metadata:
-        return await _create_report_snapshot(db, store, session_id)
+        return await _create_report_snapshot(
+            db,
+            store,
+            session_id,
+            coverage_profile=coverage_profile,
+            condition_fingerprint=condition_fingerprint,
+        )
     # 专用会话锁防止同一阶段并发渲染；不持业务行锁跨文件 I/O。
     async with db.session() as lock_session:
         key = f"stage-report:{session_id}"
@@ -654,7 +663,12 @@ async def create_report_snapshot(
             raise ApiError(ErrorCode.CONFLICT, "阶段报告正在生成，稍后可按原阶段版本重试")
         try:
             return await _create_report_snapshot(
-                db, store, session_id, stage_metadata=stage_metadata
+                db,
+                store,
+                session_id,
+                stage_metadata=stage_metadata,
+                coverage_profile=coverage_profile,
+                condition_fingerprint=condition_fingerprint,
             )
         finally:
             await lock_session.execute(
@@ -668,6 +682,8 @@ async def _create_report_snapshot(
     session_id: UUID,
     *,
     stage_metadata: dict[str, Any] | None = None,
+    coverage_profile: CoverageProfile | None = None,
+    condition_fingerprint: str | None = None,
 ) -> ReportResult:
     spans = SpanRecorder()
     span = spans.start("report.generate", session_id=session_id)
@@ -676,7 +692,12 @@ async def _create_report_snapshot(
     try:
         with _report_stage(spans, "report.capture", session_id) as stage:
             async with db.transaction() as session:
-                captured = await ReportService(session).capture(session_id, stage_metadata)
+                captured = await ReportService(session).capture(
+                    session_id,
+                    stage_metadata,
+                    coverage_profile=coverage_profile,
+                    condition_fingerprint=condition_fingerprint,
+                )
                 existing = await session.get(ReportVersionRow, captured.report_id)
                 if (
                     existing is not None

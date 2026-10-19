@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import pytest
+from langgraph.checkpoint.base import CheckpointTuple
 from sqlalchemy import select
 
 from agent_workbench.domain.run_state import bump_control_version
@@ -124,6 +125,53 @@ async def test_pause_fences_old_writer_for_both_write_paths(database, unique_nam
     )
     await fresh.aput(config, _empty(), _empty(), _empty())
     assert (await fresh.aget_tuple(config)) is None
+
+
+class _PendingSaver(_FakeSaver):
+    async def aget_tuple(self, config) -> Any:
+        return CheckpointTuple(
+            config=cast(
+                Any,
+                {
+                    **config,
+                    "configurable": {
+                        **config.get("configurable", {}),
+                        "checkpoint_id": "ckpt-1",
+                    },
+                },
+            ),
+            checkpoint=cast(Any, {"id": "ckpt-1"}),
+            metadata=cast(Any, {}),
+            parent_config=None,
+            pending_writes=[("task-1", "channel", {"x": 1})],
+        )
+
+
+async def test_unreceipted_pending_write_is_not_recovered(database, unique_name):
+    context = await context_for(database, unique_name)
+    async with database.session() as db:
+        run = await db.get(RunRow, context.toolbox.run_id)
+        assert run is not None
+        saver = FencedCheckpointSaver(
+            cast(Any, _PendingSaver()),
+            database,
+            run_id=run.id,
+            thread_id=context.thread_id,
+            owner_generation=int(run.owner_generation),
+            control_version=int(run.control_version),
+            writer_epoch=0,
+        )
+    config: Any = {"configurable": {"thread_id": context.thread_id, "checkpoint_ns": ""}}
+    await saver.aput(config, _empty(), _empty(), _empty())
+    assert (await saver.aget_tuple(config)) is not None
+    recovered = await saver.aget_tuple(config)
+    assert recovered is not None and recovered.pending_writes == []
+
+    await saver.aput_writes(config, [("channel", {"x": 1})], "task-1")
+    recovered = await saver.aget_tuple(config)
+    assert recovered is not None
+    assert recovered.pending_writes is not None
+    assert len(recovered.pending_writes) == 1
 
 
 async def test_pending_write_receipts_are_idempotent_and_conflict_on_content(

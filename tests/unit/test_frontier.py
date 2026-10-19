@@ -42,3 +42,9 @@ def test_signature_changes_when_state_changes():
     a = build_frontier([_contract("c1", "ready")])
     b = build_frontier([_contract("c1", "running")])
     assert frontier_signature(a) != frontier_signature(b)
+
+
+def test_blocked_with_empty_requires_is_still_ineligible():
+    items = build_frontier([_contract("blocked", "blocked", missing=False)])
+    assert items[0].eligible is False
+    assert "blocked_contract_requires_condition" in items[0].reasons

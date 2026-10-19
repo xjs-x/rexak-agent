@@ -231,6 +231,7 @@ async def test_review_inventory_uses_contracts_instead_of_old_plan(database, uni
 async def test_get_frontier_reads_active_contracts_without_writing(database, unique_name):
     context = await context_for(database, unique_name)
     contract_id = uuid4()
+    blocked_id = uuid4()
     async with database.transaction() as db:
         row = await append_contract(
             db,
@@ -238,12 +239,23 @@ async def test_get_frontier_reads_active_contracts_without_writing(database, uni
             run_id=context.toolbox.run_id,
             contract=_contract(contract_id, uuid4(), state="running"),
         )
+        blocked = await append_contract(
+            db,
+            session_id=context.toolbox.session_id,
+            run_id=context.toolbox.run_id,
+            contract=_contract(blocked_id, uuid4(), state="blocked"),
+        )
     refs = [
         {
             "contract_id": str(row.contract_id),
             "contract_revision": row.contract_revision,
             "content_hash": row.content_hash,
-        }
+        },
+        {
+            "contract_id": str(blocked.contract_id),
+            "contract_revision": blocked.contract_revision,
+            "content_hash": blocked.content_hash,
+        },
     ]
     result = json.loads(
         await _call(
@@ -251,12 +263,19 @@ async def test_get_frontier_reads_active_contracts_without_writing(database, uni
             context,
             {"limit": 5},
             "frontier-read",
-            state={"contract_refs": refs, "active_contract_ids": [str(contract_id)]},
+            state={
+                "contract_refs": refs,
+                "active_contract_ids": [str(contract_id), str(blocked_id)],
+            },
         )
     )
     assert result["mode"] == "contracts"
     assert result["frontier"][0]["contract_id"] == str(contract_id)
     assert result["frontier"][0]["state"] == "running"
+    blocked_item = next(
+        item for item in result["frontier"] if item["contract_id"] == str(blocked_id)
+    )
+    assert blocked_item["eligible"] is False
     legacy = json.loads(
         await _call(get_frontier, context, {}, "frontier-legacy", state={})
     )
