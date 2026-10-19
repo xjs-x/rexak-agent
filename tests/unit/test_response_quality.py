@@ -119,3 +119,41 @@ def test_recovery_feedback_never_asks_for_hidden_reasoning() -> None:
         )
         assert text.strip()
         assert "推理" not in text
+
+
+def test_coherence_rejects_repeated_prefix_and_recap():
+    from agent_workbench.models.response_quality import coherence_rejection
+
+    previous = "当前入口返回 403，说明需要认证。" + "这是上一轮的说明。" * 8
+    repeated = previous[:120] + "本轮继续补充。"
+    assert "重复" in (coherence_rejection(previous, repeated) or "")
+    recap = "总结一下：" + previous
+    assert "recap" in (coherence_rejection(previous, recap) or "")
+
+
+def test_coherence_rejects_self_proof_without_evidence_and_allows_evidence():
+    from agent_workbench.models.response_quality import coherence_rejection
+
+    self_proof = "我已经验证了目标存在漏洞，测试通过。" + "没有更多信息。" * 12
+    assert coherence_rejection("", self_proof) is not None
+    with_evidence = self_proof + " 证据工件 artifact-123。"
+    assert coherence_rejection("", with_evidence) is None
+
+
+def test_coherence_skips_tool_actions_and_long_text_is_rejected():
+    from agent_workbench.models.response_quality import coherence_rejection
+
+    assert coherence_rejection("旧内容" * 50, "新内容" * 50, has_tool_calls=True) is None
+    long_text = "事实。" * 2100
+    assert "过长" in (coherence_rejection("", long_text) or "")
+
+
+def test_previous_visible_text_uses_last_ai_message():
+    from agent_workbench.models.response_quality import previous_visible_text
+
+    messages = [
+        AIMessage(content="第一轮"),
+        ToolMessage(content="工具输出", tool_call_id="t"),
+        AIMessage(content="第二轮"),
+    ]
+    assert previous_visible_text(messages) == "第二轮"

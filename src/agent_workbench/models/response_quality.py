@@ -19,7 +19,9 @@ from typing import Any, Literal
 
 from langchain_core.messages import AIMessage
 
-ResponseOutcome = Literal["usable", "truncated", "empty", "invalid_tool_call", "refused"]
+ResponseOutcome = Literal[
+    "usable", "truncated", "empty", "invalid_tool_call", "incoherent", "refused"
+]
 
 
 class ModelResponseIncomplete(RuntimeError):
@@ -209,6 +211,11 @@ def recovery_feedback(quality: ResponseQuality) -> str:
             "上次输出达到长度限制，没有得到完整的工具调用或结论。"
             "请给出一个完整的下一步调用，或一段简短结论；不要重复更长篇幅的说明。"
         )
+    if quality.outcome == "incoherent":
+        return (
+            "上次正文重复、recap 或缺少证据支撑。"
+            "请只写新增事实、当前阻塞或一个明确的下一步；不要复述上一轮。"
+        )
     if quality.outcome == "invalid_tool_call":
         return (
             "上次的工具调用参数不完整或不是合法 JSON，未执行。"
@@ -228,9 +235,105 @@ __all__ = [
     "ResponseQuality",
     "batch_rejection",
     "classify_response",
+    "coherence_rejection",
     "finish_reason_of",
     "last_ai_message",
+    "previous_visible_text",
     "recovery_feedback",
     "response_messages",
     "visible_text",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# 输出收敛：自证、recap、前缀重复、无动作长文
+# --------------------------------------------------------------------------- #
+
+_RECAP_MARKERS = (
+    "总结一下",
+    "回顾一下",
+    "如前所述",
+    "综上",
+    "再次说明",
+    "to recap",
+    "in summary",
+)
+_SELF_PROOF_PATTERNS = (
+    "我已",
+    "我已经",
+    "我确认",
+    "我验证",
+    "测试通过",
+    "i have verified",
+    "i have confirmed",
+    "i completed",
+)
+_EVIDENCE_MARKERS = ("证据", "工件", "操作", "输出", "artifact", "evidence", "operation")
+
+
+def _ngrams(text: str, size: int = 3) -> set[str]:
+    compact = "".join(text.split())
+    if len(compact) < size:
+        return set()
+    return {compact[index : index + size] for index in range(len(compact) - size + 1)}
+
+
+def _overlap(left: str, right: str) -> float:
+    left_grams, right_grams = _ngrams(left), _ngrams(right)
+    if not left_grams or not right_grams:
+        return 0.0
+    return len(left_grams & right_grams) / len(left_grams | right_grams)
+
+
+def previous_visible_text(messages: Any) -> str:
+    """取最近一条有可见正文的 AI 消息；不读取推理字段。"""
+    for message in reversed(list(messages or [])):
+        if isinstance(message, AIMessage):
+            text = visible_text(message).strip()
+            if text:
+                return text
+    return ""
+
+
+def coherence_rejection(
+    previous_text: str, current_text: str, *, has_tool_calls: bool = False
+) -> str | None:
+    """只拦明显重复/自证/长文；工具动作响应不在此处拦截。"""
+    if has_tool_calls:
+        return None
+    text = current_text.strip()
+    if len(text) < 80:
+        return None
+
+    if previous_text:
+        head = min(160, len(previous_text), len(text))
+        if head >= 80 and text[:head] == previous_text[:head]:
+            return (
+                "本次正文重复了上一段开头。不要复述上一轮；"
+                "请直接说明新增事实、当前阻塞或下一步动作。"
+            )
+        lowered = text.lower()
+        if (
+            any(marker in text or marker in lowered for marker in _RECAP_MARKERS)
+            and _overlap(previous_text, text) >= 0.5
+        ):
+            return (
+                "本次正文主要是对上一轮的 recap。不要重复已知内容；"
+                "只写本轮新增的证据、状态变化或下一步。"
+            )
+
+    lowered = text.lower()
+    if any(
+        pattern in text or pattern in lowered for pattern in _SELF_PROOF_PATTERNS
+    ) and not any(marker in text or marker in lowered for marker in _EVIDENCE_MARKERS):
+        return (
+            "不要用“我已/我确认/测试通过”这类自证句代替证据。"
+            "请引用实际工件或操作结果；没有证据就说明还缺什么。"
+        )
+
+    if len(text) > 6000:
+        return (
+            "正文过长且没有工具动作。请压缩为：已确认事实、仍未确认、下一步一个动作；"
+            "不要把中间过程全部复述。"
+        )
+    return None

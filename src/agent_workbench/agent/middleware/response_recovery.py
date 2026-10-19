@@ -31,8 +31,11 @@ from agent_workbench.models.response_quality import (
     ResponseQuality,
     batch_rejection,
     classify_response,
+    coherence_rejection,
     last_ai_message,
+    previous_visible_text,
     recovery_feedback,
+    visible_text,
 )
 from agent_workbench.observability.events import append_event
 from agent_workbench.observability.logging import get_logger
@@ -192,9 +195,18 @@ class ResponseRecoveryMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     # 整批可接受性检查：不完整 JSON、缺少稳定 id 或同批多次 update_plan
                     # 都不执行该批，而是返回简短格式反馈后恢复。
                     rejection = batch_rejection(response)
+                    if rejection is None and quality.valid_tool_count == 0:
+                        message = last_ai_message(response)
+                        rejection = coherence_rejection(
+                            previous_visible_text(getattr(request, "messages", None) or []),
+                            visible_text(message) if message else "",
+                            has_tool_calls=False,
+                        )
                     if rejection is not None:
                         quality = ResponseQuality(
-                            outcome="invalid_tool_call",
+                            outcome="incoherent"
+                            if quality.valid_tool_count == 0
+                            else "invalid_tool_call",
                             finish_reason=quality.finish_reason,
                             visible_chars=quality.visible_chars,
                             valid_tool_count=quality.valid_tool_count,
