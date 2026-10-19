@@ -148,7 +148,9 @@ async def claim_run(
     if holder is not None and holder != owner and not expired:
         return False, int(row.owner_generation)
 
-    if holder is not None and holder != owner:
+    # 新 owner / 接管 / 过期租约都推进 generation：
+    # 旧 writer 即使仍持有旧 Saver，也不能再写。
+    if holder != owner or expired:
         row.owner_generation = int(row.owner_generation) + 1
 
     row.owner = owner

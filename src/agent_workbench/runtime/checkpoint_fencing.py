@@ -63,6 +63,7 @@ class FencedCheckpointSaver(BaseCheckpointSaver):
         owner_generation: int,
         control_version: int,
         writer_epoch: int,
+        expected_checkpoint_id: str | None = None,
     ) -> None:
         super().__init__(serde=inner.serde)
         self._inner = inner
@@ -73,6 +74,7 @@ class FencedCheckpointSaver(BaseCheckpointSaver):
         self._owner_generation = int(owner_generation)
         self._control_version = int(control_version)
         self._writer_epoch = int(writer_epoch)
+        self._expected_checkpoint_id = expected_checkpoint_id
 
     @property
     def config_specs(self):  # type: ignore[no-untyped-def]
@@ -113,6 +115,11 @@ class FencedCheckpointSaver(BaseCheckpointSaver):
             await session.flush()
         elif int(head.writer_epoch) != self._writer_epoch:
             raise StaleWriterError("writer epoch 已过期，拒绝旧 writer 写入")
+        if (
+            self._expected_checkpoint_id is not None
+            and head.accepted_checkpoint_id != self._expected_checkpoint_id
+        ):
+            raise StaleWriterError("accepted head 已变化，拒绝基于旧基线的提交")
         return head
 
     async def aput(

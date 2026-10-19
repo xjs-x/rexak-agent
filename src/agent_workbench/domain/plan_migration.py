@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import hashlib
+import json
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
 
@@ -14,7 +16,7 @@ from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.config.settings import Settings
 from agent_workbench.domain.legacy_plan import migrate_legacy_plan
 from agent_workbench.domain.plan_contracts import append_contract
-from agent_workbench.domain.run_state import claim_run, release_run
+from agent_workbench.domain.run_state import claim_run
 from agent_workbench.persistence.bootstrap import open_checkpointer_connection
 from agent_workbench.persistence.db import Database
 from agent_workbench.persistence.tables import (
@@ -26,7 +28,7 @@ from agent_workbench.persistence.tables import (
     ToolJobRow,
     ToolOperationRow,
 )
-from agent_workbench.runtime.checkpoint_fencing import FencedCheckpointSaver
+from agent_workbench.runtime.checkpoint_fencing import FencedCheckpointSaver, StaleWriterError
 
 
 async def _latest_run(db: Any, session_id: Any) -> RunRow | None:
@@ -48,7 +50,7 @@ async def _session_blockers(db: Any, session_id: Any) -> dict[str, list[str]]:
     jobs = (
         await db.execute(
             select(ToolJobRow.job_id, ToolJobRow.state, ToolJobRow.sync_status)
-            .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+            .join(ToolOperationRow, ToolOperationRow.operation_id == ToolJobRow.operation_id)
             .where(
                 ToolOperationRow.session_id == session_id,
                 or_(
@@ -59,9 +61,11 @@ async def _session_blockers(db: Any, session_id: Any) -> dict[str, list[str]]:
         )
     ).all()
     if jobs:
-        blockers["pending_jobs"] = [
-            f"{job_id}:{state}/{sync_status}" for job_id, state, sync_status in jobs
-        ]
+        blockers["pending_jobs"] = list(
+            dict.fromkeys(
+                f"{job_id}:{state}/{sync_status}" for job_id, state, sync_status in jobs
+            )
+        )
     open_ops = (
         await db.execute(
             select(ToolOperationRow.operation_id, ToolOperationRow.status).where(
@@ -97,6 +101,38 @@ async def _session_blockers(db: Any, session_id: Any) -> dict[str, list[str]]:
     return blockers
 
 
+def _plan_digest(plan: list[Any], revision: int) -> str:
+    payload = json.dumps(
+        {"plan": plan, "revision": int(revision)},
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _admission(
+    run: RunRow,
+    blockers: dict[str, list[str]],
+    now: datetime,
+    *,
+    ignore_owner: str | None = None,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if (
+        run.lease_until is not None
+        and run.lease_until > now
+        and run.owner != ignore_owner
+    ):
+        reasons.append("active_lease")
+    if str(run.status) not in {"queued", "paused"}:
+        reasons.append("run_status")
+    if blockers:
+        reasons.append("blockers")
+    return {"apply_eligible": not reasons, "reasons": reasons}
+
+
 async def _read_accepted(
     settings: Settings, thread_id: str, head: CheckpointHeadRow | None
 ) -> Any:
@@ -105,6 +141,39 @@ async def _read_accepted(
         base_config["configurable"]["checkpoint_id"] = head.accepted_checkpoint_id
     async with open_checkpointer_connection(settings) as connection:
         return await AsyncPostgresSaver(connection).aget_tuple(cast(Any, base_config))
+
+
+async def _claim_migration(
+    database: Database, run_id: Any, owner: str
+) -> tuple[bool, int, str | None]:
+    """在同一 run 行锁内复核 queued/paused 与租约，并推进 generation 撤销旧 writer。"""
+    async with database.transaction() as db:
+        row = await db.get(RunRow, run_id, with_for_update=True)
+        if row is None:
+            return False, 0, "no_run"
+        now = datetime.now(UTC)
+        if row.lease_until is not None and row.lease_until > now:
+            return False, int(row.owner_generation), "active_lease"
+        if str(row.status) not in {"queued", "paused"}:
+            return False, int(row.owner_generation), "run_status"
+        acquired, generation = await claim_run(
+            db, run_id=run_id, owner=owner, lease_seconds=300
+        )
+        if not acquired:
+            return False, int(row.owner_generation), "claim_denied"
+        locked = await db.get(RunRow, run_id, with_for_update=True, populate_existing=True)
+        if locked is None:
+            return False, 0, "no_run"
+        if str(locked.status) not in {"queued", "paused"}:
+            locked.owner = None
+            locked.lease_until = None
+            await db.flush()
+            return False, int(locked.owner_generation), "run_status"
+        # claim_run 已在新 owner/过期接管时推进 generation。
+        locked.owner = owner
+        locked.lease_until = now + timedelta(seconds=300)
+        await db.flush()
+        return True, int(generation), None
 
 
 async def migrate_legacy_checkpoint(
@@ -139,16 +208,17 @@ async def migrate_legacy_checkpoint(
         return {"status": "no_legacy_plan", "session_id": str(session_id)}
 
     contracts = migrate_legacy_plan(session_id, plan)
+    base_checkpoint_id = (
+        (saved.config.get("configurable") or {}).get("checkpoint_id") if saved else None
+    )
+    base_digest = _plan_digest(plan, int(values.get("plan_revision") or 0))
+    admission = _admission(run, blockers, datetime.now(UTC))
     if not apply:
         return {
             "status": "dry_run",
             "session_id": str(session_id),
-            "base_checkpoint_id": (saved.config.get("configurable") or {}).get(
-                "checkpoint_id"
-            )
-            if saved
-            else None,
-            "apply_eligible": not blockers,
+            "base_checkpoint_id": base_checkpoint_id,
+            **admission,
             "blockers": blockers,
             "contracts": [
                 {
@@ -160,48 +230,66 @@ async def migrate_legacy_checkpoint(
             ],
         }
 
-    now = datetime.now(UTC)
-    if run.lease_until is not None and run.lease_until > now:
-        return {
-            "status": "refused_active_lease",
-            "session_id": str(session_id),
-            "run_status": str(run.status),
-        }
-    if str(run.status) not in {"queued", "paused"}:
-        return {
-            "status": "refused_active_run",
-            "session_id": str(session_id),
-            "run_status": str(run.status),
-            "note": "running/等待中的 run 必须先恢复对账并安全暂停；不会直接迁移。",
-        }
     if blockers:
         return {
             "status": "needs_reconcile",
             "session_id": str(session_id),
             "blockers": blockers,
         }
-
     migration_owner = f"plan-migration:{uuid4()}"
-    async with database.transaction() as db:
-        acquired, generation = await claim_run(
-            db, run_id=run.id, owner=migration_owner, lease_seconds=300
-        )
-    if not acquired:
+    claimed, generation, reason = await _claim_migration(
+        database, run.id, migration_owner
+    )
+    if not claimed:
         return {
-            "status": "refused_active_run",
+            "status": (
+                "refused_active_lease" if reason == "active_lease" else "refused_active_run"
+            ),
             "session_id": str(session_id),
             "run_status": str(run.status),
+            "reason": reason,
         }
 
     try:
-        # 取得排他权后重新检查，避免“检查时无租约、迁移时已被认领”。
+        # claim 后复检：状态/租约/blockers 任一变化都要停下。
         async with database.session() as db:
-            blockers = await _session_blockers(db, session_id)
-        if blockers:
+            current_run = await db.get(RunRow, run.id, populate_existing=True)
+            current_blockers = await _session_blockers(db, session_id)
+            current_head = await db.get(CheckpointHeadRow, (thread_id, ""))
+        if current_run is None or not _admission(
+            current_run,
+            current_blockers,
+            datetime.now(UTC),
+            ignore_owner=migration_owner,
+        )["apply_eligible"]:
             return {
                 "status": "needs_reconcile",
                 "session_id": str(session_id),
-                "blockers": blockers,
+                "blockers": current_blockers,
+                "reason": "state_changed_after_claim",
+            }
+        current_saved = await _read_accepted(settings, thread_id, current_head)
+        current_values = (
+            current_saved.checkpoint.get("channel_values", {}) if current_saved else {}
+        )
+        current_plan = list(current_values.get("plan") or [])
+        current_digest = _plan_digest(
+            current_plan, int(current_values.get("plan_revision") or 0)
+        )
+        current_checkpoint_id = (
+            (current_saved.config.get("configurable") or {}).get("checkpoint_id")
+            if current_saved
+            else None
+        )
+        if (
+            current_checkpoint_id != base_checkpoint_id
+            or current_digest != base_digest
+        ):
+            return {
+                "status": "stale_baseline",
+                "session_id": str(session_id),
+                "expected_checkpoint_id": base_checkpoint_id,
+                "actual_checkpoint_id": current_checkpoint_id,
             }
 
         refs: list[dict[str, Any]] = []
@@ -227,7 +315,10 @@ async def migrate_legacy_checkpoint(
                 thread_id=thread_id,
                 owner_generation=generation,
                 control_version=int(run.control_version),
-                writer_epoch=int(head.writer_epoch) if head is not None else 0,
+                writer_epoch=int(current_head.writer_epoch)
+                if current_head is not None
+                else 0,
+                expected_checkpoint_id=base_checkpoint_id if current_head is not None else None,
             )
             graph = StateGraph(AgentGraphState)
             graph.add_node(
@@ -239,18 +330,29 @@ async def migrate_legacy_checkpoint(
             graph.set_entry_point("noop")
             graph.set_finish_point("noop")
             compiled = graph.compile(checkpointer=fenced)
-            await compiled.aupdate_state(
-                {"configurable": {"thread_id": thread_id}},
-                {
-                    "messages": [],
-                    "contract_refs": refs,
-                    "active_contract_ids": [item["contract_id"] for item in refs],
-                    "plan_revision": int(values.get("plan_revision") or 0) + 1,
-                },
-            )
+            try:
+                await compiled.aupdate_state(
+                    {"configurable": {"thread_id": thread_id}},
+                    {
+                        "messages": [],
+                        "contract_refs": refs,
+                        "active_contract_ids": [item["contract_id"] for item in refs],
+                        "plan_revision": int(current_values.get("plan_revision") or 0) + 1,
+                    },
+                )
+            except StaleWriterError:
+                return {
+                    "status": "stale_baseline",
+                    "session_id": str(session_id),
+                    "expected_checkpoint_id": base_checkpoint_id,
+                }
     finally:
         async with database.transaction() as db:
-            await release_run(db, run_id=run.id, owner=migration_owner)
+            locked = await db.get(RunRow, run.id, with_for_update=True)
+            if locked is not None and locked.owner == migration_owner:
+                locked.owner = None
+                locked.lease_until = None
+                await db.flush()
     return {
         "status": "migrated",
         "session_id": str(session_id),
