@@ -47,10 +47,19 @@ from agent_workbench.contracts.weaknesses import (
     connection_basis_fingerprint,
     content_revision_payload,
 )
+from agent_workbench.domain.coverage_checklist import (
+    CoverageProfile,
+    build_checklist,
+    reconcile_checklist,
+)
 from agent_workbench.persistence.tables import (
+    AssetRow,
     CoverageRow,
     FindingRow,
+    IdentityRow,
     LeadRow,
+    ParameterRow,
+    SessionRow,
     VerificationRow,
 )
 
@@ -768,6 +777,65 @@ class CoverageService:
                 if row.status in {str(CoverageStatus.NOT_CHECKED), str(CoverageStatus.BLOCKED)}
             ],
         }
+
+    async def checklist_summary(
+        self,
+        session_id: UUID,
+        *,
+        profile: CoverageProfile,
+        condition_fingerprint: str,
+    ) -> dict[str, Any]:
+        """用冻结清单生成 Uᵥ，再对账 coverage rows；不是扫描总结展开。"""
+        session_row = await self._s.get(SessionRow, session_id)
+        if session_row is None:
+            raise ValueError("session 不存在")
+        assets = list(
+            (
+                await self._s.execute(
+                    select(AssetRow).where(
+                        AssetRow.session_id == session_id,
+                        AssetRow.record_role == "canonical",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        parameters = list(
+            (
+                await self._s.execute(
+                    select(ParameterRow).where(ParameterRow.session_id == session_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        identities = list(
+            (
+                await self._s.execute(
+                    select(IdentityRow).where(IdentityRow.project_id == session_row.project_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        cells = build_checklist(
+            profile=profile,
+            assets=assets,
+            parameters=parameters,
+            identities=identities,
+            condition_fingerprint=condition_fingerprint,
+        )
+        rows = list(
+            (
+                await self._s.execute(
+                    select(CoverageRow).where(CoverageRow.session_id == session_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return reconcile_checklist(cells, rows)
 
     async def count_by_status(self, session_id: UUID) -> dict[str, int]:
         rows = (

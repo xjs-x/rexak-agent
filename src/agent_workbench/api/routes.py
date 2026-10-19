@@ -1820,14 +1820,44 @@ async def list_findings(
 
 
 @router.get("/sessions/{session_id}/coverage", tags=["read"])
-async def get_coverage(session_id: UUID, request: Request) -> dict[str, Any]:
+async def get_coverage(
+    session_id: UUID,
+    request: Request,
+    profile_id: str | None = Query(default=None),
+    profile_version: str | None = Query(default=None),
+    condition_fingerprint: str | None = Query(default=None),
+    categories: str | None = Query(default=None),
+) -> dict[str, Any]:
     get_auth().require_session(request)
+    from agent_workbench.domain.coverage_checklist import CoverageProfile
     from agent_workbench.domain.findings import CoverageService
     from agent_workbench.persistence.db import get_database
 
+    params = (profile_id, profile_version, condition_fingerprint, categories)
+    if any(params) and not all(params):
+        raise ApiError(
+            ErrorCode.VALIDATION_FAILED,
+            "checklist 模式需要同时提供 profile_id/profile_version/"
+            "condition_fingerprint/categories",
+        )
     async with get_database().session() as session:
         await _require_session_row(session, session_id)
-        summary = await CoverageService(session).summary(session_id)
+        service = CoverageService(session)
+        if all(params):
+            profile = CoverageProfile(
+                profile_id=str(profile_id),
+                profile_version=str(profile_version),
+                check_categories=tuple(
+                    item.strip() for item in str(categories).split(",") if item.strip()
+                ),
+            )
+            summary = await service.checklist_summary(
+                session_id,
+                profile=profile,
+                condition_fingerprint=str(condition_fingerprint),
+            )
+            return {"mode": "checklist", **summary}
+        summary = await service.summary(session_id)
     return dict(summary)
 
 

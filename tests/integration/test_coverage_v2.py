@@ -5,16 +5,21 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from agent_workbench.api.app import create_app
 from agent_workbench.contracts.enums import CoverageStatus
+from agent_workbench.domain.coverage_checklist import CoverageProfile
 from agent_workbench.domain.findings import CoverageService
 from agent_workbench.persistence.tables import (
     AssetRow,
     CoverageRow,
+    IdentityRow,
     ParameterRow,
     RequestVariantRow,
+    SessionRow,
 )
 from tests.integration.test_request_budget import context_for
 
@@ -186,3 +191,77 @@ async def test_coverage_service_v2_numerator_and_denominator(database, unique_na
     assert v2["applicable_cells"] == 2
     assert v2["checked_cells"] == 1
     assert v2["checked_ratio"] == 0.5
+
+
+async def test_checklist_summary_uses_frozen_profile_and_missing_cells(database, unique_name):
+    context = await context_for(database, unique_name)
+    async with database.transaction() as db:
+        session_row = await db.get(SessionRow, context.toolbox.session_id)
+        assert session_row is not None
+        asset = _asset(context)
+        db.add(asset)
+        await db.flush()
+        parameter = ParameterRow(
+            session_id=context.toolbox.session_id,
+            asset_id=asset.id,
+            location="query",
+            name="token",
+            occurrence=0,
+            normalizer_version="v1",
+        )
+        identity = IdentityRow(
+            project_id=session_row.project_id,
+            display_name="user-a",
+            auth_revision=3,
+        )
+        db.add_all([parameter, identity])
+        await db.flush()
+        profile = CoverageProfile(
+            profile_id="web", profile_version="v1", check_categories=("configuration",)
+        )
+        await CoverageService(db).record(
+            session_id=context.toolbox.session_id,
+            asset_id=asset.id,
+            entry_label="/a",
+            identity_id=identity.id,
+            identity_revision=3,
+            check_category="configuration",
+            status=CoverageStatus.CHECKED_NEGATIVE,
+            parameter_id=parameter.parameter_id,
+            condition_fingerprint="f" * 64,
+            profile_id="web",
+            profile_version="v1",
+            evidence_refs=["e1"],
+        )
+        summary = await CoverageService(db).checklist_summary(
+            context.toolbox.session_id,
+            profile=profile,
+            condition_fingerprint="f" * 64,
+        )
+    assert summary["total_cells"] == 4  # anonymous/identity × endpoint/parameter
+    assert summary["checked_cells"] == 1
+    assert len(summary["missing_cells"]) == 3
+
+
+async def test_coverage_api_checklist_mode(database, unique_name):
+    context = await context_for(database, unique_name)
+    async with database.transaction() as db:
+        asset = _asset(context)
+        db.add(asset)
+        await db.flush()
+    with TestClient(create_app()) as client:
+        client.post("/api/session")
+        response = client.get(
+            f"/api/sessions/{context.toolbox.session_id}/coverage",
+            params={
+                "profile_id": "web",
+                "profile_version": "v1",
+                "condition_fingerprint": "f" * 64,
+                "categories": "configuration,auth",
+            },
+        )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["mode"] == "checklist"
+    assert payload["total_cells"] == 2
+    assert payload["checked_cells"] == 0
