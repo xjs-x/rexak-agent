@@ -26,4 +26,6 @@
 
 批次清单应记录 session / run、备份路径与 hash、base checkpoint、control / generation / epoch、旧步骤与 done 数量、blockers、批准记录以及 apply / API / head / finish gate 结果。先顺序执行，每条验完再进入下一条；任一拒绝、基线变化、未决结果或验收失败都停止扩批。
 
+1 / 5 / 20 表示批次容量上限；合格候选不足时只迁移实际合格数量，不为凑数迁移受阻、删除或待人工核对的会话。frontier 默认只返回近端 5 项，验收应与确定性 frontier 算法逐项比较，不能要求 frontier 数量等于全部合同数。
+
 批量前置清单可以只读生成，但不得自动改状态、清理历史版本或跳过单会话门禁。后续关闭 steps_json、frontier 自动调度、输出阈值和报告模板不属于此迁移链路。

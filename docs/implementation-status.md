@@ -366,3 +366,9 @@ Earth 自然目标测试尚未完成：10 次成功 HTTP 操作和 25 个哈希�
 profile 登记改为数据库唯一键原子幂等，删除进程缓存和锁；补齐独立进程 HTTP 竞争、事务回滚、GET 提交可见性和旧空 hash 判据。实现见 [decision 0008](decisions/0008-coverage-profile-registration.md)。本轮独立审计 24、旧审计 13、主探针 8 通过；集成 378 passed / 1 skipped，单元 331 passed / 2 skipped，Pyright 无错误。
 
 P12 未追加产品代码；单会话与后续批次仍遵守[迁移门禁](plan-migration-rollout.md)，工程回归不自动批准真实批量 apply。真实 canary 的授权、备份与运行证据另存本机验收目录，不将个人会话或目标数据写入共享说明。
+
+## 2026-10-19 完整方案补齐与受控批次
+
+后续完整方案复核补齐普通 Runner owner / lease 拒写门禁和多组冻结 profile 的报告选择，见 decision 0009、0010。全量集成 386 passed / 1 skipped，单元 331 passed / 2 skipped，独立 / 旧审计 / 主探针 24 / 13 / 8 全通过，静态检查和前端构建通过。
+
+用户另行授权完整迁移链路后，对 9 个合格旧会话实际执行 1 / 5 / 3 三批，新增 45 合同、保留 19 个 legacy_done，不恢复真实测试；逐项验收及停批对账过程见[批次记录](acceptance-results/2026-10-19/plan-rollout.md)。静态条件不足的其他会话继续保留，不自动迁移。
