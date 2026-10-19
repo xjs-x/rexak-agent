@@ -27,6 +27,58 @@ from agent_workbench.runtime.stopping import FinishGate
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize("explicit", [False, True], ids=["ambiguous", "selected"])
+async def test_report_with_multiple_registered_profiles_requires_selection(
+    database, unique_name, explicit
+):
+    from agent_workbench.domain.coverage_checklist import CoverageProfile
+    from agent_workbench.domain.findings import CoverageService
+    from agent_workbench.persistence.tables import CoverageProfileRow
+    from tests.integration.test_request_budget import context_for
+
+    context = await context_for(database, unique_name)
+    selected = CoverageProfile("web", "v1", ("configuration",))
+    async with database.transaction() as db:
+        for profile in (selected, CoverageProfile("web", "v2", ("configuration", "auth"))):
+            await CoverageService(db).register_profile(
+                context.toolbox.session_id, profile=profile, condition_fingerprint="f" * 64
+            )
+    report = await create_report_snapshot(
+        database,
+        ArtifactStore(database.settings),
+        context.toolbox.session_id,
+        coverage_profile=selected if explicit else None,
+        condition_fingerprint="f" * 64 if explicit else None,
+    )
+    async with database.session() as db:
+        row = (
+            await db.execute(
+                select(ReportVersionRow).where(
+                    ReportVersionRow.session_id == context.toolbox.session_id,
+                    ReportVersionRow.version == report.version,
+                )
+            )
+        ).scalar_one()
+        profiles = (
+            (
+                await db.execute(
+                    select(CoverageProfileRow).where(
+                        CoverageProfileRow.session_id == context.toolbox.session_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    checklist = row.captured_snapshot["body"]["coverage"]["checklist"]
+    assert len(profiles) == 2
+    if explicit:
+        assert "error" not in checklist and "checklist_signature" in checklist
+    else:
+        assert checklist.get("error") == "multiple_checklist_profiles", checklist
+        assert "checked_ratio" not in checklist
+
+
 async def _session(database, unique_name):
     async with database.transaction() as db:
         project = await ProjectRepository(db).create(

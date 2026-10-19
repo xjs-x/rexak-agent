@@ -212,9 +212,30 @@ class ReportService:
         coverage_checklist: dict[str, Any] | None = None
         explicit_profile = coverage_profile is not None
         if coverage_profile is None:
-            latest = await CoverageService(self._s).latest_profile(session_id)
-            if latest is not None:
-                coverage_profile, condition_fingerprint = latest
+            registered_profiles = await CoverageService(self._s).registered_profiles(session_id)
+            if len(registered_profiles) > 1:
+                coverage_checklist = {
+                    "error": "multiple_checklist_profiles",
+                    "note": "存在多组冻结清单；请显式选择 profile，不能合并或默认取最新分母。",
+                    "profiles": [
+                        {
+                            "profile_id": item.profile_id,
+                            "profile_version": item.profile_version,
+                            "condition_fingerprint": item.condition_fingerprint,
+                        }
+                        for item in registered_profiles
+                    ],
+                }
+            elif registered_profiles:
+                registered = registered_profiles[0]
+                coverage_profile = CoverageProfile(
+                    profile_id=registered.profile_id,
+                    profile_version=registered.profile_version,
+                    check_categories=tuple(registered.categories or []),
+                    include_parameter_cells=bool(registered.include_parameter_cells),
+                    include_anonymous=bool(registered.include_anonymous),
+                )
+                condition_fingerprint = registered.condition_fingerprint
         if coverage_profile is not None and condition_fingerprint:
             if explicit_profile:
                 registered = await CoverageService(self._s).get_profile(
@@ -245,7 +266,7 @@ class ReportService:
                         "error": "checklist_unavailable",
                         "note": "冻结 profile 存在，但清单输入无法完整读取。",
                     }
-        else:
+        elif coverage_checklist is None:
             # 不从已登记 coverage 行反推类别；否则分母会变小、比例会变高。
             coverage_checklist = {
                 "error": "profile_not_registered",

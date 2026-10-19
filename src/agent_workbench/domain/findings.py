@@ -881,6 +881,24 @@ class CoverageService:
             )
         ).scalar_one_or_none()
 
+    async def registered_profiles(self, session_id: UUID) -> list[CoverageProfileRow]:
+        """只读枚举冻结定义；调用方不能用最新一行掩盖多个分母。"""
+        return list(
+            (
+                await self._s.execute(
+                    select(CoverageProfileRow)
+                    .where(CoverageProfileRow.session_id == session_id)
+                    .order_by(
+                        CoverageProfileRow.profile_id,
+                        CoverageProfileRow.profile_version,
+                        CoverageProfileRow.condition_fingerprint,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
     async def latest_profile(
         self, session_id: UUID
     ) -> tuple[CoverageProfile, str] | None:
