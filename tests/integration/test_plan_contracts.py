@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from typing import Any, cast
 from uuid import uuid4
 
@@ -25,7 +26,7 @@ from agent_workbench.domain.plan_contracts import (
     latest_contract,
 )
 from agent_workbench.persistence.tables import PlanContractRow
-from agent_workbench.tools.task import update_plan
+from agent_workbench.tools.task import get_frontier, update_plan
 from tests.integration.test_request_budget import context_for
 
 pytestmark = pytest.mark.integration
@@ -225,3 +226,38 @@ async def test_review_inventory_uses_contracts_instead_of_old_plan(database, uni
     assert inventory.unreviewed_count >= 1
     assert any(item.kind == "contract" for item in inventory.items)
     assert not any(item.kind == "plan_step" for item in inventory.items)
+
+
+async def test_get_frontier_reads_active_contracts_without_writing(database, unique_name):
+    context = await context_for(database, unique_name)
+    contract_id = uuid4()
+    async with database.transaction() as db:
+        row = await append_contract(
+            db,
+            session_id=context.toolbox.session_id,
+            run_id=context.toolbox.run_id,
+            contract=_contract(contract_id, uuid4(), state="running"),
+        )
+    refs = [
+        {
+            "contract_id": str(row.contract_id),
+            "contract_revision": row.contract_revision,
+            "content_hash": row.content_hash,
+        }
+    ]
+    result = json.loads(
+        await _call(
+            get_frontier,
+            context,
+            {"limit": 5},
+            "frontier-read",
+            state={"contract_refs": refs, "active_contract_ids": [str(contract_id)]},
+        )
+    )
+    assert result["mode"] == "contracts"
+    assert result["frontier"][0]["contract_id"] == str(contract_id)
+    assert result["frontier"][0]["state"] == "running"
+    legacy = json.loads(
+        await _call(get_frontier, context, {}, "frontier-legacy", state={})
+    )
+    assert legacy["mode"] == "legacy_plan"

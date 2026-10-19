@@ -1422,10 +1422,53 @@ async def _link_asset(
     return asset.id, None
 
 
+@tool("get_frontier")
+async def get_frontier(runtime: ToolRuntime[RunContext], limit: int = 5) -> str:
+    """只读返回当前合同 frontier；不执行工具、不改变计划状态。
+
+    Args:
+        limit: 最多返回多少条，1-20。
+
+    Returns:
+        `frontier`、`frontier_signature`、`active_contract_ids` 与合同引用。
+        没有合同引用时返回 `mode=legacy_plan`，提示先迁移或提交合同。
+    """
+    toolbox: Toolbox = runtime.context.toolbox
+    refs = list(runtime.state.get("contract_refs") or [])
+    active_ids = [str(item) for item in (runtime.state.get("active_contract_ids") or [])]
+    if not refs:
+        return json.dumps(
+            {
+                "mode": "legacy_plan",
+                "frontier": [],
+                "frontier_signature": None,
+                "note": "当前会话没有 contract_refs；请先用 update_plan 提交合同或运行迁移。",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    async with toolbox.db.session() as db:
+        rows = await load_contract_refs(db, toolbox.session_id, refs)
+    active = set(active_ids)
+    selected = [row for row in rows if not active or str(row.contract_id) in active]
+    items = build_frontier(selected, limit=max(1, min(int(limit), 20)))
+    return json.dumps(
+        {
+            "mode": "contracts",
+            "frontier": [item.as_dict() for item in items],
+            "frontier_signature": frontier_signature(items),
+            "active_contract_ids": active_ids,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
 TASK_TOOLS = [
     update_plan,
     record_lead,
     record_observation,
     record_weakness,
     propose_finding,
+    get_frontier,
 ]
