@@ -974,7 +974,7 @@ class CheckpointHeadRow(Base):
 
 
 class CheckpointWriteReceiptRow(Base):
-    """pending writes 的 fencing 旁路收据；不推进 accepted head。"""
+    """pending writes 旁路收据；write_key 新格式为 v2:slot:<idx>，旧通道键只读兼容。"""
 
     __tablename__ = "checkpoint_write_receipts"
 

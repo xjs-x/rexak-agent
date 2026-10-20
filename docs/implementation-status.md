@@ -378,3 +378,7 @@ P12 未追加产品代码；单会话与后续批次仍遵守[迁移门禁](plan
 ## 2026-10-19 外部 Skill 边界恢复
 
 此前外部 Skill 修改留在 stash，当前分支仍含旧 builtin 发布和默认注入路径；已选择性恢复边界并补齐 GET/刷新防回归。空库存恢复原工具和官方循环，历史转换项只保留审计用途。全量 724 passed / 3 skipped，实际列表及显式刷新均为 0，46 张受保护表、凭据和暂停状态保持。最新边界见 [decision 0011](decisions/0011-external-skills-boundary.md)，证据见[本次验收](acceptance-results/2026-10-19/external-skills.md)。
+
+## 2026-10-20 checkpoint 同通道多任务写入修复
+
+最新 Phineas 的收据唯一键冲突来自两个合法 Send 共用通道名。新收据改用官方写入位置，绑定类型和通道哈希；内层写入后核对真实保存内容，恢复按位置过滤，旧收据只在无歧义时兼容。无需新增 migration，保留原 fencing 与历史数据。行为见 [decision 0012](decisions/0012-checkpoint-write-slots.md)，测试及部署证据见[验收](acceptance-results/2026-10-20/checkpoint-writes.md)。
