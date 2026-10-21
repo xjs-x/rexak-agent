@@ -277,8 +277,6 @@ def new_graph_state(
     """
     return AgentGraphState(
         messages=[],
-        active_skills={},
-        skill_directives={},
         session_id=str(session_id),
         active_run_id=str(run_id),
         segment_index=0,

@@ -64,7 +64,7 @@ async def _calls(database, run_id) -> list[ModelCallRow]:
                 await db.execute(
                     select(ModelCallRow)
                     .where(ModelCallRow.run_id == run_id)
-                    .order_by(ModelCallRow.retry_index)
+                    .order_by(ModelCallRow.created_at, ModelCallRow.retry_index)
                 )
             )
             .scalars()

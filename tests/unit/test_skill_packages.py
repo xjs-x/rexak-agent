@@ -75,7 +75,7 @@ def test_resource_manifest_paginates_and_unload_removes_checkpoint_reference():
 def test_skill_script_does_not_bypass_command_tool_selection():
     from agent_workbench.tools.registry import ToolSelection, build_tools
 
-    selection = ToolSelection(command=False)
+    selection = ToolSelection(command=False, skills=True)
     names = {item.name for item in build_tools(selection)}
     assert "run_skill_script" not in names
     assert {"search_skills", "load_skill", "read_skill_resource", "unload_skill"} <= names

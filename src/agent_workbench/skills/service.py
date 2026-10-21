@@ -11,7 +11,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import yaml
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 
 from agent_workbench.config.settings import Settings
 from agent_workbench.contracts.skill_package import (
@@ -36,6 +36,14 @@ from agent_workbench.persistence.tables import (
 from agent_workbench.skills.parser import parse_skill
 
 EXCLUDED = {".git", "node_modules", ".venv", "venv", "__pycache__"}
+
+
+def is_external_source(source: str) -> bool:
+    return source.startswith(("user:", "zip:"))
+
+
+def external_sources():  # type: ignore[no-untyped-def]
+    return or_(SkillInstallationRow.source.startswith("user:"), SkillInstallationRow.source.startswith("zip:"))
 
 
 def read_directory(root: Path) -> dict[str, bytes]:
@@ -97,6 +105,8 @@ class SkillService:
         )
 
     async def publish(self, files: dict[str, bytes], source: str) -> SkillRead:
+        if not is_external_source(source):
+            raise ValueError("skill_source_denied: 只接受用户主动接入的外部 Skill，不发布宿主设计或内置方法")
         spec = parse_skill(validate_files(files))
         digest = package_hash(files)
         archive = encode_package(files)
@@ -139,19 +149,13 @@ class SkillService:
         async with self.db.session() as db:
             rows = (await db.execute(select(SkillInstallationRow, SkillVersionRow).join(
                 SkillVersionRow, SkillInstallationRow.current_version_id == SkillVersionRow.id
-            ).where(SkillInstallationRow.owner_id == self.settings.owner_id)
+            ).where(SkillInstallationRow.owner_id == self.settings.owner_id, external_sources())
                 .order_by(SkillInstallationRow.name, SkillInstallationRow.id))).all()
             return [self.card(row, version) for row, version in rows]
 
     async def rescan(self) -> tuple[list[SkillRead], list[str]]:
-        from agent_workbench.agent.prompts.methods import _load_all
-
         errors: list[str] = []
-        # 旧正文无改写，只加标准元数据；search_methods 旧调用保持原行为。
-        for method in _load_all().values():
-            header = yaml.safe_dump({"name": method.name, "description": method.title,
-                "metadata": {"version": method.sha256}}, allow_unicode=True, sort_keys=False)
-            await self.publish({"SKILL.md": f"---\n{header}---\n{method.content}".encode()}, f"builtin:{method.name}")
+        # 只扫描用户显式配置的外部资料根目录；宿主 methods 不参与 Skill 发布。
         self.root.mkdir(parents=True, exist_ok=True)
         for path in sorted(self.root.iterdir()):
             if path.is_dir() and (path / "SKILL.md").exists():
@@ -182,6 +186,8 @@ class SkillService:
             row = await db.get(SkillInstallationRow, UUID(skill_id))
             if row is None or row.owner_id != self.settings.owner_id:
                 raise ValueError("skill_not_found")
+            if enforce_enabled and not is_external_source(row.source):
+                raise ValueError("skill_retired: 宿主内置方法已退出 Skill，仍通过原 methods 使用")
             if enforce_enabled and not row.enabled:
                 raise ValueError("skill_disabled")
             if project_id and row.project_ids and project_id not in row.project_ids:
@@ -229,6 +235,8 @@ class SkillService:
             ).with_for_update())).scalar_one_or_none()
             if row is None:
                 raise ValueError("skill_not_found")
+            if not is_external_source(row.source):
+                raise ValueError("skill_retired: 历史内置转换项不能重新启用或绑定项目")
             if "version_id" in values:
                 version = await db.get(SkillVersionRow, UUID(values.pop("version_id")))
                 if version is None or version.installation_id != row.id:
@@ -239,33 +247,47 @@ class SkillService:
                     setattr(row, key, values[key])
 
     async def catalog(self, run_id: UUID) -> list[dict[str, Any]]:
-        # 发布仅在首次初始化/显式刷新发生，运行中不重新读取源目录。
-        if not await self.list():
-            await self.rescan()
+        # 运行只消费显式发布的外部包，不隐式扫描、导入或复制宿主方法。
         async with self.db.transaction() as db:
             run = (await db.execute(select(RunRow).where(RunRow.id == run_id).with_for_update())).scalar_one()
             config = dict(run.config_snapshot or {})
-            snapshot_id = config.get("skill_catalog_artifact_id")
-            if snapshot_id:
-                artifact = await db.get(ArtifactRow, UUID(snapshot_id))
-                if artifact is None or not self.store.verify(artifact.relative_key, artifact.sha256):
-                    raise ValueError("skill_version_missing: 运行目录快照不可用")
-                return json.loads(self.store.read_bytes(artifact.relative_key))
             session = await db.get(SessionRow, run.session_id)
             if session is None:
                 raise ValueError("skill_not_found: 会话不存在")
             project = str(session.project_id)
             rows = (await db.execute(select(SkillInstallationRow, SkillVersionRow).join(
                 SkillVersionRow, SkillInstallationRow.current_version_id == SkillVersionRow.id
-            ).where(SkillInstallationRow.owner_id == self.settings.owner_id, SkillInstallationRow.enabled.is_(True))
+            ).where(SkillInstallationRow.owner_id == self.settings.owner_id,
+                    SkillInstallationRow.enabled.is_(True), external_sources())
                 .order_by(SkillInstallationRow.name, SkillInstallationRow.id))).all()
             items = [self.card(row, version).model_dump() for row, version in rows
                      if not row.project_ids or project in row.project_ids]
+            if not items:
+                # 空扩展不产生目录工件或新的 run 配置，不触碰原循环状态。
+                return []
+            snapshot_id = config.get("skill_catalog_artifact_id")
+            if snapshot_id:
+                artifact = await db.get(ArtifactRow, UUID(snapshot_id))
+                if artifact is None or not self.store.verify(artifact.relative_key, artifact.sha256):
+                    raise ValueError("skill_version_missing: 运行目录快照不可用")
+                return [item for item in json.loads(self.store.read_bytes(artifact.relative_key))
+                        if is_external_source(item.get("source", ""))]
             artifact = await self._artifact(db, json.dumps(items, ensure_ascii=False).encode(), "Skill 运行目录快照")
             config["skill_catalog_artifact_id"] = str(artifact.id)
             config["skill_policy_version"] = 1
             run.config_snapshot = config
             return items
+
+    async def legacy_ids(self, references: dict[str, Any]) -> set[str]:
+        if not references:
+            return set()
+        async with self.db.session() as db:
+            rows = (await db.execute(select(SkillInstallationRow.id).where(
+                SkillInstallationRow.id.in_([UUID(key) for key in references]),
+                SkillInstallationRow.owner_id == self.settings.owner_id,
+                ~external_sources(),
+            ))).scalars().all()
+            return {str(identifier) for identifier in rows}
 
     @staticmethod
     def resource(files: dict[str, bytes], path: str, offset: int = 0, limit: int = 8000,

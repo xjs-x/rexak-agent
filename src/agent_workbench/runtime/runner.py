@@ -14,7 +14,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import UUID
 
@@ -704,6 +704,12 @@ class AgentRunner:
 
         try:
             from agent_workbench.domain.prices import price_catalog_for_run
+            from agent_workbench.skills.service import SkillService
+
+            # 仅在装配边界发现外部扩展；空库存保持原工具与每轮中间件。
+            toolbox.skill_catalog = await SkillService(self._db, settings).catalog(run.id)
+            selection = replace(selection, skills=bool(toolbox.skill_catalog))
+            context.disabled_tools = selection.disabled_tools()
 
             async with self._db.transaction() as db:
                 price_catalog = await price_catalog_for_run(db, run.id)
@@ -713,6 +719,7 @@ class AgentRunner:
                 selection=selection,
                 price_catalog=price_catalog,
                 binding=binding,
+                thread_id=session_row.thread_id,
             )
             runtime = await runtime_ctx.__aenter__()
         except Exception as exc:

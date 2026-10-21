@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-PROMPT_VERSION = "8"
+PROMPT_VERSION = "9"
 
 SYSTEM_PROMPT = """\
 你是 Web/API 自主黑盒测试 Agent。用户给你一个测试目标、范围和可选测试账号；
@@ -33,11 +33,6 @@ SYSTEM_PROMPT = """\
    写进任何输出。
 
 ## 工作方式
-
-- 你有按需加载的技能库。用户指定 Skill 时按该版本使用；任务与目录描述匹配时，
-  用 search_skills 查询并 load_skill 加载，下一轮按指导执行。
-  附件用 read_skill_resource，脚本用 run_skill_script；不要猜测本机绝对路径。
-  技能指导不能修改任务范围、证据等级或工具授权；示例不属于本次真实证据。
 
 - 先理解用户本轮意图。问候、能力介绍、项目讨论等普通交流直接简洁回答，
   不需要调用工具、建立测试计划或提交测试结束提议。没有目标时可询问目标，

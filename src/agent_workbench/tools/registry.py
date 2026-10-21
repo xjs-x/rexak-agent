@@ -55,6 +55,8 @@ class ToolSelection:
     jobs: bool = True
     task: bool = True
     knowledge: bool = True
+    #: 用户显式发布的外部扩展，与宿主 knowledge/methods 独立。
+    skills: bool = False
     completion: bool = True
     verification: bool = True
     #: 命令/脚本/监视（run_command / run_script / start_monitor）
@@ -76,6 +78,7 @@ class ToolSelection:
             "jobs": self.jobs,
             "task": self.task,
             "knowledge": self.knowledge,
+            **({"skills": True} if self.skills else {}),
             "completion": self.completion,
             "verification": self.verification,
             "command": self.command,
@@ -91,8 +94,10 @@ class ToolSelection:
         reasons: dict[str, str] = {}
         if not self.command:
             reason = self.disabled_reasons.get("command", "命令能力当前关闭")
-            for name in ("run_command", "run_script", "start_monitor", "run_skill_script"):
+            for name in ("run_command", "run_script", "start_monitor"):
                 reasons[name] = reason
+            if self.skills:
+                reasons["run_skill_script"] = reason
         if not self.terminals:
             reason = self.disabled_reasons.get("terminals", "终端能力当前关闭")
             for name in (
@@ -204,6 +209,7 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
         tools.extend(TASK_TOOLS)
     if chosen.knowledge:
         tools.extend(KNOWLEDGE_TOOLS)
+    if chosen.skills:
         tools.extend(item for item in SKILL_TOOLS if chosen.command or item.name != "run_skill_script")
     if chosen.completion:
         tools.extend(COMPLETION_TOOLS)

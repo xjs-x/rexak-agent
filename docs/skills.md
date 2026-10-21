@@ -1,10 +1,20 @@
 # Skill 模块使用与实现说明
 
-2026-10-17。实现位于 `C:\xjs\rexak-agent`，使用现有官方 `create_agent`、checkpoint、工件存储和 Python Kali Executor。具体工程验证见[验收记录](acceptance-results/2026-10-17/skills/README.md)。本文不提供具体渗透 Skill 内容。
+2026-10-21。当前版本仅接入用户自行提供的外部方法论。此前“宿主 methods 转为 builtin Skill”的安排已撤销。实现位于 `C:\xjs\rexak-agent`，使用现有官方 `create_agent`、checkpoint、工件存储和 Python Kali Executor。当前验证见[外部 Skill 边界恢复验收](acceptance-results/2026-10-21/external-skills-regression.md)。本文不提供具体渗透 Skill 内容。
+
+## 与原循环的边界
+
+原有计划、工作摘要、弱点/线索、证据、结束判定以及 `search_methods` 继续由原体系负责，不导出成 Skill，不由 Skill 接管。Skill 的来源只包括用户目录和主动导入的 ZIP。
+
+没有发布可用外部 Skill 时，新运行保持原工具集合和中间件，不出现 Skill 目录、默认 Skill 提示或额外目录工件。启动运行时只做一次库存发现；不在每次模型请求前查询空 Skill 库。页面 GET 列表不再触发扫描或导入。
+
+用户显式刷新或导入外部包后，后续运行才按固定目录启用可选 Skill 工具。模型可以按任务匹配这些外部资料，用户也可明确选择；没有适用方法时继续原任务，不要求先加载 Skill 才能工作。
+
+旧版本自动生成的 `builtin:` 转换项已退出可用目录，禁止加载、执行、重新启用或绑定项目；历史版本与原件保留供审计。旧 checkpoint 停在原 Skill hook 时，使用无内容、无数据库操作的兼容节点继续，不重放工具。状态 schema 保留 v5 兼容已保存任务，不做破坏历史的降级或清库。
 
 ## 直接添加自己的 Skill
 
-默认用户目录为：
+默认用户目录为 `WORKBENCH_DATA_ROOT/skills/user`；配置 `WORKBENCH_SKILLS_ROOT` 时使用指定目录。以下以数据根目录为 `data` 举例：
 
 ```text
 C:\xjs\rexak-agent\data\skills\user\
@@ -98,7 +108,7 @@ entrypoints:
 
 完整包的路径、长度和原始文件 SHA-256 决定 `package_hash`；正文、脚本或附件任一变化都会产生新版本。时间戳、ZIP 时间和本机绝对路径不参与内容身份。相同内容再次刷新复用原版本，`metadata.version` 仅是可读标签。
 
-- 每个 run 首次准备模型上下文时固定目录快照，运行中不重新扫描源文件。
+- 每个 run 在装配时发现已发布的外部库存；非空目录固定快照，运行中不重新扫描源文件。空目录不生成目录工件或增加 run 配置。
 - 会话活跃 Skill 固定 `version_id + package_hash`，续跑时保留原版本。
 - 刷新或页面选择历史发布版本影响后续运行的目录；已有活跃指导需通过明确加载指定版本切换。
 - 停用和收紧项目可见性会阻止旧快照继续读取或派发；已有引用显示不可用，本轮不注入正文。
@@ -152,4 +162,4 @@ GET   /api/sessions/{session_id}/skills
 
 安装包最多 1000 文件、单文件 8 MiB、文件总量和 ZIP 各不超过 32 MiB。拒绝路径穿越、设备路径、文件/目录冲突、大小写冲突、链接、特殊文件、非法文本编码和重复 YAML 键；源文件扫描窗口内变化时拒绝发布。
 
-旧 `search_methods` 保留；现有方法正文通过 adapter 发布为 `builtin:` Skill，不复制成另一份可编辑内容。未知 `allowed-tools`、MCP、产品专用 frontmatter 等显示诊断并忽略，不授予能力；未知 `rexak.yaml` 运行字段明确拒绝。Git 自动更新、MCP 工具适配、插件市场、自动依赖安装和参数 JSON Schema 校验不在第一版范围。
+旧 `search_methods` 及其内容保持独立，不经过 Skill adapter、不自动发布。未知 `allowed-tools`、MCP、产品专用 frontmatter 等显示诊断并忽略，不授予能力；未知 `rexak.yaml` 运行字段明确拒绝。Git 自动更新、MCP 工具适配、插件市场、自动依赖安装和参数 JSON Schema 校验不在第一版范围。

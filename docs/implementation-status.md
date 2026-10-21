@@ -357,6 +357,12 @@ Earth 自然目标测试尚未完成：10 次成功 HTTP 操作和 25 个哈希�
 
 操作方法及第一版限制见 [Skill 模块说明](skills.md)，回归、实际浏览器、Kali 哈希/能力/无害脚本执行和原桌面 API-only 启动链证据见[Skill 验收记录](acceptance-results/2026-10-17/skills/README.md)。没有启动真实模型或靶场实验，实际测试收益仍待用户验证。
 
+## 2026-10-21 回档后的外部 Skill 边界修复
+
+无任务合同的基线曾带回宿主 methods 自动转换及默认 Skill 装配，本次撤销这两条路径。Skill 仅消费用户显式发布的外部方法；空库存不增加工具、中间件、指导或状态写入，原 methods、计划、证据和结束判定保持独立。历史 builtin 停用并保留只读版本。
+
+全量控制端回归 639 passed、2 skipped、1 deselected，Pyright 无错误或警告，前端、浏览器 fixture 和原桌面 API/Runner 启动链验证通过；当前任务与调用记录保留。规则以 [decision 0011](decisions/0011-external-skills-boundary.md) 为准，详细证据及未验证范围见[本轮记录](acceptance-results/2026-10-21/external-skills-regression.md)。没有执行真实模型或目标实验。
+
 ## 2026-10-17 新成员部署整理
 
 增加个人配置生成及首次安装入口，移除共享模板中的维护者 IP/固定目录，支持按 SSH 用户解析远端路径、选择兼容 Python/公开包源和创建首次 venv。日常启动入口保留，个人凭据不覆盖。SSH 恢复后，在 Kali 全新独立目录完成首次及重复安装、23 个安装源码哈希和启动器检查，原配置与日常服务启动身份保持，fixture 和测试库已清理。操作见[新成员指南](team-setup.md)，证据与系统前置条件见[本轮记录](acceptance-results/2026-10-17/team-setup/README.md)；不包含虚拟机/系统软件自动安装或真实模型/靶场实验。
