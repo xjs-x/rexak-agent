@@ -1,4 +1,4 @@
-"""v1/v2/v3 到当前版本的显式兼容适配，使用官方状态更新接口，保留节点边界。
+"""v1–v5 到当前版本的显式兼容适配，使用官方状态更新接口，保留节点边界。
 
 迁移链：1 -> 2 -> 3 -> 4，**不允许跳过**。每次迁移都保留消息 ID、操作 ID、计划与待执行
 节点；不把所有旧步骤自动标完成，也不重写历史操作的焦点来美化关联率（§5.4）。
@@ -155,6 +155,35 @@ def _as_node_candidates(graph: Any, snapshot: Any) -> list[str | None]:
     return candidates
 
 
+def adapt_v5(
+    values: dict[str, Any], *, checkpoint_id: str, next_nodes: tuple[str, ...]
+) -> dict[str, Any]:
+    """只标记旧完成尚未复查，不猜测完成模式、判断对象或历史依赖。"""
+    if type(values.get("state_schema_version")) is not int or values["state_schema_version"] != 5:
+        raise StateSchemaIncompatibleError("只支持显式 v5 到 v6 适配")
+    plan = [
+        {**step, **({"legacy_completion": True} if step.get("status") == "done" else {})}
+        for step in values.get("plan") or []
+    ]
+    assessment = values.get("work_assessment")
+    if assessment:
+        # v5 在更新后绑定焦点，无法倒推它真正评估了哪一步。
+        assessment = {**assessment, "evaluated_step_ids": [], "evaluated_plan_revision": None}
+    return {
+        "state_schema_version": 6,
+        "plan": plan,
+        "work_assessment": assessment,
+        "last_plan_change": None,
+        "state_migration": {
+            "adapter": "v5_to_v6_incremental_planning_v1",
+            "from": 5,
+            "to": 6,
+            "source_checkpoint_id": checkpoint_id,
+            "expected_next": list(next_nodes),
+        },
+    }
+
+
 async def _apply_update(
     graph: Any, snapshot: Any, update: dict[str, Any], read_config: dict[str, Any]
 ) -> Any:
@@ -214,7 +243,10 @@ async def ensure_current_checkpoint(
     version = values.get("state_schema_version")
     if version == 1:
         # 部分并行工具已完成但尚未提交的 pending writes 不能由更新接口猜测重放顺序。
-        if any(getattr(task, "result", None) is not None for task in (getattr(snapshot, "tasks", None) or ())):
+        if any(
+            getattr(task, "result", None) is not None
+            for task in (getattr(snapshot, "tasks", None) or ())
+        ):
             raise StateSchemaIncompatibleError(
                 "v1 checkpoint 含未提交的并行结果，拒绝恢复；需先核对操作台账"
             )
@@ -235,7 +267,10 @@ async def ensure_current_checkpoint(
         version = values.get("state_schema_version")
 
     if version == 2:
-        if any(getattr(task, "result", None) is not None for task in (getattr(snapshot, "tasks", None) or ())):
+        if any(
+            getattr(task, "result", None) is not None
+            for task in (getattr(snapshot, "tasks", None) or ())
+        ):
             raise StateSchemaIncompatibleError(
                 "v2 checkpoint 含未提交的并行结果，拒绝迁移；需先核对操作台账"
             )
@@ -254,7 +289,10 @@ async def ensure_current_checkpoint(
         version = values.get("state_schema_version")
 
     if version == 3:
-        if any(getattr(task, "result", None) is not None for task in (getattr(snapshot, "tasks", None) or ())):
+        if any(
+            getattr(task, "result", None) is not None
+            for task in (getattr(snapshot, "tasks", None) or ())
+        ):
             raise StateSchemaIncompatibleError(
                 "v3 checkpoint 含未提交的并行结果，拒绝迁移；需先核对操作台账"
             )
@@ -272,15 +310,56 @@ async def ensure_current_checkpoint(
         values = dict(migrated.values or {})
 
     if values.get("state_schema_version") == 4:
-        if any(getattr(task, "result", None) is not None for task in (getattr(snapshot, "tasks", None) or ())):
-            raise StateSchemaIncompatibleError("v4 checkpoint 含未提交的并行结果，拒绝迁移；需先核对台账")
-        migrated = await _apply_update(graph, snapshot, {
-            "state_schema_version": 5, "active_skills": {}, "skill_directives": {},
-            "state_migration": {"adapter": "v4_to_v5_skills_v1", "from": 4, "to": 5,
-                "source_checkpoint_id": str(snapshot.config["configurable"]["checkpoint_id"]),
-                "expected_next": list(snapshot.next)},
-        }, config)
-        _assert_migration_preserved({"next": snapshot.next, "messages": values.get("messages", [])}, migrated)
+        if any(
+            getattr(task, "result", None) is not None
+            for task in (getattr(snapshot, "tasks", None) or ())
+        ):
+            raise StateSchemaIncompatibleError(
+                "v4 checkpoint 含未提交的并行结果，拒绝迁移；需先核对台账"
+            )
+        migrated = await _apply_update(
+            graph,
+            snapshot,
+            {
+                "state_schema_version": 5,
+                "active_skills": {},
+                "skill_directives": {},
+                "state_migration": {
+                    "adapter": "v4_to_v5_skills_v1",
+                    "from": 4,
+                    "to": 5,
+                    "source_checkpoint_id": str(snapshot.config["configurable"]["checkpoint_id"]),
+                    "expected_next": list(snapshot.next),
+                },
+            },
+            config,
+        )
+        _assert_migration_preserved(
+            {"next": snapshot.next, "messages": values.get("messages", [])}, migrated
+        )
+        snapshot = migrated
+        values = dict(migrated.values or {})
+    if values.get("state_schema_version") == 5:
+        if any(
+            getattr(task, "result", None) is not None
+            for task in (getattr(snapshot, "tasks", None) or ())
+        ):
+            raise StateSchemaIncompatibleError(
+                "v5 checkpoint 含未提交并行结果，拒绝迁移；需先核对操作台账"
+            )
+        migrated = await _apply_update(
+            graph,
+            snapshot,
+            adapt_v5(
+                values,
+                checkpoint_id=str(snapshot.config["configurable"]["checkpoint_id"]),
+                next_nodes=tuple(snapshot.next),
+            ),
+            config,
+        )
+        _assert_migration_preserved(
+            {"next": snapshot.next, "messages": values.get("messages", [])}, migrated
+        )
         snapshot = migrated
         values = dict(migrated.values or {})
     assert_compatible_state(values)
@@ -293,6 +372,7 @@ __all__ = [
     "adapt_v1",
     "adapt_v2",
     "adapt_v3",
+    "adapt_v5",
     "ensure_current_checkpoint",
     "needs_migration",
 ]

@@ -257,20 +257,7 @@ class ProgressMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             similar = await similar_result_signature(
                 db, context.toolbox.session_id, focus.get("step_id")
             )
-        assessment = state.get("work_assessment") or {}
-        current = hashlib.sha256(
-            json.dumps(
-                {
-                    "domain": current,
-                    "assessment": {
-                        key: assessment.get(key)
-                        for key in ("changed", "next_action", "evidence_refs", "uncertainty")
-                    },
-                    "focus": [focus.get("step_id"), focus.get("lead_id")],
-                },
-                sort_keys=True,
-            ).encode()
-        ).hexdigest()
+        # 改写判断、重排计划、切换焦点不重置事实进展；工作安排与外部结果分开。
         update = next_progress_state(
             str(state.get("last_progress_signature") or ""),
             int(state.get("no_progress_streak") or 0),

@@ -38,6 +38,7 @@ from agent_workbench.contracts.http import (
     assert_structured_headers_ok,
     classify_body_mode,
 )
+from agent_workbench.contracts.planning import planning_digest
 from agent_workbench.contracts.tool import ArtifactRef, ToolError, ToolResult
 from agent_workbench.domain.scope import ScopeViolation, TargetMappingRequired
 from agent_workbench.evidence.artifacts import redact_text
@@ -391,7 +392,19 @@ async def run_http_request(
             effect_class=effect_class,
             # 记录派发时**真实**的方法/入口/身份：领域登记工具据此关联证据，
             # 而不是把 URL 一律伪装成 GET（§4.2）。
-            context_extra={"method": method, "url": args.url, "identity": args.identity},
+            context_extra={
+                "method": method,
+                "url": args.url,
+                "identity": args.identity,
+                "target_mapping_signature": planning_digest(toolbox.scope.snapshot.target_mappings),
+                "authentication": "explicit_headers"
+                if any(
+                    key.casefold() in {"authorization", "cookie"} for key in (args.headers or {})
+                )
+                else "identity_session"
+                if args.identity != "anonymous"
+                else "anonymous",
+            },
         )
 
         operation = {

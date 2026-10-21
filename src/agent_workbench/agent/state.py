@@ -22,12 +22,13 @@ from langgraph.graph.message import add_messages
 #: v4：计划步骤支持多线索（`lead_ids`）与类型（`kind`）；新增弱点呈现与复查进度字段
 #: （`presented_weakness_ids` / `weakness_review_cursor` / `last_recall_keys`）。
 #: v5：固定版本的 active_skills 引用与有界 skill_directives；1→2→3→4→5 顺序迁移。
-CURRENT_STATE_SCHEMA_VERSION = 5
+#: v6：旧快照 assessment、分型完成、不可变修订来源；旧完成仅标记待复查。
+CURRENT_STATE_SCHEMA_VERSION = 6
 
-StateSchemaVersion = Literal[5]
+StateSchemaVersion = Literal[6]
 
 #: 可迁移到当前版本的旧版本（由 `state_migration` 提供显式适配）。
-MIGRATABLE_STATE_SCHEMA_VERSIONS = (1, 2, 3, 4)
+MIGRATABLE_STATE_SCHEMA_VERSIONS = (1, 2, 3, 4, 5)
 
 
 def merge_skill_refs(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
@@ -79,6 +80,10 @@ class PlanStep(TypedDict):
     done_when: NotRequired[str | None]
     resume_note: NotRequired[str | None]
     evidence_refs: NotRequired[list[str]]
+    completion_protocol: NotRequired[Literal[1]]
+    completion_spec: NotRequired[dict[str, Any] | None]
+    completion: NotRequired[dict[str, Any] | None]
+    legacy_completion: NotRequired[bool]
 
 
 def plan_step_lead_ids(step: dict[str, Any]) -> list[str]:
@@ -126,6 +131,14 @@ class WorkAssessment(TypedDict):
     source_tool_call_id: str
     #: 程序维护的修订号
     revision: int
+    evaluated_step_ids: NotRequired[list[str]]
+    evaluated_plan_revision: NotRequired[int | None]
+    decision: NotRequired[str]
+    trigger: NotRequired[str]
+    basis_refs: NotRequired[list[dict[str, Any]]]
+    source_signature: NotRequired[str]
+    next_focus: NotRequired[CurrentFocus | None]
+    resulting_plan_revision: NotRequired[int]
 
 
 def coalesce_plan(_left: list[PlanStep], right: list[PlanStep]) -> list[PlanStep]:
@@ -209,6 +222,8 @@ class AgentGraphState(AgentState):
     work_summary: NotRequired[WorkSummary]
     plan: NotRequired[list[PlanStep]]
     plan_revision: NotRequired[int]
+    #: 最近一次更新的来源；完整历史在不可变工件链，事件只是可重建投影。
+    last_plan_change: NotRequired[dict[str, Any] | None]
     current_focus: NotRequired[CurrentFocus | None]
     #: 最近一次明确判断（解释，不是漏洞事实）。
     work_assessment: NotRequired[WorkAssessment | None]
@@ -284,6 +299,7 @@ def new_graph_state(
         user_constraints=list(user_constraints or []),
         plan=[],
         plan_revision=0,
+        last_plan_change=None,
         current_focus=None,
         work_assessment=None,
         presented_weakness_ids=[],

@@ -33,7 +33,8 @@ def test_needs_migration_only_for_older_supported_versions() -> None:
     assert needs_migration({"state_schema_version": 3})
     assert not needs_migration({})
     assert needs_migration({"state_schema_version": 4})
-    assert not needs_migration({"state_schema_version": 5})
+    assert needs_migration({"state_schema_version": 5})
+    assert not needs_migration({"state_schema_version": 6})
 
 
 def test_adapt_v2_only_accepts_explicit_v2() -> None:
@@ -51,7 +52,12 @@ def test_adapt_v3_maps_lead_id_and_clears_weakness_progress() -> None:
         {
             "state_schema_version": 3,
             "plan": [
-                {"step_id": "s1", "description": "旧步骤", "status": "in_progress", "lead_id": "L1"},
+                {
+                    "step_id": "s1",
+                    "description": "旧步骤",
+                    "status": "in_progress",
+                    "lead_id": "L1",
+                },
                 {"step_id": "s2", "description": "无线索", "status": "pending"},
             ],
         },
@@ -143,9 +149,7 @@ async def test_v2_checkpoint_is_migrated_without_touching_messages_or_plan() -> 
     assert migrated_plan[0]["lead_ids"] == []
     assert migrated.values["current_focus"]["source"] == "explicit"
     assert migrated.values["work_assessment"] is None
-    assert [m.id for m in migrated.values["messages"]] == [
-        m.id for m in before.values["messages"]
-    ]
+    assert [m.id for m in migrated.values["messages"]] == [m.id for m in before.values["messages"]]
     assert tuple(migrated.next) == tuple(before.next)
 
 
@@ -190,12 +194,10 @@ async def test_v3_checkpoint_with_pending_node_keeps_it_after_migration() -> Non
     )
     assert migrated.values["state_schema_version"] == CURRENT_STATE_SCHEMA_VERSION
     assert tuple(migrated.next) == tuple(before.next), "迁移不得吞掉待执行节点"
-    assert [t.name for t in (migrated.tasks or ())] == [
-        t.name for t in (before.tasks or ())
-    ], "待执行任务集合也必须一致"
-    assert [m.id for m in migrated.values["messages"]] == [
-        m.id for m in before.values["messages"]
-    ]
+    assert [t.name for t in (migrated.tasks or ())] == [t.name for t in (before.tasks or ())], (
+        "待执行任务集合也必须一致"
+    )
+    assert [m.id for m in migrated.values["messages"]] == [m.id for m in before.values["messages"]]
     assert [step["step_id"] for step in migrated.values["plan"]] == ["s1"]
     assert migrated.values["plan"][0]["lead_ids"] == []
     assert submitted == [], "迁移不得执行任何工具"
@@ -218,14 +220,43 @@ async def test_pure_adapters_reach_v4_before_skill_migration() -> None:
 async def test_v4_skill_migration_preserves_pending_tool_and_runs_once() -> None:
     graph, submitted = _graph(InMemorySaver(), interrupt_before=["tools"])
     config = {"configurable": {"thread_id": str(uuid4())}}
-    await graph.ainvoke(cast(Any, {"messages": [HumanMessage(content="保留目标", id="original")],
-                                 "state_schema_version": 4}), cast(Any, config))
+    await graph.ainvoke(
+        cast(
+            Any,
+            {
+                "messages": [HumanMessage(content="保留目标", id="original")],
+                "state_schema_version": 4,
+            },
+        ),
+        cast(Any, config),
+    )
     before = await graph.aget_state(cast(Any, config))
     assert submitted == [] and before.next == ("tools",)
     after = await ensure_current_checkpoint(graph, config, before, database=None, session_id=None)
-    assert after.values["state_schema_version"] == 5
+    assert after.values["state_schema_version"] == CURRENT_STATE_SCHEMA_VERSION
     assert after.values["active_skills"] == {} and after.values["skill_directives"] == {}
-    assert [(m.id, m.content) for m in after.values["messages"]] == [(m.id, m.content) for m in before.values["messages"]]
+    assert [(m.id, m.content) for m in after.values["messages"]] == [
+        (m.id, m.content) for m in before.values["messages"]
+    ]
     assert after.next == before.next and submitted == []
+    await graph.ainvoke(None, cast(Any, config))
+    assert submitted == ["once"]
+
+
+async def test_v5_planning_migration_preserves_pending_work_and_marks_old_done() -> None:
+    graph, submitted = _graph(InMemorySaver(), interrupt_before=["tools"])
+    config = {"configurable": {"thread_id": str(uuid4())}}
+    await graph.ainvoke(cast(Any, {
+        "messages": [HumanMessage(content="保留旧工作", id="v5-original")],
+        "state_schema_version": 5,
+        "plan": [{"step_id": "old", "description": "历史完成", "status": "done"}],
+    }), cast(Any, config))
+    before = await graph.aget_state(cast(Any, config))
+    after = await ensure_current_checkpoint(graph, config, before, database=None, session_id=None)
+    assert after.next == before.next == ("tools",)
+    assert after.values["state_schema_version"] == CURRENT_STATE_SCHEMA_VERSION
+    assert after.values["plan"][0]["legacy_completion"]
+    assert "completion" not in after.values["plan"][0]
+    assert submitted == []
     await graph.ainvoke(None, cast(Any, config))
     assert submitted == ["once"]

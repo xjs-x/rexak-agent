@@ -16,7 +16,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import select
 
 from agent_workbench.agent.context_sources import persist_history
-from agent_workbench.agent.state import AgentGraphState
+from agent_workbench.agent.state import CURRENT_STATE_SCHEMA_VERSION, AgentGraphState
 from agent_workbench.agent.state_migration import ensure_current_checkpoint
 from agent_workbench.agent.working_context import assemble_working_context
 from agent_workbench.domain.leads import LeadService
@@ -254,7 +254,7 @@ async def test_official_v1_migration_keeps_messages_plan_sources_and_pending_nod
         snapshot = await ensure_current_checkpoint(
             graph, config, old, database, context.toolbox.session_id
         )
-        assert snapshot.values["state_schema_version"] == 5
+        assert snapshot.values["state_schema_version"] == CURRENT_STATE_SCHEMA_VERSION
         assert snapshot.next == old.next
         migrated_plan = snapshot.values["plan"]
         assert [step["step_id"] for step in migrated_plan] == [

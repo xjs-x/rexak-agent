@@ -152,6 +152,12 @@ async def _run_runner(
         runner = AgentRunner(
             settings=settings, owner=owner, database=db, production_scan=target is None
         )
+        from agent_workbench.agent.factory import loaded_code_version
+        from agent_workbench.agent.prompts import PROMPT_VERSION
+
+        log.info("runner_runtime_versions", prompt_version=PROMPT_VERSION,
+                 code_version=loaded_code_version(),
+                 scope="loaded_planning_entrypoints_contracts_and_prompt_not_entire_process")
         if once:
             outcome = await runner.step(only_run_id=target)
             if outcome is None:

@@ -36,6 +36,7 @@ async def propose_completion(
     follow_up_suggestions_json: list[Any] | str | None = None,
     missing_conditions_json: list[Any] | str | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
+    expected_plan_revision: int | None = None,
 ) -> Command:
     """提交**阶段结束提议**。系统会做确定性检查后才真正结束本阶段。
 
@@ -53,6 +54,7 @@ async def propose_completion(
         missing_conditions_json: 缺少账号、目标不可达等继续测试所需条件。
             只有在**所有有效方向**都确实需要外部条件时才填；否则请继续推进。
         tool_call_id: 由框架注入，不要自己填写。
+        expected_plan_revision: 本轮已提交计划版本；计划更新后请在下一批提交结束。
 
     Returns:
         提交确认；是否通过由 finish_gate 决定。
@@ -66,6 +68,11 @@ async def propose_completion(
     """
     if reason not in COMPLETION_REASONS:
         raise ValueError(f"reason 必须是 {sorted(COMPLETION_REASONS)} 之一，收到 {reason!r}")
+    from agent_workbench.contracts.planning import planning_digest
+
+    revision = int(runtime.state.get("plan_revision") or 0)
+    if expected_plan_revision is not None and expected_plan_revision != revision:
+        raise ValueError("结束提议的计划版本已过期")
 
     focus = runtime.state.get("current_focus") or {}
     payload: dict[str, Any] = {
@@ -83,6 +90,8 @@ async def propose_completion(
         ),
         "missing_conditions": coerce_str_list(missing_conditions_json, "missing_conditions_json"),
         "proposed_at_turn": len(runtime.state.get("messages") or []),
+        "plan_revision": revision,
+        "plan_signature": planning_digest(list(runtime.state.get("plan") or [])),
     }
 
     text = json.dumps(

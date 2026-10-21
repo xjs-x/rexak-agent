@@ -67,6 +67,7 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     proposal=proposal,
                     plan=list(state.get("plan") or []),
                     review_cursor=state.get("weakness_review_cursor"),
+                    run_id=toolbox.run_id,
                 )
             span.finish()
             toolbox.spans.record(span, **decision.as_metadata())
@@ -78,8 +79,13 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 async with toolbox.db.transaction() as db:
                     await toolbox.spans.flush(db)
                     if decision is not None:
-                        await append_event(db, session_id=toolbox.session_id, run_id=toolbox.run_id,
-                            event_type=EventType.COMPLETION_REVIEW, payload=decision.as_metadata())
+                        await append_event(
+                            db,
+                            session_id=toolbox.session_id,
+                            run_id=toolbox.run_id,
+                            event_type=EventType.COMPLETION_REVIEW,
+                            payload=decision.as_metadata(),
+                        )
             except Exception as exc:
                 log.warning(
                     "finish_gate_span_persist_failed",

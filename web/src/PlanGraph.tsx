@@ -40,9 +40,18 @@ export function PlanGraph({ plan, leads }: Props) {
     return { nodes, edges };
   }, [plan, leads]);
 
-  const assessmentApplies = (plan.work_assessment?.step_id ?? null) === (plan.current_focus?.step_id ?? null)
-    && (plan.work_assessment?.lead_id ?? null) === (plan.current_focus?.lead_id ?? null);
+  const assessedFocus = plan.work_assessment?.evaluated_plan_revision != null
+    ? plan.work_assessment.next_focus : plan.work_assessment;
+  const assessmentApplies = (assessedFocus?.step_id ?? null) === (plan.current_focus?.step_id ?? null)
+    && (assessedFocus?.lead_id ?? null) === (plan.current_focus?.lead_id ?? null)
+    && (plan.work_assessment?.evaluated_plan_revision == null
+      || (plan.work_assessment.resulting_plan_revision === plan.revision
+        && plan.work_assessment.next_focus?.intent === plan.current_focus?.intent
+        && plan.work_assessment.next_focus?.reason === plan.current_focus?.reason
+        && plan.work_assessment.next_focus?.return_to_step_id === plan.current_focus?.return_to_step_id
+        && plan.work_assessment.next_focus?.source === plan.current_focus?.source));
   return <>
+    {plan.revision_projection_error && <p role="status">{plan.revision_projection_error}；当前计划仍以已保存状态为准。</p>}
     {plan.current_focus && <div className="tool-detail" aria-label="当前行动焦点">
       <strong>当前行动：{plan.current_focus.intent}</strong>
       <p>理由：{plan.current_focus.reason}</p>
@@ -53,6 +62,9 @@ export function PlanGraph({ plan, leads }: Props) {
       <strong>{assessmentApplies ? "最近判断" : "此前焦点的判断"}：{plan.work_assessment.changed}</strong>
       <p>{assessmentApplies ? "下一步" : "此前拟定的下一步"}：{plan.work_assessment.next_action}</p>
       {plan.work_assessment.uncertainty && <p>不确定性：{plan.work_assessment.uncertainty}</p>}
+      {plan.work_assessment.evaluated_plan_revision != null && <p>
+        评估对象：计划 v{plan.work_assessment.evaluated_plan_revision} · {plan.work_assessment.evaluated_step_ids?.join("、") || "初始探索"}
+      </p>}
       <p>修订：v{plan.work_assessment.revision}（解释，不是漏洞事实）</p>
     </div> : <p className="empty">尚未记录判断</p>}
     {nodes.length ? <div className="plan-graph" aria-label="计划步骤与关联线索的只读关系图">
@@ -65,6 +77,15 @@ export function PlanGraph({ plan, leads }: Props) {
       <summary>{step.step_id} · {step.description} · {step.status}</summary>
       {step.rationale && <p>行动理由：{step.rationale}</p>}
       {step.done_when && <p>完成条件：{step.done_when}</p>}
+      {step.completion_spec && <p>完成方式：{step.completion_spec.mode === "investigate" ? "取得明确调查结果" : "达成预期条件"}</p>}
+      {step.completion && <>
+        <p>实际结果：{step.completion.outcome === "satisfied" ? "预期条件成立" : step.completion.outcome === "not_satisfied" ? "预期条件不成立" : "尚不能判断"} · {step.completion.summary}</p>
+        <p>检查范围：{step.completion.check.scope}</p>
+        {step.completion.check.sufficiency && <p>结论依据：{step.completion.check.sufficiency === "model_judgment" ? "模型判断，未经独立语义验证" : step.completion.check.sufficiency === "receipt_fields" ? "指定回执字段" : "所引用验证记录的范围"}</p>}
+        {(step.completion.check.http_coverage ?? []).map(item => <p key={item.operation_id + item.method + item.url}>已检查：{item.method} {item.url} → {item.status_code}</p>)}
+        {(step.completion.check.limitations ?? []).map(note => <p key={note}>限制：{note}</p>)}
+      </>}
+      {step.legacy_completion && <p>历史完成尚未按当前条件复查。</p>}
       {step.resume_note && <p>恢复提示：{step.resume_note}</p>}
       {(step.evidence_refs ?? []).map(ref => <p key={ref}>
         <a href={`/api/artifacts/${encodeURIComponent(ref)}?limit=65536`} target="_blank" rel="noreferrer">查看来源 {ref}</a>

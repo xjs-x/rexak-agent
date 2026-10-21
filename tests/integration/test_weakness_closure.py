@@ -301,7 +301,11 @@ async def test_official_loop_consumes_weakness_and_links_execution(database, uni
         operation = (await db.execute(select(ToolOperationRow).where(
             ToolOperationRow.run_id == context.toolbox.run_id, ToolOperationRow.tool_name == "probe"))).scalar_one()
     assert operation.status == "succeeded"
-    assert operation.execution_context == PROBE_CALLS[0], "派发上下文必须真正落入操作台账，不能只检查内存变量"
+    persisted = dict(operation.execution_context)
+    snapshots = persisted.pop("source_condition_snapshots")
+    assert persisted == PROBE_CALLS[0], "原派发上下文必须原样保留；条件快照是程序额外采集"
+    assert seen["weakness_id"] in snapshots
+    assert snapshots[seen["weakness_id"]]["status"] == "candidate"
 
 
 async def test_official_loop_never_consuming_weakness_yields_specific_review(database, unique_name):

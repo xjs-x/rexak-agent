@@ -17,6 +17,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import defer
 
 from agent_workbench import __version__
+from agent_workbench.contracts.planning import PLAN_REVISION_SUMMARY
 from agent_workbench.evidence.artifacts import ArtifactError, ArtifactStore, redact_text
 from agent_workbench.persistence.db import Database
 from agent_workbench.persistence.tables import (
@@ -455,6 +456,7 @@ async def collect_run_diagnostic(
                                 [
                                     "最终请求 manifest（无供应商隐藏正文）",
                                     "可检索对话来源（正常可见脱敏视图）",
+                                    PLAN_REVISION_SUMMARY,
                                 ]
                             ),
                         )
@@ -602,6 +604,8 @@ async def collect_run_diagnostic(
         "audit_artifact_roles": {
             str(row.id): "request_manifest"
             if row.summary == "最终请求 manifest（无供应商隐藏正文）"
+            else "plan_revision_candidate"
+            if row.summary == PLAN_REVISION_SUMMARY
             else "conversation_source"
             for row in audit_artifacts
         },

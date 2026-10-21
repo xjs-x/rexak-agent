@@ -22,13 +22,10 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from langchain.tools import ToolRuntime
-from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import Command
 
 from agent_workbench.agent.context import RunContext
-from agent_workbench.agent.focus import focus_signature, resolve_focus
-from agent_workbench.agent.state import PlanStep, WorkAssessment
 from agent_workbench.contracts.enums import (
     CoverageStatus,
     FindingCategory,
@@ -50,13 +47,6 @@ from agent_workbench.tools.operation import OperationRegistry, PreparedOperation
 from agent_workbench.tools.params import coerce_str_list
 from agent_workbench.tools.runtime import Toolbox
 
-PLAN_STEP_STATUSES = {"pending", "in_progress", "done", "dropped", "blocked"}
-PLAN_STEP_KINDS = {"coverage", "followup", "mixed"}
-MAX_PLAN_STEPS = 20
-#: 轻量判断的负载初值：单字段最多 500 字、引用最多 8 个。
-MAX_ASSESSMENT_CHARS = 500
-MAX_ASSESSMENT_REFS = 8
-
 
 def _parse_json(raw: Any, field: str) -> Any:
     """解析 JSON 字符串；已经解析好的结构直接返回（模型偶尔直接给对象）。"""
@@ -66,10 +56,6 @@ def _parse_json(raw: Any, field: str) -> Any:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ValueError(f"{field} 不是合法 JSON：{exc}") from exc
-
-
-def _tool_message(tool_call_id: str, text: str) -> ToolMessage:
-    return ToolMessage(content=text, tool_call_id=tool_call_id, name="plan")
 
 
 # --------------------------------------------------------------------------- #
@@ -85,165 +71,53 @@ async def update_plan(
     rationale: str | None = None,
     focus_json: str | None = None,
     assessment_json: str | None = None,
+    expected_plan_revision: int | None = None,
 ) -> Command:
-    """更新**当前计划**、焦点与最近判断（有界、可修订，不是预先锁死的 DAG）。
+    """按旧计划快照提交计划、焦点和关键判断；不决定下一工具。
 
     Args:
-        steps_json: 计划步骤的 JSON 数组字符串。每项：
-            `{"step_id": "s1", "description": "...", "status": "pending|in_progress|done|dropped|blocked",
-              "kind": "coverage|followup|mixed", "rationale": "为什么做这一步",
-              "lead_ids": ["本步骤服务的线索 ID"], "lead_id": "可选，主线索（兼容字段）"}`。
-            `kind` 区分覆盖检查、链条跟进与混合任务；`lead_ids` 允许一个步骤服务多条线索
-            （不要因为一个步骤服务三条线索就写三个当前焦点）。
-            **不传表示保留现有计划**；显式 `[]` 才是清空。
-        rationale: 本次计划变更的原因（会被记录，便于复盘方向变化）。
-        focus_json: 可选焦点对象，含 step_id、lead_id、intent、reason、return_to_step_id。
-            不传时系统按"唯一进行中步骤"自动承接；多主线时会给一次简短提示。
-        assessment_json: 可选**轻量判断**：
-            `{"changed": "这次结果改变了什么", "next_action": "下一步消除哪个不确定性",
-              "uncertainty": "未测到/条件不成立/假设受反证", "evidence_refs": ["工件 ID"]}`。
-            只在关键转折时补充，不必每轮都写；纯计划调整可以不写。
-        tool_call_id: 由框架注入，不要自己填写。
+        steps_json: 最多 20 步的完整步骤清单；未改步骤只写 step_id 即沿用全部字段。
+            省略整个参数保留计划，不能直接删除未完成步骤。仍为原子提交，不是 Patch 接口。
+            步骤沿用 step_id/description/status/kind/lead_ids。完成前声明
+            completion_spec={"mode":"investigate|achieve","done_when":"条件",
+            "check_type":"model|predicate|verification"}。model 只代表模型语义判断；
+            predicate 还需 {operation_id,path:["data","field"],equals:标量}；
+            verification 还需已有 verification_id。done 时提交 completion={
+            "outcome":"satisfied|not_satisfied|inconclusive","summary":"短结论",
+            "source_refs":[{"kind":"artifact|operation|observation|verification","id":"UUID"}]}。
+            跨任务来源由程序检查并自动规范化为 supporting，无需填写 relation，原归属不变。
+            HTTP 完成还需 completion_spec.http_checks=[{method,url,identity?,authentication?}]，
+            url 只填端点，不放查询载荷。程序核对引用操作的方法、端点、身份及状态回执；
+            OPTIONS 结果不能代替 PUT。此检查不证明漏洞，也不独立理解自然语言结论。
+            要求新鲜结果时显式填写 completion_spec.not_before（带时区），没有隐式有效期。
+            不得自行填写 check。调查取得明确阴性结果可以完成；达成任务必须 satisfied。
+            blocked/dropped 必须有 rationale；done_when 与完成条件不得冲突。
+        rationale: 本次修订的简短原因（最多 500 字）。
+        focus_json: 下一焦点 {step_id,lead_id,intent,reason,return_to_step_id}；可切换到新步骤。
+        assessment_json: 初始计划后新增步骤、主动换主线或改为 blocked/dropped 时需要简短 JSON：
+            {changed,next_action,decision,basis_refs}，普通工具调用和单纯完成登记不要求填写。
+            省略 evaluated_step_ids/evaluated_plan_revision 时程序绑定旧焦点和旧版本；
+            显式提供时必须指向更新前计划，不可使用新步骤冒充旧判断对象。
+            decision=continue|repair|expand|switch|defer|close，
+            trigger=new_evidence|condition_changed|tool_failure|no_progress|user_instruction|initial_plan|completion|plan_adjustment，
+            basis_refs 为带 kind/id 的真实来源；evidence_refs 仍只接受工件 ID。
+            无须每次新结果都改计划；原计划有效时继续即可。
+        expected_plan_revision: 必须使用本轮上下文提供的旧计划版本，过期更新将被拒绝。
+        tool_call_id: 框架注入的稳定调用 ID。
 
-    Returns:
-        更新确认（同时把计划、焦点与最近判断写回图状态）。
+    更新以 checkpoint 提交为准。同批只能一个计划写入，新焦点的执行放到下一批。
     """
-    runtime.context.note_progress(f"plan:{rationale or ''}")
-    steps: list[PlanStep] | None = None
-    seen: set[str] = set()
-    if steps_json is not None:
-        raw = _parse_json(steps_json, "steps_json")
-        if not isinstance(raw, list):
-            raise ValueError("steps_json 必须是 JSON 数组")
-        if len(raw) > MAX_PLAN_STEPS:
-            raise ValueError(f"计划最多 {MAX_PLAN_STEPS} 步；请合并或删除已完成步骤")
-        built: list[PlanStep] = []
-        declared_lead_ids: list[str] = []
-        for index, item in enumerate(raw, start=1):
-            if not isinstance(item, dict):
-                raise ValueError(f"第 {index} 项不是对象")
-            step_id = str(item.get("step_id") or f"s{index}")
-            if step_id in seen:
-                raise ValueError(f"step_id 重复：{step_id}")
-            seen.add(step_id)
-            status = str(item.get("status", "pending"))
-            if status not in PLAN_STEP_STATUSES:
-                raise ValueError(f"第 {index} 项 status 非法：{status}")
-            kind = str(item.get("kind") or "mixed")
-            if kind not in PLAN_STEP_KINDS:
-                raise ValueError(f"第 {index} 项 kind 非法：{kind}")
-            description = str(item.get("description") or "").strip()
-            if not description:
-                raise ValueError(f"第 {index} 项缺少 description")
-            if status == "blocked" and not item.get("rationale"):
-                raise ValueError(f"第 {index} 项状态为 blocked，必须写 rationale（受阻原因）")
-            primary = str(item.get("lead_id") or "").strip() or None
-            lead_ids = [
-                str(value).strip()
-                for value in coerce_str_list(item.get("lead_ids"), "lead_ids")
-                if str(value).strip()
-            ]
-            if primary and lead_ids and primary not in lead_ids:
-                raise ValueError(
-                    f"第 {index} 项 lead_id 与 lead_ids 冲突：lead_id 必须包含在 lead_ids 中。"
-                )
-            if primary and not lead_ids:
-                lead_ids = [primary]
-            if lead_ids and not primary:
-                primary = lead_ids[0]
-            declared_lead_ids.extend(lead_ids)
-            built.append(
-                PlanStep(
-                    step_id=step_id,
-                    description=description,
-                    status=status,  # type: ignore[typeddict-item]
-                    kind=kind,  # type: ignore[typeddict-item]
-                    rationale=item.get("rationale"),
-                    lead_id=primary,
-                    lead_ids=lead_ids,
-                    done_when=item.get("done_when"),
-                    resume_note=item.get("resume_note"),
-                    evidence_refs=coerce_str_list(item.get("evidence_refs"), "evidence_refs"),
-                )
-            )
-        steps = built
-        if declared_lead_ids:
-            await _assert_leads_in_session(runtime, declared_lead_ids)
+    from agent_workbench.tools.planning import apply_plan_update
 
-    previous_plan = list(runtime.state.get("plan") or [])
-    effective_plan = steps if steps is not None else previous_plan
-    explicit_focus: dict[str, Any] | None = None
-    if focus_json is not None:
-        parsed_focus = _parse_json(focus_json, "focus_json")
-        if not isinstance(parsed_focus, dict):
-            raise ValueError("focus_json 必须为对象")
-        if parsed_focus.get("lead_id"):
-            async with runtime.context.toolbox.db.session() as db:
-                lead = await LeadService(db).get(UUID(parsed_focus["lead_id"]))
-                if lead is None or lead.session_id != runtime.context.toolbox.session_id:
-                    raise ValueError("焦点线索不属于当前会话")
-        explicit_focus = parsed_focus
-
-    previous_focus = runtime.state.get("current_focus")
-    focus, hint = resolve_focus(effective_plan, previous_focus, explicit_focus)
-    focus_changed = focus_signature(focus) != focus_signature(previous_focus)
-
-    update: dict[str, Any] = {"current_focus": focus}
-    if steps is not None:
-        update["plan"] = steps
-        update["plan_revision"] = int(runtime.state.get("plan_revision") or 0) + 1
-    assessment = None
-    if assessment_json is not None:
-        parsed_assessment = _parse_json(assessment_json, "assessment_json")
-        if not isinstance(parsed_assessment, dict):
-            raise ValueError("assessment_json 必须为对象")
-        changed = str(parsed_assessment.get("changed") or "").strip()
-        next_action = str(parsed_assessment.get("next_action") or "").strip()
-        if not changed or not next_action:
-            raise ValueError("判断必须同时说明 changed（改变了什么）与 next_action（下一步）")
-        refs = coerce_str_list(parsed_assessment.get("evidence_refs"), "evidence_refs")
-        if len(refs) > MAX_ASSESSMENT_REFS:
-            raise ValueError(f"判断最多引用 {MAX_ASSESSMENT_REFS} 个工件")
-        if refs:
-            refs = await _verify_artifacts_exist(runtime.context.toolbox, refs)
-        if len(changed) > MAX_ASSESSMENT_CHARS or len(next_action) > MAX_ASSESSMENT_CHARS:
-            raise ValueError(f"判断字段最多 {MAX_ASSESSMENT_CHARS} 字")
-        previous_assessment = runtime.state.get("work_assessment") or {}
-        uncertainty = str(parsed_assessment.get("uncertainty") or "").strip() or None
-        if uncertainty and len(uncertainty) > MAX_ASSESSMENT_CHARS:
-            raise ValueError(f"判断字段最多 {MAX_ASSESSMENT_CHARS} 字")
-        assessment = WorkAssessment(
-            step_id=(focus or {}).get("step_id"),
-            lead_id=(focus or {}).get("lead_id"),
-            changed=changed,
-            next_action=next_action,
-            evidence_refs=refs,
-            uncertainty=uncertainty,
-            source_tool_call_id=tool_call_id,
-            revision=int(previous_assessment.get("revision") or 0) + 1,
-        )
-        update["work_assessment"] = assessment
-
-    text = json.dumps(
-        {
-            "ok": True,
-            "plan_revision": update.get("plan_revision", runtime.state.get("plan_revision") or 0),
-            "plan_changed": steps is not None,
-            "current_focus": focus,
-            "focus_changed": focus_changed,
-            "focus_hint": hint,
-            "assessment_revision": assessment["revision"] if assessment else None,
-            "steps": len(effective_plan),
-            "note": (
-                "计划/焦点/最近判断已写入图状态（LangGraph checkpoint 为权威）；"
-                "前端只做只读投影。自动承接的焦点只说明执行时的工作上下文，"
-                "不证明证据支持某个假设。"
-            ),
-        },
-        ensure_ascii=False,
+    return await apply_plan_update(
+        runtime,
+        tool_call_id,
+        steps_json=steps_json,
+        rationale=rationale,
+        focus_json=focus_json,
+        assessment_json=assessment_json,
+        expected_plan_revision=expected_plan_revision,
     )
-    update["messages"] = [_tool_message(tool_call_id, text)]
-    return Command(update=update)
 
 
 # --------------------------------------------------------------------------- #
@@ -331,8 +205,12 @@ async def record_lead(
     toolbox: Toolbox = runtime.context.toolbox
     identity_refs = coerce_str_list(identity_refs_json, "identity_refs_json")
     evidence_refs = coerce_str_list(evidence_refs_json, "evidence_refs_json")
-    basis_refs = _parse_relation_refs(source_weaknesses_json, role="basis", field="source_weaknesses_json")
-    result_refs = _parse_relation_refs(result_weaknesses_json, role="result", field="result_weaknesses_json")
+    basis_refs = _parse_relation_refs(
+        source_weaknesses_json, role="basis", field="source_weaknesses_json"
+    )
+    result_refs = _parse_relation_refs(
+        result_weaknesses_json, role="result", field="result_weaknesses_json"
+    )
     refuted = coerce_str_list(refuted_weaknesses_json, "refuted_weaknesses_json")
     conditions = _parse_object_list(required_conditions_json, "required_conditions_json")
     actionability = _parse_actionability(actionability_json)
@@ -383,17 +261,30 @@ async def record_lead(
                 "evidence_strength": evidence_strength,
                 "feasibility": feasibility,
                 "information_gain": information_gain,
-                **({
-                    "expected_revision": expected_revision,
-                    "source_weaknesses": [item.model_dump() for item in basis_refs],
-                    "result_weaknesses": [item.model_dump() for item in result_refs],
-                    "refuted_weaknesses": refuted,
-                    "required_conditions": conditions,
-                    "actionability": actionability.model_dump() if actionability is not None else None,
-                } if any(value is not None for value in (
-                    expected_revision, source_weaknesses_json, result_weaknesses_json,
-                    refuted_weaknesses_json, required_conditions_json, actionability_json,
-                )) else {}),
+                **(
+                    {
+                        "expected_revision": expected_revision,
+                        "source_weaknesses": [item.model_dump() for item in basis_refs],
+                        "result_weaknesses": [item.model_dump() for item in result_refs],
+                        "refuted_weaknesses": refuted,
+                        "required_conditions": conditions,
+                        "actionability": actionability.model_dump()
+                        if actionability is not None
+                        else None,
+                    }
+                    if any(
+                        value is not None
+                        for value in (
+                            expected_revision,
+                            source_weaknesses_json,
+                            result_weaknesses_json,
+                            refuted_weaknesses_json,
+                            required_conditions_json,
+                            actionability_json,
+                        )
+                    )
+                    else {}
+                ),
             },
         )
         if operation.row.result_snapshot is not None:
@@ -521,9 +412,23 @@ async def record_lead(
         if relation_payload:
             for link in [*relation_payload["links"], *relation_payload["refuted"]]:
                 if link.get("changed"):
-                    await append_event(db, session_id=toolbox.session_id, run_id=toolbox.run_id,
+                    await append_event(
+                        db,
+                        session_id=toolbox.session_id,
+                        run_id=toolbox.run_id,
                         event_type=EventType.RELATION_CHANGED,
-                        payload={key: link.get(key) for key in ("link_id", "revision", "lead_id", "finding_id", "role", "relation_state")})
+                        payload={
+                            key: link.get(key)
+                            for key in (
+                                "link_id",
+                                "revision",
+                                "lead_id",
+                                "finding_id",
+                                "role",
+                                "relation_state",
+                            )
+                        },
+                    )
 
     runtime.context.note_progress(f"lead:{payload['lead_id']}:{payload['status']}")
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -646,7 +551,6 @@ async def record_observation(
         result = {"ok": True, "observation": payload}
         receipt.row.result_snapshot = result
         receipt.row.status = "succeeded"
-
 
     runtime.context.note_progress(f"obs:{ref}")
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -982,16 +886,34 @@ async def _write_weakness(
         receipt.row.result_snapshot = result
         receipt.row.status = "succeeded"
         if write.content_changed:
-            await append_event(db, session_id=toolbox.session_id, run_id=toolbox.run_id,
+            await append_event(
+                db,
+                session_id=toolbox.session_id,
+                run_id=toolbox.run_id,
                 event_type=EventType.WEAKNESS_CHANGED,
-                payload={"weakness_id": str(row.id), "revision": write.revision,
-                    "changed_condition_keys": [*write.added_condition_keys, *write.revised_condition_keys, *write.removed_condition_keys]})
+                payload={
+                    "weakness_id": str(row.id),
+                    "revision": write.revision,
+                    "changed_condition_keys": [
+                        *write.added_condition_keys,
+                        *write.revised_condition_keys,
+                        *write.removed_condition_keys,
+                    ],
+                },
+            )
         if review is not None:
-            await append_event(db, session_id=toolbox.session_id, run_id=toolbox.run_id,
+            await append_event(
+                db,
+                session_id=toolbox.session_id,
+                run_id=toolbox.run_id,
                 event_type=EventType.WEAKNESS_REVIEWED,
-                payload={"weakness_id": str(row.id), "basis_fingerprint": (row.connection_review or {}).get("basis_fingerprint"),
+                payload={
+                    "weakness_id": str(row.id),
+                    "basis_fingerprint": (row.connection_review or {}).get("basis_fingerprint"),
                     "linked_lead_ids": write.linked_lead_ids,
-                    "disposition": "linked" if write.linked_lead_ids else "no_supported_connection"})
+                    "disposition": "linked" if write.linked_lead_ids else "no_supported_connection",
+                },
+            )
 
     runtime.context.note_progress(f"{result_key}:{payload['weakness_id']}:{payload['revision']}")
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -1048,23 +970,6 @@ def _parse_actionability(raw: dict[str, Any] | str | None) -> ActionabilityAsses
         return ActionabilityAssessment.model_validate(payload)
     except Exception as exc:  # pydantic ValidationError
         raise ValueError(f"actionability_json 不合法：{exc}") from exc
-
-
-async def _assert_leads_in_session(
-    runtime: ToolRuntime[RunContext], lead_ids: list[str]
-) -> None:
-    """计划引用的线索必须属于当前会话（不接受跨会话对象）。"""
-    parsed: list[UUID] = []
-    for raw in dict.fromkeys(lead_ids):
-        try:
-            parsed.append(UUID(str(raw)))
-        except ValueError as exc:
-            raise ValueError(f"计划引用了非法线索 ID：{raw}") from exc
-    async with runtime.context.toolbox.db.session() as db:
-        for lead_id in parsed:
-            row = await LeadService(db).get(lead_id)
-            if row is None or row.session_id != runtime.context.toolbox.session_id:
-                raise ValueError(f"计划引用的线索不属于当前会话：{lead_id}")
 
 
 async def _verify_artifact_refs(db: Any, toolbox: Toolbox, raw_ids: list[str]) -> list[str]:

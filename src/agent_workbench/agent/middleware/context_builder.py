@@ -60,8 +60,7 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             scope_block += (
                 "\n连接起点：HTTP、浏览器、脚本及命令都在执行岛运行。"
                 "回环地址属于执行岛；其端口、容器和进程状态不能证明用户主机的状态。"
-                "\n当前显式目标映射："
-                + json.dumps(snapshot.target_mappings, ensure_ascii=False)
+                "\n当前显式目标映射：" + json.dumps(snapshot.target_mappings, ensure_ascii=False)
             )
             if snapshot.mode == "instruction":
                 scope_block += (
@@ -148,23 +147,43 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         if working_view is not None:
             consumption = working_view.get("weakness_consumption") or {}
             commit = dict(consumption.get("consumption_commit") or {})
-            actual_ids = {str(item["weakness_id"]) for item in consumption.get("changed_weaknesses") or []}
+            actual_ids = {
+                str(item["weakness_id"]) for item in consumption.get("changed_weaknesses") or []
+            }
             commit["presented_weakness_ids"] = sorted(actual_ids)
-            commit["weakness_revisions"] = {key: value for key, value in (commit.get("weakness_revisions") or {}).items() if key in actual_ids}
-            commit["recall_keys"] = [item["dedupe_key"] for item in consumption.get("related_leads") or [] if item.get("dedupe_key")]
+            commit["weakness_revisions"] = {
+                key: value
+                for key, value in (commit.get("weakness_revisions") or {}).items()
+                if key in actual_ids
+            }
+            commit["recall_keys"] = [
+                item["dedupe_key"]
+                for item in consumption.get("related_leads") or []
+                if item.get("dedupe_key")
+            ]
             consumption["consumption_commit"] = commit
             (working_view.get("next") or {})["consumption_commit"] = commit
             # 裁剪后的提交元数据也属于实际请求；在最终预算检查前重新组装。
             context = _compose_context(state, working_view, scope_block)
             merged = compose(context)
             if profile is not None:
-                budget = estimate_request(selected, merged, request.tools, profile,
-                    model=request.model, model_settings=request.model_settings, tool_choice=request.tool_choice)
+                budget = estimate_request(
+                    selected,
+                    merged,
+                    request.tools,
+                    profile,
+                    model=request.model,
+                    model_settings=request.model_settings,
+                    tool_choice=request.tool_choice,
+                )
                 ensure_fits(budget)
             manifest = _build_manifest(state, selected, str(merged.content))
         manifest.update(
-            **({"skills": ctx.toolbox.skill_manifest}
-               if ctx is not None and getattr(ctx.toolbox, "skill_manifest", []) else {}),
+            **(
+                {"skills": ctx.toolbox.skill_manifest}
+                if ctx is not None and getattr(ctx.toolbox, "skill_manifest", [])
+                else {}
+            ),
             manifest_version=3,
             selected_messages=message_inventory(selected),
             replacements=replacements,
@@ -259,7 +278,10 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
     pending_jobs = state.get("pending_job_ids") or []
     pending_jobs_count = int(state.get("pending_job_count") or len(pending_jobs))
 
-    lines: list[str] = ["## 当前任务上下文"]
+    lines: list[str] = [
+        "## 当前任务上下文",
+        f"已提交计划版本：{int(state.get('plan_revision') or 0)}（update_plan 使用 expected_plan_revision）",
+    ]
 
     if objective:
         lines.append(f"### 阶段目标（用户原文，未被摘要覆盖）\n{objective}")
@@ -306,6 +328,27 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
                 + (f"（服务线索：{', '.join(lead_ids[:6])}）" if lead_ids else "")
                 + note
             )
+            spec = step.get("completion_spec")
+            if spec:
+                lines.append("  完成条件：" + json.dumps(spec, ensure_ascii=False))
+            elif step.get("done_when"):
+                lines.append(f"  历史完成条件：{step['done_when']}（尚未声明 investigate/achieve）")
+            completion = step.get("completion") or {}
+            if completion:
+                lines.append(
+                    "  结果与检查范围："
+                    + json.dumps(
+                        {
+                            "outcome": completion.get("outcome"),
+                            "summary": completion.get("summary"),
+                            "source_refs": completion.get("source_refs"),
+                            "check": completion.get("check"),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            if step.get("legacy_completion"):
+                lines.append("  历史完成尚未复查；不自动补造验证或重跑工具。")
 
     focus = state.get("current_focus") or {}
     if focus:
@@ -339,6 +382,24 @@ def _build_context_block(state: Mapping[str, Any]) -> str:
             + f"\n- 来源：工具调用 {assessment.get('source_tool_call_id')}（第 {assessment.get('revision')} 版）"
             + f"；步骤 {assessment.get('step_id')}，线索 {assessment.get('lead_id')}"
         )
+        if assessment.get("evaluated_plan_revision") is not None:
+            lines.append(
+                "- 判断针对更新前计划："
+                + json.dumps(
+                    {
+                        "plan_revision": assessment["evaluated_plan_revision"],
+                        "evaluated_step_ids": assessment.get("evaluated_step_ids"),
+                        "decision": assessment.get("decision"),
+                        "trigger": assessment.get("trigger"),
+                        "basis_refs": assessment.get("basis_refs"),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if assessment.get("decision") in {"expand", "repair", "switch"}:
+            lines.append(
+                "- 本次判断已经识别后续工作；请利用条件实际推进。若未行动，说明仍缺什么，不以计划文本代替执行。"
+            )
     elif plan:
         lines.append("### 最近一次明确判断\n- 尚未记录判断。请不要臆造此前的判断内容。")
 

@@ -35,6 +35,7 @@ _PROJECTION_FIELDS = (
     "user_constraints",
     "plan",
     "plan_revision",
+    "last_plan_change",
     "work_summary",
     "active_lead_ids",
     "pending_job_ids",
@@ -193,6 +194,8 @@ def _copy_evidence(
             relative = (
                 f"manifests/{UUID(artifact['id'])}.json"
                 if audit_roles.get(artifact["id"]) == "request_manifest"
+                else f"plans/revisions/{UUID(artifact['id'])}.json"
+                if audit_roles.get(artifact["id"]) == "plan_revision_candidate"
                 else f"skills/catalogs/{UUID(artifact['id'])}.json"
                 if audit_roles.get(artifact["id"]) == "skill_catalog"
                 else f"skills/packages/{UUID(artifact['id'])}.zip"
@@ -298,7 +301,10 @@ def write_run_bundle(
             },
         )
         _write_json(directory / "reports" / "index.json", payload["reports"])
-        _write_json(directory / "skills" / "index.json", payload.get("skills", {"versions": [], "errors": []}))
+        _write_json(
+            directory / "skills" / "index.json",
+            payload.get("skills", {"versions": [], "errors": []}),
+        )
         stage_snapshots = []
         for report in payload["reports"]:
             if report.get("captured_snapshot") is None:
@@ -368,7 +374,8 @@ def write_run_bundle(
                     payload.get("pending_model_observations", [])
                 ),
                 "consistency": "non_atomic_database_checkpoint_artifacts",
-                "evidence_complete": all(row["status"] == "copied" for row in evidence) and not payload.get("skills", {}).get("errors"),
+                "evidence_complete": all(row["status"] == "copied" for row in evidence)
+                and not payload.get("skills", {}).get("errors"),
                 "missing_capabilities": [
                     *([] if stage_snapshots else ["historical_stage_snapshots"]),
                     *(["final_request_manifests"] if manifest_status != "available" else []),

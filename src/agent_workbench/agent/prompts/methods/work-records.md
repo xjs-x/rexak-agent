@@ -13,18 +13,48 @@
 
 ## 轻量判断（assessment_json）
 
+初始计划后新增工作、主动换主线或改为 blocked/dropped 时，在同一次 `update_plan` 写简短判断：
+`{changed,next_action,decision,basis_refs}`。旧版本及旧焦点由程序补齐；显式指定的
+`evaluated_plan_revision`、`evaluated_step_ids` 仍须属于旧快照。`current_focus` 只代表下一步。
+普通请求、单纯完成登记和顺序承接不要求填判断，也不额外调用模型。
+新证据用带 `kind/id` 的 `basis_refs` 绑定实际操作、工件、观察或验证记录；不要把规划工具
+本身的调用 ID 当作结果来源。没有新事实时，改写判断或切换焦点不算知识进展。
+
+成功取得条件后，要检查它支持哪些尚未解决的工作，并实际执行近期下一步。可以复用现有
+执行模板，但注册模板不等于已验证可用；不要只增加几个任务标题就停止。
+
 只在**关键转折**补充：获得实质性证据、关键假设被否定、验证条件不成立、需要换方向、
 短暂检查新线索后返回。连续普通请求**不必**每轮填写，也不要求额外调用总结模型。
 
 ```json
-{"changed": "这次结果改变了什么", "next_action": "下一步消除哪个不确定性",
- "uncertainty": "未测到 / 条件不成立 / 假设受反证"}
+{"changed": "调整现有工作的顺序", "next_action": "先复查已有来源",
+ "evaluated_plan_revision": 7, "evaluated_step_ids": ["s1"],
+ "decision": "switch", "trigger": "plan_adjustment", "basis_refs": []}
 ```
 
 - `changed` 与 `next_action` 是核心；其余能推导就推导。
+- 上例的版本和步骤必须替换为当前旧快照的实际值。证据/条件变化判断必须绑定实际来源，
+  不能用空引用冒充 new_evidence。
 - 仅改写措辞、不增加来源的判断更新**不算**新证据。
 - 需要长期保留的未决方向进 `record_lead`；最近判断对象**不能**代替线索库。
   同一方向内推进而不改计划时，一次 `record_lead` 更新就够，不必同时改计划。
+
+## 完成与受阻
+
+`completion_spec.mode=investigate` 表示取得明确调查结果，阴性也可能完成；`achieve`
+表示预期条件必须成立。完成时提交结果、短说明和实际来源，由程序生成 `completion.check`。
+模型判断不等于独立验证；来源完整也不等于任意语义结论正确。检查方式或条件改变后重新复查。
+步骤受阻时保留恢复条件；放弃步骤必须说明理由，不能用删除计划清掉领域未决项或远端任务。
+
+跨步骤结果直接引用已有 operation/artifact/observation，程序自动记录 supporting；采集时的
+焦点不会被改写。不要因来源属于旧焦点就重测，也不要把 resource_id/job_id 当作操作 ID。
+HTTP 完成声明 `completion_spec.http_checks=[{method,url,identity?,authentication?}]`；url 只含
+端点，不含查询载荷。程序核对范围内每项的真实回执，OPTIONS 不能代替 PUT。状态码本身
+不证明漏洞，参数条件、正文含义及自然语言范围仍须模型解释，不能宣称独立验证通过。
+
+WorkingContext 的已有结果目录提供可复用操作、原焦点、方法、端点、状态及工件入口。
+计划仍整体提交：完整列出要保留的 step_id，未变步骤只写 step_id 即可，不必复制全部完成记录。
+整批校验失败时按 step_errors 修正指定步骤，无关步骤沿用；不要重放已有外部操作。
 
 ## 并行与同批语义
 

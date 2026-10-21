@@ -26,7 +26,7 @@ from agent_workbench.persistence.repositories import (
     ToolOperationRepository,
     compute_request_digest,
 )
-from agent_workbench.persistence.tables import ToolOperationRow
+from agent_workbench.persistence.tables import FindingRow, IdentityRow, ToolOperationRow
 from agent_workbench.tools.execution_context import execution_context
 
 
@@ -42,6 +42,7 @@ class OperationRegistry:
 
     def __init__(self, session: AsyncSession) -> None:
         self._repo = ToolOperationRepository(session)
+        self._session = session
 
     async def prepare(
         self,
@@ -82,7 +83,23 @@ class OperationRegistry:
         # 领域登记工具据此把证据关联到**真实采集操作**，而不是伪装成 GET。
         context = dict(execution_context.get() or {})
         if context_extra:
-            context.update({key: value for key, value in context_extra.items() if value is not None})
+            context.update(
+                {key: value for key, value in context_extra.items() if value is not None}
+            )
+        if identity_id is not None:
+            identity = await self._session.get(IdentityRow, identity_id)
+            if identity is not None:
+                context["identity_auth_revision"] = identity.auth_revision
+        # 捕获实际依赖的条件内容；增加新条件不使已采集事实自动失效。
+        from agent_workbench.domain.planning_applicability import condition_snapshot
+
+        condition_sources = {}
+        for identifier in context.get("source_weakness_revisions", {}):
+            source = await self._session.get(FindingRow, UUID(identifier))
+            if source is not None and source.session_id == session_id:
+                condition_sources[identifier] = condition_snapshot(source)
+        if condition_sources:
+            context["source_condition_snapshots"] = condition_sources
 
         operation_id = uuid.uuid4()
         row, _created = await self._repo.prepare(

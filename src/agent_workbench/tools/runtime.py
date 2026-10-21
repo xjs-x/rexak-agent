@@ -119,6 +119,8 @@ class Toolbox:
     #: 最近一次上下文装配的 manifest（只读投影，供诊断导出与复盘）
     context_manifest: dict[str, Any] | None = None
     working_context: dict[str, Any] | None = None
+    #: Runner 注入，只读已提交 checkpoint 的规划头，不持有第二份可写计划。
+    planning_head_reader: Any = None
     skill_catalog: list[dict[str, Any]] | None = None
     skill_context: str = ""
     skill_manifest: list[dict[str, Any]] = field(default_factory=list)

@@ -72,7 +72,9 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 state,
                 same_batch_plan_update="update_plan" in batch_tool_names(state),
                 weakness_revisions=weakness_revisions_for_focus(context.toolbox),
-                weakness_bindings=(getattr(context.toolbox, "working_context", None) or {}).get("execution_source_bindings"),
+                weakness_bindings=(getattr(context.toolbox, "working_context", None) or {}).get(
+                    "execution_source_bindings"
+                ),
             )
         )
         try:
@@ -116,9 +118,14 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             args = {}
 
         batch = batch_tool_names(dict(request.state or {}))
-        if tool_name in {"load_skill", "unload_skill"} and sum(
-            name in {"load_skill", "unload_skill"} for name in batch
-        ) > 1:
+        if tool_name == "update_plan" and batch.count("update_plan") > 1:
+            return _tool_message(
+                request, "同批多个 update_plan 已在执行前全部拒绝；请合并为一次更新。"
+            )
+        if (
+            tool_name in {"load_skill", "unload_skill"}
+            and sum(name in {"load_skill", "unload_skill"} for name in batch) > 1
+        ):
             return _tool_message(request, "Skill 状态修改请分轮执行，避免同批版本竞争。")
         if tool_name in {"run_skill_script", "read_skill_resource"} and any(
             name in {"load_skill", "unload_skill"} for name in batch
@@ -206,7 +213,9 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 duty = await ExecutionDelegationRepository(db).get(UUID(str(duty_id)))
                 revision = request.state.get("execution_delegation_revision")
                 if duty is None or duty.status != "active" or duty.revision != revision:
-                    return _tool_message(request, "该响应依赖的值班委托已失效，操作未执行；资源仍保留。")
+                    return _tool_message(
+                        request, "该响应依赖的值班委托已失效，操作未执行；资源仍保留。"
+                    )
         #
         # 工具抛出的异常**不能**让整轮图崩溃：那会把"某个工具失败"升级成
         # "整个 run 失败"，掩盖真实原因。这里按类型区分后写成合法的终结 ToolMessage，
@@ -358,7 +367,15 @@ def _render_tool_failure(tool_name: str, exc: BaseException) -> str:
 
     name = type(exc).__name__
     message = str(exc)
-    if isinstance(exc, ValueError):
+    from agent_workbench.contracts.planning import PlanningValidationError
+
+    details = None
+    if isinstance(exc, PlanningValidationError):
+        code, retryable, hint = exc.code, False, exc.recovery
+        from agent_workbench.evidence.redaction import redact_api_value
+
+        details = redact_api_value(exc.details)
+    elif isinstance(exc, ValueError):
         code, retryable, hint = (
             "validation_failed",
             False,
@@ -387,6 +404,7 @@ def _render_tool_failure(tool_name: str, exc: BaseException) -> str:
                 "message": f"{name}: {message}",
                 "retryable": retryable,
                 "recovery_hint": hint,
+                **({"details": details} if details is not None else {}),
             },
             "execution_certainty": "not_applied",
             "summary": f"工具 {tool_name} 执行失败（{code}）。",

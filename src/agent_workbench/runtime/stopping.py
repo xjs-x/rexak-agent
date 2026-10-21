@@ -98,10 +98,21 @@ class FinishGate:
         proposal: Mapping[str, Any] | None,
         plan: Sequence[Mapping[str, Any]] | None = None,
         review_cursor: str | None = None,
+        run_id: UUID | None = None,
     ) -> CompletionDecision:
         from agent_workbench.domain.exploration_lock import lock_exploration
 
         await lock_exploration(self._s, session_id)
+        from agent_workbench.contracts.planning import planning_digest
+
+        if (
+            proposal
+            and proposal.get("plan_signature") is not None
+            and proposal["plan_signature"] != planning_digest(list(plan or []))
+        ):
+            return CompletionDecision(
+                decision="continue", reasons=["结束提议针对旧计划快照，请按已提交的新计划重新判断"]
+            )
         if proposal is None or proposal.get("reason") not in {
             "goal_answered",
             "exploration_converged",
@@ -153,6 +164,7 @@ class FinishGate:
             cursor=review_cursor,
             page_size=REVIEW_PAGE_SIZE,
             focus_lead_id=proposal.get("focus_lead_id"),
+            run_id=run_id,
         )
         page_labels = [
             f"{item.kind}:{item.object_id}:{item.label[:60]}" for item in inventory.items
@@ -198,11 +210,7 @@ class FinishGate:
         retained, duty_note = await self._retained_resources(session_id)
 
         # 6) 所有有效方向都确实需要外部条件 -> 等待用户（保留全部未决项）
-        waiting = [
-            item
-            for item in inventory.items
-            if item.actionability == "needs_condition"
-        ]
+        waiting = [item for item in inventory.items if item.actionability == "needs_condition"]
         external = [str(item) for item in (proposal.get("missing_conditions") or [])]
         if inventory.waiting_count:
             details: list[str] = []
@@ -303,8 +311,7 @@ class FinishGate:
             .all()
         )
         retained = [
-            f"{row.kind}:{row.resource_id}:{row.state}"
-            + (f":{row.purpose}" if row.purpose else "")
+            f"{row.kind}:{row.resource_id}:{row.state}" + (f":{row.purpose}" if row.purpose else "")
             for row in rows
             if row.kind in {"terminal", "monitor", "command", "script"}
         ]
@@ -327,9 +334,7 @@ class FinishGate:
                 if "continuous" in modes
                 else "一次性值班待触发（once 委托生效）"
             )
-            retained.extend(
-                f"duty:{row.id}:{row.mode}:{row.goal[:40]}" for row in delegations
-            )
+            retained.extend(f"duty:{row.id}:{row.mode}:{row.goal[:40]}" for row in delegations)
         else:
             duty_note = "保留资源但未委托：事件会被记录，模型不会自动启动。"
         return retained, duty_note
@@ -361,11 +366,18 @@ class FinishGate:
                 await self._s.execute(
                     select(ToolJobRow)
                     .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
-                    .outerjoin(ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id)
-                    .where((ExecutionResourceRow.resource_id.is_(None)) | (
-                        ExecutionResourceRow.kind.in_(["command", "script"]) &
-                        ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from("resource")
-                    ))
+                    .outerjoin(
+                        ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id
+                    )
+                    .where(
+                        (ExecutionResourceRow.resource_id.is_(None))
+                        | (
+                            ExecutionResourceRow.kind.in_(["command", "script"])
+                            & ExecutionResourceRow.detail[
+                                "completion_role"
+                            ].astext.is_distinct_from("resource")
+                        )
+                    )
                     .where(
                         ToolOperationRow.session_id == session_id,
                         ToolJobRow.state.in_(["received", "starting", "running", "unknown"]),
@@ -396,7 +408,9 @@ class FinishGate:
                     select(ExecutionResourceRow).where(
                         ExecutionResourceRow.session_id == session_id,
                         ExecutionResourceRow.kind.in_(["command", "script"]),
-                        ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from("resource"),
+                        ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from(
+                            "resource"
+                        ),
                         ExecutionResourceRow.state.in_(["starting", "running", "unknown"]),
                     )
                 )

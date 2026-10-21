@@ -199,6 +199,9 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["ops"])
     async def health() -> dict[str, Any]:
+        from agent_workbench.agent.factory import loaded_code_version
+        from agent_workbench.agent.prompts import PROMPT_VERSION
+
         db = get_database()
         try:
             info = await db.ping()
@@ -209,6 +212,11 @@ def create_app() -> FastAPI:
         return {
             "service": "agent-workbench-api",
             "version": __version__,
+            "runtime_versions": {
+                "prompt_version": PROMPT_VERSION,
+                "code_version": loaded_code_version(),
+                "scope": "loaded_planning_entrypoints_contracts_and_prompt_not_entire_process",
+            },
             "database": {"ok": db_ok, **info},
             "auth_configured": not LocalAuth()._is_default_secret(settings.session_secret),
             "note": ("本服务只应监听回环地址；健康检查不需要鉴权，因此不返回任何配置细节。"),

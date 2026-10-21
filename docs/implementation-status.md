@@ -363,6 +363,22 @@ Earth 自然目标测试尚未完成：10 次成功 HTTP 操作和 25 个哈希�
 
 全量控制端回归 639 passed、2 skipped、1 deselected，Pyright 无错误或警告，前端、浏览器 fixture 和原桌面 API/Runner 启动链验证通过；当前任务与调用记录保留。规则以 [decision 0011](decisions/0011-external-skills-boundary.md) 为准，详细证据及未验证范围见[本轮记录](acceptance-results/2026-10-21/external-skills-regression.md)。没有执行真实模型或目标实验。
 
+## 2026-10-21 第一轮证据驱动动态规划
+
+已实现旧计划版本上的 Assessment 与新焦点分离、调查型/达成型 Completion 合同、来源和完成状态检查、可靠修订工件链及已提交 checkpoint 的幂等事件投影。WorkingContext、Progress、FinishGate、API、计划视图及报告接入同一合同；状态 schema 升为 6，保留旧消息与待执行节点，历史完成需复查。
+
+官方 `create_agent` 仍为唯一主循环，Runner 保持执行控制边界；未新增独立 Planner、多 Agent、依赖 DAG 或任务数据库。两条脚本模型路径均通过实际工具行动验证前提修复和成功结果后的继续展开，并验证跨进程 checkpoint 恢复及无重复操作。脚本协议验证不能证明真实模型自主规划质量。
+
+本轮控制端回归 706 passed、2 skipped、1 deselected；Ruff、Pyright、编码、生成类型、前端检查和构建通过。后续按用户要求补验原桌面入口，实际启动的新 API/Runner 就绪，新规划 API 字段与构建资源核对通过；Kali 的 23 个已安装源码文件及进程管理脚本与本机哈希一致，无执行端变更，保留原实例。备份校验、业务数据与 checkpoint/Store 保留核对通过，验收后恢复本机服务原先未启动的状态。未使用真实 API Key 或执行真实目标/Executor 操作测试；真实模型效果由用户另行验证。规则见 [decision 0012](decisions/0012-incremental-planning.md)，完整证据与边界见[第一轮工程记录](acceptance-results/2026-10-21/incremental-planning/README.md)。
+
+## 2026-10-21 动态规划闭环 P0/P1 修复
+
+按最新 Tomcat 审计修复跨步骤证据自动复用、逐步骤错误反馈、HTTP 完成范围检查和条件补充导致的失效问题，保留真实操作归属与整体原子计划提交。关键修订接入简短 Assessment，WorkingContext 呈现已有结果及待收尾工作；修订变更范围与已加载版本观测已修正。State 6/旧 Completion 可读，旧完成保留但结束和归档仍须复核，不自动重测。
+
+最终隔离库回归 730 passed、2 skipped、1 deselected；静态检查、编码、生成类型与前端构建通过。原桌面入口已启动新 API/Runner，提示 11 与规划代码指纹一致；Kali 23 个源码文件及控制脚本实际哈希一致。37 张业务/框架表及凭据保持不变，原 Tomcat 任务仍暂停，未新增真实模型或目标操作。P2 真实模型效果回归由用户执行，本轮不能据脚本模型宣称效果改善。
+
+规则见 [0013](decisions/0013-planning-loop-repair.md)，命令、数据保留和边界见 [P0/P1 工程记录](acceptance-results/2026-10-21/planning-repair/README.md)。
+
 ## 2026-10-17 新成员部署整理
 
 增加个人配置生成及首次安装入口，移除共享模板中的维护者 IP/固定目录，支持按 SSH 用户解析远端路径、选择兼容 Python/公开包源和创建首次 venv。日常启动入口保留，个人凭据不覆盖。SSH 恢复后，在 Kali 全新独立目录完成首次及重复安装、23 个安装源码哈希和启动器检查，原配置与日常服务启动身份保持，fixture 和测试库已清理。操作见[新成员指南](team-setup.md)，证据与系统前置条件见[本轮记录](acceptance-results/2026-10-17/team-setup/README.md)；不包含虚拟机/系统软件自动安装或真实模型/靶场实验。

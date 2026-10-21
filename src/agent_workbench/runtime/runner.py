@@ -722,6 +722,19 @@ class AgentRunner:
                 thread_id=session_row.thread_id,
             )
             runtime = await runtime_ctx.__aenter__()
+            try:
+                await self._capture_loaded_versions(run, runtime, generation)
+            except BaseException:
+                await runtime_ctx.__aexit__(None, None, None)
+                raise
+
+            async def read_planning_head() -> dict[str, Any]:
+                saved = await runtime.checkpointer.aget_tuple(
+                    {"configurable": {"thread_id": session_row.thread_id}}
+                )
+                return dict(saved.checkpoint.get("channel_values", {})) if saved is not None else {}
+
+            toolbox.planning_head_reader = read_planning_head
         except Exception as exc:
             detail = (
                 f"Agent 运行时装配失败：{type(exc).__name__}: {exc}。"
@@ -987,6 +1000,43 @@ class AgentRunner:
                 event_type=EventType.SNAPSHOT_CAPTURED,
                 payload={"scope": captured["scope"], "source": captured},
             )
+
+    async def _capture_loaded_versions(
+        self, run: RunRow, runtime: AgentRuntime, generation: int
+    ) -> None:
+        import hashlib
+        from datetime import UTC, datetime
+
+        from agent_workbench.agent.prompts import SYSTEM_PROMPT
+
+        captured = {
+            "prompt_version": runtime.prompt_version,
+            "code_version": runtime.code_version,
+            "system_prompt_sha256": hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest(),
+            "code_version_scope": "loaded_planning_entrypoints_contracts_and_prompt_not_entire_process",
+            "owner_generation": generation,
+            "captured_at": datetime.now(UTC).isoformat(),
+        }
+        async with self._db.transaction() as db:
+            current = (
+                await db.execute(select(RunRow).where(RunRow.id == run.id).with_for_update())
+            ).scalar_one()
+            if current.owner != self._owner or current.owner_generation != generation:
+                raise RuntimeError("记录已加载版本时运行所有权已变化")
+            config = dict(current.config_snapshot or {})
+            history = list(config.get("loaded_runtime_activations") or [])
+            if not history or any(
+                history[-1].get(k) != captured[k]
+                for k in ("prompt_version", "code_version", "owner_generation")
+            ):
+                history.append(captured)
+            config["loaded_runtime_activations"] = history
+            current.config_snapshot = config
+            current.prompt_version = runtime.prompt_version
+            current.code_version = runtime.code_version
+            run.config_snapshot = config
+            run.prompt_version = current.prompt_version
+            run.code_version = current.code_version
 
     def _model_binding(self, run: RunRow) -> ModelBinding:
         from agent_workbench.models.provider import (
@@ -1265,6 +1315,38 @@ class AgentRunner:
         run: RunRow,
         payload: Any,
     ) -> None:
+        await self._project_plan_changes(runtime, session_row)
+        try:
+            await self._stream_graph_once(runtime, context, toolbox, session_row, run, payload)
+        finally:
+            # 只核对已提交来源；失败不重放任何外部工具，下一次读取/续跑补投影。
+            await self._project_plan_changes(runtime, session_row)
+
+    async def _project_plan_changes(self, runtime: AgentRuntime, session_row: SessionRow) -> None:
+        saver = getattr(runtime, "checkpointer", None)
+        if saver is None:
+            return
+        from agent_workbench.tools.plan_revisions import project_committed_plan
+
+        try:
+            saved = await saver.aget_tuple({"configurable": {"thread_id": session_row.thread_id}})
+            await project_committed_plan(self._db, self._settings, session_row.id, saved)
+        except Exception as exc:
+            log.warning(
+                "plan_projection_retryable",
+                session_id=str(session_row.id),
+                error_type=type(exc).__name__,
+            )
+
+    async def _stream_graph_once(
+        self,
+        runtime: AgentRuntime,
+        context: RunContext,
+        toolbox: Toolbox,
+        session_row: SessionRow,
+        run: RunRow,
+        payload: Any,
+    ) -> None:
         config = runtime.config(
             thread_id=session_row.thread_id,
             run_id=str(run.id),
@@ -1281,6 +1363,7 @@ class AgentRunner:
             config=config,
             context=context,
             stream_mode=["messages", "updates"],
+            durability="sync",
         ):
             received_chunk = True
             if mode == "messages":
@@ -1336,28 +1419,10 @@ class AgentRunner:
 
     async def _handle_update(self, run: RunRow, toolbox: Toolbox, chunk: dict[str, Any]) -> None:
         """把图节点更新投影为事件。"""
-        for node, update in (chunk or {}).items():
+        for update in (chunk or {}).values():
             if not isinstance(update, dict):
                 continue
-            plan = update.get("plan")
-            if plan is not None:
-                await self._emit(
-                    run,
-                    EventType.PLAN_UPDATED,
-                    {
-                        "node": node,
-                        "plan_revision": update.get("plan_revision"),
-                        "steps": [
-                            {
-                                "step_id": step.get("step_id"),
-                                "description": step.get("description"),
-                                "status": step.get("status"),
-                                "rationale": step.get("rationale"),
-                            }
-                            for step in plan[:20]
-                        ],
-                    },
-                )
+            # 流式节点更新尚不是 checkpoint 提交回执，不在这里宣布计划生效。
             if update.get("completion_proposal") is not None:
                 await self._emit(
                     run,
@@ -1440,6 +1505,7 @@ class AgentRunner:
                     proposal=proposal,
                     plan=list(values.get("plan") or []),
                     review_cursor=values.get("weakness_review_cursor"),
+                    run_id=run.id,
                 )
             span.finish()
             spans.record(span, decision=decision.decision)
@@ -1537,15 +1603,25 @@ class AgentRunner:
 
         async with self._db.session() as session:
             tracked = await ToolJobRepository(session).list_for_run(run.id)
-            resources = list(await ExecutionResourceRepository(session).list_for_session(run.session_id, limit=1000))
+            resources = list(
+                await ExecutionResourceRepository(session).list_for_session(
+                    run.session_id, limit=1000
+                )
+            )
             execution_ids = {item.resource_id for item in resources}
-            jobs = [job for job in tracked if job.job_id not in execution_ids and (
-                job.state not in {"succeeded", "failed", "cancelled"}
-                or job.sync_status == "uncertain"
-                or (job.cancel_requested_at is not None and not job.cancel_confirmed)
-            )]
+            jobs = [
+                job
+                for job in tracked
+                if job.job_id not in execution_ids
+                and (
+                    job.state not in {"succeeded", "failed", "cancelled"}
+                    or job.sync_status == "uncertain"
+                    or (job.cancel_requested_at is not None and not job.cancel_confirmed)
+                )
+            ]
         if not jobs and not resources:
             from agent_workbench.runtime.execution_control import terminate_session_resources
+
             return await terminate_session_resources(self._db, None, run)
         confirmed = True
         tunnel = SshTunnel(self._settings)
@@ -1645,11 +1721,17 @@ class AgentRunner:
                 run = await session.get(RunRow, run_id)
                 if run is not None:
                     await append_event(
-                        session, session_id=run.session_id, run_id=run_id,
+                        session,
+                        session_id=run.session_id,
+                        run_id=run_id,
                         event_type=EventType.ERROR,
-                        payload={"code": str(ErrorCode.PROVIDER_ERROR), "message": detail,
-                                 "provider_code": rejection.code, "request_id": rejection.request_id,
-                                 "retryable": False},
+                        payload={
+                            "code": str(ErrorCode.PROVIDER_ERROR),
+                            "message": detail,
+                            "provider_code": rejection.code,
+                            "request_id": rejection.request_id,
+                            "retryable": False,
+                        },
                     )
             return RunStatus.WAITING_USER, detail
 

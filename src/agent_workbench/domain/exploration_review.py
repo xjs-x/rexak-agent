@@ -38,9 +38,7 @@ from agent_workbench.domain.weakness_relations import leads_affected_by_weakness
 from agent_workbench.persistence.tables import CoverageRow, FindingRow, LeadRow, ToolOperationRow
 
 #: 这些状态表示线索已经**结束**（有结果或已被判定排除）。
-CLOSED_LEAD_STATUSES = frozenset(
-    {str(LeadStatus.CONFIRMED), str(LeadStatus.DISPROVED)}
-)
+CLOSED_LEAD_STATUSES = frozenset({str(LeadStatus.CONFIRMED), str(LeadStatus.DISPROVED)})
 
 
 @dataclass(slots=True)
@@ -77,20 +75,32 @@ def derive_actionability(row: LeadRow, *, stale: bool) -> ResolvedActionability:
             )
         state = str(stored.get("state") or Actionability.NEEDS_REVIEW)
         invalid = (
-            state == str(Actionability.NO_NEW_ACTION)
-            and (
-                bool((row.next_action or "").strip())
-                or bool(missing_items)
-                or not stored.get("unknowns")
-                or not (stored.get("evidence_refs") or stored.get("operation_refs"))
+            (
+                state == str(Actionability.NO_NEW_ACTION)
+                and (
+                    bool((row.next_action or "").strip())
+                    or bool(missing_items)
+                    or not stored.get("unknowns")
+                    or not (stored.get("evidence_refs") or stored.get("operation_refs"))
+                )
             )
-        ) or (
-            state == str(Actionability.NEEDS_CONDITION)
-            and (not missing_items or any(not item.get("external") or item.get("producer_lead_id") for item in missing_items))
-        ) or (state == str(Actionability.READY) and bool(missing_items))
+            or (
+                state == str(Actionability.NEEDS_CONDITION)
+                and (
+                    not missing_items
+                    or any(
+                        not item.get("external") or item.get("producer_lead_id")
+                        for item in missing_items
+                    )
+                )
+            )
+            or (state == str(Actionability.READY) and bool(missing_items))
+        )
         if invalid:
             return ResolvedActionability(
-                state=str(Actionability.NEEDS_REVIEW), source="derived", needs_review=True,
+                state=str(Actionability.NEEDS_REVIEW),
+                source="derived",
+                needs_review=True,
                 note="判断与下一动作、缺失条件或已有尝试依据不一致，请复核。",
                 missing_conditions=missing,
             )
@@ -140,6 +150,7 @@ async def build_review_inventory(
     cursor: str | None = None,
     page_size: int = REVIEW_PAGE_SIZE,
     focus_lead_id: str | None = None,
+    run_id: UUID | None = None,
 ) -> ReviewInventory:
     """枚举**完整**复查集合，并返回其中的一页。
 
@@ -198,6 +209,30 @@ async def build_review_inventory(
     # 未完成的计划事项（含覆盖检查、链条跟进与混合任务）。
     for step in plan or []:
         if step.get("status") in {"done", "dropped"}:
+            from agent_workbench.domain.planning import completion_is_current
+            from agent_workbench.evidence.artifacts import build_artifact_store
+
+            issue = await completion_is_current(
+                session, build_artifact_store(), session_id, dict(step), run_id=run_id
+            )
+            if issue:
+                unreviewed_count += 1
+                candidates.append(
+                    _Candidate(
+                        key=f"plan_step:{step.get('step_id')}",
+                        rank=1,
+                        item=ReviewInventoryItem(
+                            kind="plan_step",
+                            object_id=str(step.get("step_id")),
+                            label=str(step.get("description") or "")[:120],
+                            status=str(step.get("status")),
+                            stale=True,
+                            actionability="needs_review",
+                            actionable=False,
+                            detail={"completion_review": issue},
+                        ),
+                    )
+                )
             continue
         blocked = step.get("status") == "blocked"
         reviewed_block = blocked and bool(str(step.get("resume_note") or "").strip())
@@ -217,7 +252,11 @@ async def build_review_inventory(
                     label=str(step.get("description") or "")[:120],
                     status=str(step.get("status") or "pending"),
                     stale=blocked and not reviewed_block,
-                    actionability="needs_condition" if reviewed_block else "needs_review" if blocked else "ready",
+                    actionability="needs_condition"
+                    if reviewed_block
+                    else "needs_review"
+                    if blocked
+                    else "ready",
                     actionable=not blocked,
                     detail={
                         "kind": step.get("kind") or "mixed",
@@ -231,11 +270,7 @@ async def build_review_inventory(
 
     # 已登记的覆盖缺口（受阻项保留，不能靠改成 blocked 消除缺口）。
     coverage_rows = list(
-        (
-            await session.execute(
-                select(CoverageRow).where(CoverageRow.session_id == session_id)
-            )
-        )
+        (await session.execute(select(CoverageRow).where(CoverageRow.session_id == session_id)))
         .scalars()
         .all()
     )
@@ -249,7 +284,8 @@ async def build_review_inventory(
         related_wait = any(
             lead.asset_id == row.asset_id
             and lead.asset_id is not None
-            and derive_actionability(lead, stale=lead.id in stale_ids).state == str(Actionability.NEEDS_CONDITION)
+            and derive_actionability(lead, stale=lead.id in stale_ids).state
+            == str(Actionability.NEEDS_CONDITION)
             for lead in rows
         )
         if blocked and not related_wait:
@@ -266,7 +302,11 @@ async def build_review_inventory(
                     label=f"{row.entry_label or row.asset_id}:{row.check_category}"[:120],
                     status=row.status,
                     stale=blocked and not related_wait,
-                    actionability="needs_condition" if blocked and related_wait else "needs_review" if blocked else "ready",
+                    actionability="needs_condition"
+                    if blocked and related_wait
+                    else "needs_review"
+                    if blocked
+                    else "ready",
                     actionable=row.status == str(CoverageStatus.NOT_CHECKED),
                     detail={"reason": row.reason},
                 ),
@@ -318,9 +358,7 @@ async def build_review_inventory(
         + sum(1 for item in candidates if item.item.kind == "weakness"),
         actionable_count=actionable_count
         + sum(
-            1
-            for item in candidates
-            if item.item.kind == "coverage_gap" and item.item.actionable
+            1 for item in candidates if item.item.kind == "coverage_gap" and item.item.actionable
         ),
         waiting_count=waiting_count,
         next_cursor=page[-1].key if page and start + page_size < len(candidates) else None,
@@ -411,7 +449,9 @@ async def recall_by_condition_change(
     out: list[RecallCandidate] = []
     seen: set[str] = set(seen_keys or set())
 
-    async def push(row: LeadRow, trigger: str, reason: str, relation_ids: list[str], source_stamp: str = "") -> None:
+    async def push(
+        row: LeadRow, trigger: str, reason: str, relation_ids: list[str], source_stamp: str = ""
+    ) -> None:
         if row.id in exclude or row.status in CLOSED_LEAD_STATUSES:
             return
         dedupe = f"{row.id}:{row.revision}:{trigger}:{source_stamp}"
@@ -420,7 +460,11 @@ async def recall_by_condition_change(
         seen.add(dedupe)
         from agent_workbench.domain.leads import LeadService
 
-        resolution = derive_actionability(row, stale=bool(row.actionability_assessment) and await LeadService(session).is_actionability_stale(row))
+        resolution = derive_actionability(
+            row,
+            stale=bool(row.actionability_assessment)
+            and await LeadService(session).is_actionability_stale(row),
+        )
         out.append(
             RecallCandidate(
                 lead_id=str(row.id),
@@ -442,7 +486,9 @@ async def recall_by_condition_change(
             continue
         stamp = f"{finding.id}:{finding.revision}:{finding.status}"
         trigger = "new_weakness" if finding_id in (new_weakness_ids or []) else "condition_revised"
-        affected = await leads_affected_by_weakness(session, session_id, finding_id, exclude=exclude)
+        affected = await leads_affected_by_weakness(
+            session, session_id, finding_id, exclude=exclude
+        )
         for row in affected:
             links = await links_for_lead(session, session_id, row.id)
             await push(
@@ -458,24 +504,47 @@ async def recall_by_condition_change(
             matches.append(LeadRow.asset_id == finding.asset_id)
         if finding.identity_id:
             matches.append(LeadRow.identity_refs.contains([str(finding.identity_id)]))
-        words = re.findall(r"[\w-]{3,}", finding.title + " " + " ".join(str(item.get("statement") or "") for item in finding.provided_conditions or []))[:6]
+        words = re.findall(
+            r"[\w-]{3,}",
+            finding.title
+            + " "
+            + " ".join(
+                str(item.get("statement") or "") for item in finding.provided_conditions or []
+            ),
+        )[:6]
         matches.extend(LeadRow.hypothesis.ilike(f"%{word}%") for word in words)
         if matches:
-            candidates = (await session.execute(select(LeadRow).where(
-                LeadRow.session_id == session_id, LeadRow.merged_into_id.is_(None),
-                LeadRow.status.notin_(list(CLOSED_LEAD_STATUSES)), or_(*matches),
-            ).order_by(LeadRow.id))).scalars()
+            candidates = (
+                await session.execute(
+                    select(LeadRow)
+                    .where(
+                        LeadRow.session_id == session_id,
+                        LeadRow.merged_into_id.is_(None),
+                        LeadRow.status.notin_(list(CLOSED_LEAD_STATUSES)),
+                        or_(*matches),
+                    )
+                    .order_by(LeadRow.id)
+                )
+            ).scalars()
             for candidate in candidates:
                 if len(out) >= limit:
                     break
-                await push(candidate, trigger, f"弱点 {finding_id} 与该线索共享资产、身份或条件关键词，关联仍待判断", [], stamp)
+                await push(
+                    candidate,
+                    trigger,
+                    f"弱点 {finding_id} 与该线索共享资产、身份或条件关键词，关联仍待判断",
+                    [],
+                    stamp,
+                )
         if len(out) >= limit:
             return out[:limit]
 
     for finding_id in refuted_weakness_ids or []:
         finding = await session.get(FindingRow, finding_id)
         stamp = f"{finding_id}:{finding.revision if finding else 0}:refuted"
-        affected = await leads_affected_by_weakness(session, session_id, finding_id, exclude=exclude)
+        affected = await leads_affected_by_weakness(
+            session, session_id, finding_id, exclude=exclude
+        )
         for row in affected:
             # 弱点被反证：下游**标记待复核**，不级联判定全部线索 disproved。
             await push(
@@ -490,7 +559,11 @@ async def recall_by_condition_change(
 
     for operation_id in completed_operation_ids or []:
         operation = await session.get(ToolOperationRow, operation_id)
-        if operation is None or operation.session_id != session_id or operation.status not in {"succeeded", "failed", "cancelled"}:
+        if (
+            operation is None
+            or operation.session_id != session_id
+            or operation.status not in {"succeeded", "failed", "cancelled"}
+        ):
             continue
         binding = operation.execution_context or {}
         linked_ids = set(binding.get("lead_ids") or [])
@@ -499,7 +572,13 @@ async def recall_by_condition_change(
         for raw in sorted(linked_ids):
             lead = await session.get(LeadRow, UUID(str(raw)))
             if lead is not None and lead.session_id == session_id:
-                await push(lead, "job_completed", "关联后台操作已有结果，需要核对证据后更新判断", [], f"{operation_id}:{operation.status}")
+                await push(
+                    lead,
+                    "job_completed",
+                    "关联后台操作已有结果，需要核对证据后更新判断",
+                    [],
+                    f"{operation_id}:{operation.status}",
+                )
         if len(out) >= limit:
             return out[:limit]
 
@@ -518,7 +597,13 @@ async def recall_by_condition_change(
         for row in rows:
             if not row.identity_refs:
                 continue
-            await push(row, "identity_changed", "身份或 auth_revision 发生变化，旧判断可能过期", [], identity_signature)
+            await push(
+                row,
+                "identity_changed",
+                "身份或 auth_revision 发生变化，旧判断可能过期",
+                [],
+                identity_signature,
+            )
             if len(out) >= limit:
                 break
 
@@ -529,9 +614,7 @@ async def recall_by_condition_change(
                 .where(
                     LeadRow.session_id == session_id,
                     LeadRow.merged_into_id.is_(None),
-                    LeadRow.status.notin_(
-                        [str(LeadStatus.CONFIRMED), str(LeadStatus.DISPROVED)]
-                    ),
+                    LeadRow.status.notin_([str(LeadStatus.CONFIRMED), str(LeadStatus.DISPROVED)]),
                 )
                 .order_by(LeadRow.created_at, LeadRow.id)
                 .limit(limit * 3)
@@ -540,7 +623,9 @@ async def recall_by_condition_change(
         for row in rows:
             if row.id in exclude:
                 continue
-            await push(row, "mainline_blocked", "主线受阻，重新排序其他未完成路线", [], identity_signature)
+            await push(
+                row, "mainline_blocked", "主线受阻，重新排序其他未完成路线", [], identity_signature
+            )
             if len(out) >= limit:
                 break
 

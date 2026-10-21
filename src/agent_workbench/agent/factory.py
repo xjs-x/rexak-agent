@@ -11,6 +11,10 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import inspect
+import json
+import marshal
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -50,7 +54,39 @@ from agent_workbench.persistence.bootstrap import (
 )
 from agent_workbench.tools.registry import ToolSelection, build_tools, default_selection
 
-CODE_VERSION = "dev"
+
+def loaded_code_version() -> str:
+    """已加载的规划入口/合同/提示指纹；磁盘源码树另外记录，不混称字节码。"""
+    from agent_workbench.contracts.planning import (
+        AssessmentInput,
+        StepCompletionRecord,
+        StepCompletionSpec,
+    )
+    from agent_workbench.domain.planning import check_step_completion, resolve_sources
+    from agent_workbench.domain.planning_applicability import check_applicability
+    from agent_workbench.domain.planning_context import planning_result_context
+    from agent_workbench.domain.planning_http import check_http_work
+    from agent_workbench.tools.planning import apply_plan_update, normalize_steps
+    from agent_workbench.tools.planning_validation import validate_plan_steps
+
+    digest = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8"))
+    for function in (
+        build_agent_middleware,
+        open_agent_runtime,
+        apply_plan_update,
+        resolve_sources,
+        check_step_completion,
+        check_applicability,
+        check_http_work,
+        planning_result_context,
+        normalize_steps,
+        validate_plan_steps,
+        ToolDispatchMiddleware._dispatch_tool_call,
+    ):
+        digest.update(marshal.dumps(inspect.unwrap(function).__code__))
+    for model in (AssessmentInput, StepCompletionRecord, StepCompletionSpec):
+        digest.update(json.dumps(model.model_json_schema(), sort_keys=True).encode("utf-8"))
+    return "loaded-planning:" + digest.hexdigest()[:40]
 
 
 @dataclass(slots=True)
@@ -113,7 +149,11 @@ def build_agent_middleware(
     external_skills = any(getattr(item, "name", "") == "load_skill" for item in tools)
     return [
         CommandGuardMiddleware(),
-        *([SkillsMiddleware(enabled=external_skills)] if external_skills or legacy_skill_checkpoint else []),
+        *(
+            [SkillsMiddleware(enabled=external_skills)]
+            if external_skills or legacy_skill_checkpoint
+            else []
+        ),
         SegmentMiddleware(settings.segment_decision_rounds),
         ProgressMiddleware(),
         WorkingContextMiddleware(),
@@ -180,11 +220,18 @@ async def open_agent_runtime(
         # 注意：`setup()` 只由 `workbench db-init` 执行；这里不重复建表。
         saved = (
             await checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
-            if thread_id else None
+            if thread_id
+            else None
         )
         middleware = build_agent_middleware(
-            model, binding, cfg, tools, price_catalog or default_price_catalog(),
-            legacy_skill_checkpoint=bool(saved and checkpoint_needs_skill_bridge(dict(saved.checkpoint))),
+            model,
+            binding,
+            cfg,
+            tools,
+            price_catalog or default_price_catalog(),
+            legacy_skill_checkpoint=bool(
+                saved and checkpoint_needs_skill_bridge(dict(saved.checkpoint))
+            ),
         )
 
         graph = create_agent(
@@ -204,6 +251,6 @@ async def open_agent_runtime(
             store=store,
             binding=binding,
             prompt_version=PROMPT_VERSION,
-            code_version=CODE_VERSION,
+            code_version=loaded_code_version(),
             tool_manifest=build_tool_manifest(chosen),
         )

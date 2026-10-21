@@ -571,7 +571,10 @@ def _weakness_breakdown(findings: list[FindingRow]) -> dict[str, Any]:
     for row in findings:
         kind = row.weakness_kind or "unclassified"
         by_kind[kind] = by_kind.get(kind, 0) + 1
-        if row.connection_review and row.connection_review.get("reviewed_content_revision") == row.revision:
+        if (
+            row.connection_review
+            and row.connection_review.get("reviewed_content_revision") == row.revision
+        ):
             reviewed += 1
     return {
         "total": len(findings),
@@ -787,6 +790,12 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
         )
         assessment = stage.get("work_assessment") or {}
         if assessment:
+            if assessment.get("evaluated_plan_revision") is not None:
+                lines.append(
+                    f"- 判断对象：旧计划第 {assessment['evaluated_plan_revision']} 版，步骤 "
+                    + ", ".join(assessment.get("evaluated_step_ids") or [])
+                    + f"；决策 {assessment.get('decision')}，触发 {assessment.get('trigger')}"
+                )
             applicable = stage.get("assessment_applies_to_focus", True)
             if not applicable:
                 lines.append("- 以下是此前焦点的历史判断，当前焦点尚未记录新判断。")
@@ -803,6 +812,17 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
             # 不能由模板自动补成"环境无漏洞"或"已充分覆盖"。
             lines.append("- 尚未记录判断：本阶段没有留下结构化判断，不能据此推断结论。")
         raw_steps = [step for step in (stage.get("goal_progress") or []) if isinstance(step, dict)]
+        for step in raw_steps:
+            completion = step.get("completion") or {}
+            if completion:
+                check = completion.get("check") or {}
+                lines.append(
+                    f"- 步骤 {step.get('step_id')} 结果：{completion.get('outcome')}；"
+                    f"检查方式 {check.get('method')}。"
+                    + _safe_markdown(str(check.get("scope") or ""))
+                )
+            elif step.get("legacy_completion"):
+                lines.append(f"- 步骤 {step.get('step_id')} 为历史完成，尚未按当前条件复查。")
         steps = [step for step in raw_steps if step.get("status") not in {"done", "dropped"}]
         if steps:
             lines.append("- 当前计划（未完成）：")
@@ -874,9 +894,8 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
     if breakdown:
         lines.append(
             f"弱点总数 {breakdown.get('total', 0)}；"
-            "按类型：" + "、".join(
-                f"{key}={value}" for key, value in (breakdown.get("by_kind") or {}).items()
-            )
+            "按类型："
+            + "、".join(f"{key}={value}" for key, value in (breakdown.get("by_kind") or {}).items())
             + f"；已有后续用途判断 {breakdown.get('with_connection_review', 0)} 条。"
         )
         lines.append(_safe_markdown(str(breakdown.get("note") or "")))

@@ -278,7 +278,9 @@ async def create_session(
         from agent_workbench.skills.service import SkillService
 
         try:
-            await SkillService(get_database()).validate_references(payload.initial_skill_refs, str(project_id))
+            await SkillService(get_database()).validate_references(
+                payload.initial_skill_refs, str(project_id)
+            )
         except ValueError as exc:
             raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from exc
     selected_model = payload.model_name or (
@@ -419,8 +421,11 @@ async def delete_session(
 
         termination = await terminate_all(session_id, request, f"delete-session:{session_id}")
         if termination.unresolved:
-            raise ApiError(ErrorCode.CONFLICT, "资源终止尚未确认，对话保留以便继续管理。",
-                           details={"active_resources": termination.unresolved})
+            raise ApiError(
+                ErrorCode.CONFLICT,
+                "资源终止尚未确认，对话保留以便继续管理。",
+                details={"active_resources": termination.unresolved},
+            )
 
     async with get_database().transaction() as db:
         row = (
@@ -545,12 +550,21 @@ async def post_message(
                     # 当前运行的目录已固定，刚安装的技能应在下一运行使用。
                     from agent_workbench.persistence.tables import ArtifactRow
 
-                    artifact = await session.get(ArtifactRow, UUID(active.config_snapshot["skill_catalog_artifact_id"]))
-                    if artifact is None or not service.store.verify(artifact.relative_key, artifact.sha256):
+                    artifact = await session.get(
+                        ArtifactRow, UUID(active.config_snapshot["skill_catalog_artifact_id"])
+                    )
+                    if artifact is None or not service.store.verify(
+                        artifact.relative_key, artifact.sha256
+                    ):
                         raise ValueError("skill_version_missing: 目录快照不可用")
-                    visible = {item["skill_id"] for item in json.loads(service.store.read_bytes(artifact.relative_key))}
+                    visible = {
+                        item["skill_id"]
+                        for item in json.loads(service.store.read_bytes(artifact.relative_key))
+                    }
                     if any(reference not in visible for reference in skill_refs):
-                        raise ValueError("skill_not_found: 技能不在当前运行固定目录，请在下一运行使用")
+                        raise ValueError(
+                            "skill_not_found: 技能不在当前运行固定目录，请在下一运行使用"
+                        )
             except ValueError as exc:
                 raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from exc
         preferences = read_preferences(settings)
@@ -590,9 +604,15 @@ async def post_message(
             provider_id=selected_provider,
             model_name=selected_model,
             config_snapshot=config,
-            payload=({"provider_id": provider_id, "model_name": model_name,
-                      **({"skill_refs": skill_refs} if skill_refs else {})}
-                     if provider_id or model_name or skill_refs else None),
+            payload=(
+                {
+                    "provider_id": provider_id,
+                    "model_name": model_name,
+                    **({"skill_refs": skill_refs} if skill_refs else {}),
+                }
+                if provider_id or model_name or skill_refs
+                else None
+            ),
         )
         if receipt.created and receipt.run_id:
             run = await session.get(RunRow, receipt.run_id)
@@ -808,8 +828,18 @@ async def session_plan(session_id: UUID, request: Request) -> PlanRead:
         )
     values = saved.checkpoint.get("channel_values", {}) if saved is not None else {}
     raw_steps = values.get("plan") or []
+    from agent_workbench.tools.plan_revisions import project_committed_plan
+
+    projection_error = None
+    try:
+        await project_committed_plan(get_database(), get_settings(), session_id, saved)
+    except Exception as exc:
+        # 当前计划仍按 checkpoint 返回；展示故障不影响执行，也不冒充已经补齐历史。
+        projection_error = f"修订事件待补投影：{type(exc).__name__}"
     return PlanRead(
         revision=int(values.get("plan_revision") or 0),
+        last_plan_change=_redact_api_value(values.get("last_plan_change")),
+        revision_projection_error=projection_error,
         steps=[
             PlanStepRead.model_validate(
                 {

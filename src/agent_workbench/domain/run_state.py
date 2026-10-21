@@ -302,6 +302,8 @@ async def create_run(
         provider_id=provider_id,
         model_name=model_name,
         status=str(RunStatus.QUEUED),
+        code_version="unbound",
+        prompt_version="unbound",
         config_snapshot=dict(config_snapshot),
         resumed_from_run_id=resumed_from_run_id,
     )

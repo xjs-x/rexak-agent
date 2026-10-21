@@ -6,6 +6,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from agent_workbench.contracts.planning import (
+    PlanningSource,
+    StepCompletionRecord,
+    StepCompletionSpec,
+)
+
 
 class PlanStepRead(BaseModel):
     step_id: str
@@ -21,6 +27,10 @@ class PlanStepRead(BaseModel):
     done_when: str | None = None
     resume_note: str | None = None
     evidence_refs: list[str] = Field(default_factory=list)
+    completion_protocol: Literal[1] | None = None
+    completion_spec: StepCompletionSpec | None = None
+    completion: StepCompletionRecord | None = None
+    legacy_completion: bool = False
 
 
 class CurrentFocusRead(BaseModel):
@@ -44,6 +54,14 @@ class WorkAssessmentRead(BaseModel):
     uncertainty: str | None = None
     source_tool_call_id: str
     revision: int
+    evaluated_step_ids: list[str] = Field(default_factory=list)
+    evaluated_plan_revision: int | None = None
+    decision: str | None = None
+    trigger: str | None = None
+    basis_refs: list[PlanningSource] = Field(default_factory=list)
+    source_signature: str | None = None
+    next_focus: CurrentFocusRead | None = None
+    resulting_plan_revision: int | None = None
 
 
 class PlanRead(BaseModel):
@@ -51,4 +69,6 @@ class PlanRead(BaseModel):
     steps: list[PlanStepRead]
     current_focus: CurrentFocusRead | None = None
     work_assessment: WorkAssessmentRead | None = None
+    last_plan_change: dict[str, object] | None = None
+    revision_projection_error: str | None = None
     source: Literal["langgraph_checkpoint"] = "langgraph_checkpoint"

@@ -136,6 +136,13 @@ def assessment_applies(state: Mapping[str, Any]) -> bool:
     focus = state.get("current_focus") or {}
     if not assessment:
         return False
+    if "evaluated_plan_revision" in assessment:
+        # 判断对象始终是旧任务；下一步是否仍适用由它提交时的目标焦点单独决定。
+        return assessment.get("resulting_plan_revision") == state.get(
+            "plan_revision"
+        ) and focus_signature(assessment.get("next_focus")) == focus_signature(
+            state.get("current_focus")
+        )
     return all(assessment.get(key) == focus.get(key) for key in ("step_id", "lead_id"))
 
 

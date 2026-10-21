@@ -51,6 +51,8 @@ async def test_plan_endpoint_reads_authoritative_checkpoint(
             "revision": 0,
             "current_focus": None,
             "work_assessment": None,
+            "last_plan_change": None,
+            "revision_projection_error": None,
             "steps": [],
             "source": "langgraph_checkpoint",
         }
