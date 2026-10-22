@@ -62,14 +62,6 @@ class StaleResponseError(Exception):
         self.current_version = current_version
 
 
-class FinishGateRejected(Exception):
-    """完成提议未通过确定性检查。把反馈交回模型，而不是直接结束。"""
-
-    def __init__(self, feedback: list[str]) -> None:
-        super().__init__("完成提议未通过 finish_gate 检查")
-        self.feedback = feedback
-
-
 class NoProgressBlocked(Exception):
     """连续重复观察后在模型调用前暂停，保留同一任务供用户继续。"""
 

@@ -202,6 +202,24 @@ def adapt_v6(
     }
 
 
+def adapt_v7(
+    values: dict[str, Any], *, checkpoint_id: str, next_nodes: tuple[str, ...]
+) -> dict[str, Any]:
+    """结束协议退役；原提议仅留历史，不改变消息和待执行边界。"""
+    if values.get("state_schema_version") != 7:
+        raise StateSchemaIncompatibleError("只支持显式 v7 到 v8 适配")
+    return {
+        "state_schema_version": 8,
+        "state_migration": {
+            "adapter": "v7_to_v8_natural_completion_v1",
+            "from": 7,
+            "to": 8,
+            "source_checkpoint_id": checkpoint_id,
+            "expected_next": list(next_nodes),
+        },
+    }
+
+
 async def _apply_update(
     graph: Any, snapshot: Any, update: dict[str, Any], read_config: dict[str, Any]
 ) -> Any:
@@ -392,6 +410,26 @@ async def ensure_current_checkpoint(
             graph,
             snapshot,
             adapt_v6(
+                values,
+                checkpoint_id=str(snapshot.config["configurable"]["checkpoint_id"]),
+                next_nodes=tuple(snapshot.next),
+            ),
+            config,
+        )
+        _assert_migration_preserved(
+            {"next": snapshot.next, "messages": values.get("messages", [])}, migrated
+        )
+        snapshot = migrated
+        values = dict(migrated.values or {})
+    if values.get("state_schema_version") == 7:
+        if any(getattr(task, "result", None) is not None for task in (snapshot.tasks or ())):
+            raise StateSchemaIncompatibleError(
+                "v7 checkpoint 含未提交并行结果，拒绝迁移；需核对台账"
+            )
+        migrated = await _apply_update(
+            graph,
+            snapshot,
+            adapt_v7(
                 values,
                 checkpoint_id=str(snapshot.config["configurable"]["checkpoint_id"]),
                 next_nodes=tuple(snapshot.next),

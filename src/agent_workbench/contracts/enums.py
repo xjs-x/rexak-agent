@@ -59,6 +59,7 @@ ACTIVE_RUN_STATUSES = frozenset(
 class CompletionReason(StrEnum):
     """阶段结束理由，单独记录，不混入成功率。"""
 
+    MODEL_FINISHED = "model_finished"
     GOAL_ANSWERED = "goal_answered"
     EXPLORATION_CONVERGED = "exploration_converged"
 

@@ -23,13 +23,14 @@ from langgraph.graph.message import add_messages
 #: （`presented_weakness_ids` / `weakness_review_cursor` / `last_recall_keys`）。
 #: v5：固定版本的 active_skills 引用与有界 skill_directives；1→2→3→4→5 顺序迁移。
 #: v6：旧快照 assessment、分型完成、不可变修订来源；旧完成仅标记待复查。
-#: v7：轻量可选计划与结束信号；旧协议字段仅兼容读取，不再参与生产决策。
-CURRENT_STATE_SCHEMA_VERSION = 7
+#: v7：轻量可选计划与结束信号。
+#: v8：官方自然结束；旧 CompletionProposal 仅兼容读取。
+CURRENT_STATE_SCHEMA_VERSION = 8
 
-StateSchemaVersion = Literal[7]
+StateSchemaVersion = Literal[8]
 
 #: 可迁移到当前版本的旧版本（由 `state_migration` 提供显式适配）。
-MIGRATABLE_STATE_SCHEMA_VERSIONS = (1, 2, 3, 4, 5, 6)
+MIGRATABLE_STATE_SCHEMA_VERSIONS = (1, 2, 3, 4, 5, 6, 7)
 
 
 def merge_skill_refs(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
@@ -145,7 +146,7 @@ class WorkSummary(TypedDict):
 
 
 class CompletionProposal(TypedDict):
-    """最终回答或显式结束信号；不绑定计划、Coverage 或 Lead。"""
+    """仅供读取历史 checkpoint 的退役提议结构。"""
 
     reason: Literal["goal_answered", "exploration_converged"]
     goal_answer: str
@@ -157,6 +158,11 @@ class CompletionProposal(TypedDict):
 
 class LegacyProtocolState(AgentState):
     """仅为旧 checkpoint/导出保留的通道；新循环不写入或读取判断。"""
+
+    # --- 结束判定 ---
+    completion_proposal: NotRequired[CompletionProposal | None]
+    finish_gate_feedback: NotRequired[list[str]]
+    finish_gate_attempts: NotRequired[int]
 
     active_skills: NotRequired[Annotated[dict[str, Any], merge_skill_refs]]
     skill_directives: NotRequired[dict[str, Any]]
@@ -227,11 +233,6 @@ class AgentGraphState(LegacyProtocolState):
     working_context_version: NotRequired[int]
     context_manifest: NotRequired[dict[str, Any]]
 
-    # --- 结束判定 ---
-    completion_proposal: NotRequired[CompletionProposal | None]
-    finish_gate_feedback: NotRequired[list[str]]
-    finish_gate_attempts: NotRequired[int]
-
     # --- 运行边界 ---
     segment_completed_rounds: NotRequired[int]
     completed_decision_rounds: NotRequired[int]
@@ -265,9 +266,6 @@ def new_graph_state(
         active_lead_ids=[],
         pending_job_ids=[],
         working_context_version=1,
-        completion_proposal=None,
-        finish_gate_feedback=[],
-        finish_gate_attempts=0,
         segment_completed_rounds=0,
         completed_decision_rounds=0,
         last_completed_model_message_id=None,
@@ -295,9 +293,6 @@ def next_input_state(
         "active_run_id": str(run_id),
         "objective": objective,
         "plan": list(previous_plan or []),
-        "completion_proposal": None,
-        "finish_gate_feedback": [],
-        "finish_gate_attempts": 0,
         "pending_job_ids": [],
         "segment_completed_rounds": 0,
         "segment_yield_reason": None,

@@ -223,7 +223,8 @@ async def wait_for_resources(
     """按**指定条件**等待资源/事件（默认任一匹配即可继续；明确要求汇总才用 all）。
 
     Args:
-        resource_ids_json: 资源 ID 数组（可简写前缀）。
+        resource_ids_json: execution/v1 命令、脚本、终端或监视器资源 ID 数组（可简写前缀）。
+            HTTP/浏览器/文件 Job 使用 get_job 查询，不属于此等待协议。
         events_json: 事件类型数组，例如 ["resource.exited","resource.watch_match"]。
         match: any（默认）或 all。
         wait_ms: 本次等待上限毫秒（默认 10000，最大 60000）。
@@ -259,7 +260,7 @@ async def wait_for_resources(
             elif candidate in known:
                 resolved.append(candidate)
             else:
-                raise ValueError(f"资源不属于当前会话或不存在：{candidate}")
+                raise ValueError(f"不是当前会话的 execution/v1 资源：{candidate}；HTTP/浏览器/文件 Job 请使用 get_job 查询")
         event_types = [str(item) for item in (raw_events or [])]
         unknown_events = [item for item in event_types if item not in WAIT_EVENT_TYPES]
         if unknown_events:

@@ -17,7 +17,7 @@ import json
 import marshal
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 from langchain.agents import create_agent
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -58,7 +58,6 @@ from agent_workbench.tools.registry import ToolSelection, build_tools, default_s
 def loaded_code_version() -> str:
     """已加载的规划入口/合同/提示指纹；磁盘源码树另外记录，不混称字节码。"""
     from agent_workbench.contracts.plan import PlanStepPatch
-    from agent_workbench.tools.completion import propose_completion
     from agent_workbench.tools.planning import apply_plan_update, normalize_steps
 
     digest = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8"))
@@ -68,8 +67,6 @@ def loaded_code_version() -> str:
         apply_plan_update,
         normalize_steps,
         ToolDispatchMiddleware._dispatch_tool_call,
-        FinishGateMiddleware.aafter_model,
-        cast(Any, propose_completion).coroutine,
     ):
         digest.update(marshal.dumps(inspect.unwrap(function).__code__))
     digest.update(json.dumps(PlanStepPatch.model_json_schema(), sort_keys=True).encode("utf-8"))
@@ -127,6 +124,7 @@ def build_agent_middleware(
     *,
     legacy_skill_checkpoint: bool = False,
     legacy_protocol_checkpoint: bool = False,
+    legacy_finish_checkpoint: bool = False,
 ) -> list[Any]:
     """纯装配函数，捕获请求测试验证 wrap 顺序与最终视图。
 
@@ -168,7 +166,7 @@ def build_agent_middleware(
             idle_timeout_seconds=binding.request_timeout_seconds,
             price_catalog=price_catalog,
         ),
-        FinishGateMiddleware(),
+        *([FinishGateMiddleware()] if legacy_finish_checkpoint else []),
     ]
 
 
@@ -217,6 +215,14 @@ async def open_agent_runtime(
             cfg,
             tools,
             price_catalog or default_price_catalog(),
+            legacy_finish_checkpoint=bool(
+                saved
+                and any(
+                    "FinishGateMiddleware." in str(key)
+                    for field in ("versions_seen", "channel_versions", "channel_values")
+                    for key in (saved.checkpoint.get(field) or {})
+                )
+            ),
             legacy_skill_checkpoint=bool(
                 saved and checkpoint_needs_skill_bridge(dict(saved.checkpoint))
             ),

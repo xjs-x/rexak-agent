@@ -90,7 +90,7 @@ async def test_new_run_updates_objective_and_preserves_prior_messages():
     assert payload["active_run_id"] == str(new_id)
     assert payload["objective"] == "新阶段"
     assert payload["messages"] == []  # 实际消息由 CommandGuard 注入一次。
-    assert payload["completion_proposal"] is None
+    assert "completion_proposal" not in payload
 
 
 async def test_pending_graph_nodes_resume_without_new_input():
@@ -123,9 +123,7 @@ def test_live_chat_only_displays_assistant_text():
     assert _delta_text((HumanMessage(content="内部中间件反馈"), {})) == ""
 
 
-def test_completion_schema_only_requires_answer():
-    from agent_workbench.tools.completion import propose_completion
+def test_retired_completion_flag_cannot_restore_model_tool():
+    from agent_workbench.tools.registry import ToolSelection, build_tools
 
-    schema = cast(Any, propose_completion.tool_call_schema).model_json_schema()
-    assert schema["required"] == ["goal_answer"]
-    assert set(schema["properties"]) == {"goal_answer", "reason", "limitations", "evidence_refs"}
+    assert "propose_completion" not in {tool.name for tool in build_tools(ToolSelection(completion=True))}

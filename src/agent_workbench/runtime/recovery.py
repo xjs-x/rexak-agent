@@ -23,6 +23,7 @@ from sqlalchemy import select
 from agent_workbench.config.settings import Settings, get_settings
 from agent_workbench.contracts.enums import RunStatus
 from agent_workbench.contracts.events import EventType
+from agent_workbench.contracts.tool import execution_job_state
 from agent_workbench.domain.run_state import set_run_status
 from agent_workbench.execution.client import (
     ExecutorConnectionError,
@@ -161,11 +162,21 @@ async def reconcile_remote_jobs(
                 .all()
             )
             tracked = [job for job in tracked if job.operation_id in allowed_operations]
-        execution_resource_ids = set((await session.execute(
-            select(ExecutionResourceRow.resource_id).where(
-                ExecutionResourceRow.resource_id.in_([job.job_id for job in tracked])
+        execution_resource_ids = (
+            set(
+                (
+                    await session.execute(
+                        select(ExecutionResourceRow.resource_id).where(
+                            ExecutionResourceRow.resource_id.in_([job.job_id for job in tracked])
+                        )
+                    )
+                )
+                .scalars()
+                .all()
             )
-        )).scalars().all()) if tracked else set()
+            if tracked
+            else set()
+        )
         session_by_operation: dict[UUID, UUID] = {}
         if tracked:
             from agent_workbench.persistence.tables import ToolOperationRow
@@ -219,10 +230,16 @@ async def reconcile_remote_jobs(
                         state = str(view.get("state") or "unknown")
                         if state in {"exited", "closed"}:
                             state = "succeeded" if view.get("exit_code") == 0 else "failed"
-                        return row, SimpleNamespace(
-                            state=state, output_cursor=None,
-                            started_at=None, finished_at=None,
-                        ), None
+                        return (
+                            row,
+                            SimpleNamespace(
+                                state=state,
+                                output_cursor=None,
+                                started_at=None,
+                                finished_at=None,
+                            ),
+                            None,
+                        )
                     return row, await client.get_job(row.job_id), None
                 except ExecutorRejected as exc:
                     return row, None, f"rejected:{exc.status_code}"
@@ -265,14 +282,16 @@ async def reconcile_remote_jobs(
                     job_id=row.job_id,
                     operation_id=row.operation_id,
                     executor_id=row.executor_id,
-                    state=str(snapshot.state),
+                    state=execution_job_state(snapshot),
                     output_cursor=snapshot.output_cursor,
-                    sync_status="in_sync",
+                    sync_status="uncertain"
+                    if execution_job_state(snapshot) == "unknown"
+                    else "in_sync",
                     executor_started_at=snapshot.started_at,
                     executor_finished_at=snapshot.finished_at,
                 )
             report.jobs_reconciled.append({"job_id": str(row.job_id), "state": str(snapshot.state)})
-            if str(snapshot.state) == "unknown":
+            if execution_job_state(snapshot) == "unknown":
                 report.jobs_unverifiable.append(str(row.job_id))
     finally:
         await _close(tunnel, client)

@@ -972,12 +972,12 @@ async def _run_http_job(
         )
         await state.ledger.update(
             job_id,
-            state="failed",
+            state="unknown",
             finished_at=datetime.now(UTC).isoformat(),
             error_code=code,
             error_message=f"{type(exc).__name__}: {exc}",
         )
-        state.emit("job.failed", {"job_id": job_id, "code": code})
+        state.emit("job.unknown", {"job_id": job_id, "code": code})
         return
     elapsed_ms = (time.perf_counter() - started) * 1000
 

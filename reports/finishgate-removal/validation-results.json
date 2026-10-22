@@ -1,0 +1,29 @@
+{
+  "command": "uv run pytest tests/unit tests/integration tests/recovery -q",
+  "passed": 747,
+  "skipped": 3,
+  "warnings": 10,
+  "duration_seconds": 372.63,
+  "skipped_reasons": [
+    "Windows symbolic link privileges: test_workspace_paths.py:53",
+    "Windows symbolic link privileges: test_workspace_paths.py:77",
+    "Real Xiaomi API Key probe NOT_RUN: test_framework_compatibility.py:220"
+  ],
+  "terminal_recovery_subset": {
+    "passed": 63,
+    "duration_seconds": 111.32,
+    "overlaps_full_suite": true
+  },
+  "ruff": "passed",
+  "pyright": {
+    "errors": 0,
+    "warnings": 0
+  },
+  "utf8_no_bom_check": {
+    "passed_files": 528
+  },
+  "frontend_typecheck_and_build": "passed",
+  "git_diff_check": "passed",
+  "real_model_testing": "NOT_RUN",
+  "real_target_testing": "NOT_RUN"
+}

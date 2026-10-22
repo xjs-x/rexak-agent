@@ -1085,6 +1085,11 @@ def _conversation_sources(session_id: UUID) -> Any:
             ModelCallRow.session_id == session_id,
             ModelCallRow.response_artifact_id.is_not(None),
             ModelCallRow.completed_at.is_not(None),
+            ~select(RunRow.id).where(
+                RunRow.id == ModelCallRow.run_id,
+                RunRow.config_snapshot["completion_result_model_call_id"].astext
+                == cast(ModelCallRow.model_call_id, Text),
+            ).exists(),
         ),
         select(
             ArtifactRow.id,

@@ -3,6 +3,8 @@
 > 本文件是 `IMPLEMENTATION_CHECKLIST.md` 在本仓库的落地记录。
 > **只有具备验证证据的条目才标 ✅**；未验证的一律标 ⬜ / ⛔，不用"已支持"文案。
 
+> 2026-10-22 第二轮：生产结束路径现以 [decision 0015](decisions/0015-natural-agent-completion.md) 和 [实现报告](../reports/finishgate-removal/implementation-review.md) 为准。移除 FinishGate 业务审查与 `propose_completion`，使用官方自然结束；Runner 仅做运行安全收尾。下方第一轮及更早记录保留作历史证据，不表示旧结束协议仍启用。
+
 > 2026-10-22：当前生产路径以 [decision 0014](decisions/0014-minimal-autonomous-loop.md) 和 [第一阶段实现与验收](first-stage-minimal-loop-acceptance.md) 为准。Assessment、复杂完成证明、主动 StageReport/Progress、Coverage 维护/结束门禁、专用 Verification 工具与 Skills 已退出默认最小循环。下方 P0–P9 与 V1 记录是历史实现证据，不能据此推断这些协议仍在当前主循环启用；真实模型/靶场效果未作为本轮验收。
 
 - 记录日期：2026-10-10（P0–P2 复核，P3–P5 执行岛切片，P6 受限核验器与 P7 耗时诊断切片）

@@ -34,6 +34,7 @@ from sqlalchemy import select
 from agent_workbench.config.settings import Settings, get_settings
 from agent_workbench.contracts.enums import CommandKind, JobState, RunStatus
 from agent_workbench.contracts.events import EventType
+from agent_workbench.contracts.tool import execution_job_state
 from agent_workbench.domain.run_state import set_run_status
 from agent_workbench.execution.client import (
     ExecutorConnectionError,
@@ -87,12 +88,20 @@ async def pending_jobs_for_run(db: Database, run_id: UUID) -> list[ToolJobRow]:
                 await session.execute(
                     select(ToolJobRow)
                     .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
-                    .outerjoin(ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id)
-                    .where((ExecutionResourceRow.resource_id.is_(None)) | (
-                        ExecutionResourceRow.kind.in_(["command", "script"]) & (
-                            ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from("resource")
+                    .outerjoin(
+                        ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id
+                    )
+                    .where(
+                        (ExecutionResourceRow.resource_id.is_(None))
+                        | (
+                            ExecutionResourceRow.kind.in_(["command", "script"])
+                            & (
+                                ExecutionResourceRow.detail[
+                                    "completion_role"
+                                ].astext.is_distinct_from("resource")
+                            )
                         )
-                    ))
+                    )
                     .where(ToolOperationRow.run_id == run_id)
                     .where(ToolJobRow.state.in_(list(UNRESOLVED_JOB_STATES)))
                 )
@@ -172,12 +181,20 @@ async def probe_and_wake(
                 await session.execute(
                     select(ToolJobRow)
                     .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
-                    .outerjoin(ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id)
-                    .where((ExecutionResourceRow.resource_id.is_(None)) | (
-                        ExecutionResourceRow.kind.in_(["command", "script"]) & (
-                            ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from("resource")
+                    .outerjoin(
+                        ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id
+                    )
+                    .where(
+                        (ExecutionResourceRow.resource_id.is_(None))
+                        | (
+                            ExecutionResourceRow.kind.in_(["command", "script"])
+                            & (
+                                ExecutionResourceRow.detail[
+                                    "completion_role"
+                                ].astext.is_distinct_from("resource")
+                            )
                         )
-                    ))
+                    )
                     .where(ToolOperationRow.run_id.in_(waiting))
                     .where(ToolJobRow.state.in_(list(UNRESOLVED_JOB_STATES)))
                 )
@@ -263,7 +280,7 @@ async def probe_and_wake(
                             state = "succeeded" if view.get("exit_code") == 0 else "failed"
                         return row, state, ""
                     snapshot = await client.get_job(row.job_id)
-                    return row, str(snapshot.state), ""
+                    return row, execution_job_state(snapshot), ""
                 except ExecutorRejected as exc:
                     return row, "unknown", f"执行岛无该任务记录（HTTP {exc.status_code}）"
                 except (ExecutorConnectionError, ExecutorProtocolError) as exc:
@@ -307,6 +324,10 @@ async def probe_and_wake(
                 sync_status="in_sync" if state in DEFINITE_TERMINAL_STATES else "uncertain",
             )
 
+            operation = await session.get(ToolOperationRow, row.operation_id)
+            if operation is not None and operation.status in {"accepted", "running", "unknown"}:
+                operation.status = state
+
         if state in UNRESOLVED_JOB_STATES:
             # 但**唤醒判定**必须另算：还没有确定结论就不能唤醒。
             # `unknown` 尤其重要 —— 它表示"既不能证明完成，也不能证明没发生"，
@@ -335,8 +356,7 @@ async def probe_and_wake(
         if open_wait_sets.get(run_id):
             result["still_waiting"].append(str(run_id))
             result["notes"].append(
-                f"run {run_id} 的任务已终态，但仍有未满足的等待条件："
-                f"{open_wait_sets[run_id][:3]}"
+                f"run {run_id} 的任务已终态，但仍有未满足的等待条件：{open_wait_sets[run_id][:3]}"
             )
             continue
         terminal_entries = terminal_by_run.get(run_id, [])
@@ -363,7 +383,11 @@ def _terminal_summary(entries: list[str]) -> str:
 
 
 async def _wake_run(
-    db: Database, run_id: UUID, *, summary: str, terminal_job_ids: list[UUID] | None = None,
+    db: Database,
+    run_id: UUID,
+    *,
+    summary: str,
+    terminal_job_ids: list[UUID] | None = None,
     explicit_wait_satisfied: bool = False,
 ) -> bool:
     """把等待中的 run 重新排队，并注入一条系统通知。
@@ -389,12 +413,20 @@ async def _wake_run(
             await session.execute(
                 select(ToolJobRow.job_id)
                 .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
-                .outerjoin(ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id)
-                .where((ExecutionResourceRow.resource_id.is_(None)) | (
-                    ExecutionResourceRow.kind.in_(["command", "script"]) & (
-                        ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from("resource")
+                .outerjoin(
+                    ExecutionResourceRow, ExecutionResourceRow.resource_id == ToolJobRow.job_id
+                )
+                .where(
+                    (ExecutionResourceRow.resource_id.is_(None))
+                    | (
+                        ExecutionResourceRow.kind.in_(["command", "script"])
+                        & (
+                            ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from(
+                                "resource"
+                            )
+                        )
                     )
-                ))
+                )
                 .where(
                     ToolOperationRow.run_id == run_id,
                     ToolJobRow.state.in_(list(UNRESOLVED_JOB_STATES)),
@@ -426,8 +458,9 @@ async def _wake_run(
         if terminal_job_ids:
             rows = (
                 await session.execute(
-                    select(ToolOperationRow.job_id, ToolOperationRow.dispatch_control_version)
-                    .where(
+                    select(
+                        ToolOperationRow.job_id, ToolOperationRow.dispatch_control_version
+                    ).where(
                         ToolOperationRow.run_id == run_id,
                         ToolOperationRow.job_id.in_(terminal_job_ids),
                     )

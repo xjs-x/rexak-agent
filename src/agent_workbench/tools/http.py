@@ -206,8 +206,9 @@ def _summarize_http(state: str, payload: dict[str, Any]) -> str:
         )
     if state == "unknown":
         return (
-            "执行状态无法确认：既不能证明仍在运行，也不能证明已结束。"
-            "请先用 get_job 查询结论，禁止直接重试。"
+            "目标端执行状态无法确认："
+            + str(payload.get("error_message") or "未收到确定结果")
+            + "。请先用 get_job 查询原操作，禁止盲目重试。"
         )
     if state == "cancelled":
         return "该请求已被取消。"
@@ -507,7 +508,9 @@ async def run_http_request(
             )
 
     # 6) 组装统一结果
-    status = _job_state_to_status(str(snapshot.state))
+    from agent_workbench.contracts.tool import execution_job_state
+
+    status = _job_state_to_status(execution_job_state(snapshot))
     # TLS/连接失败通常没有响应文件；先使用远端终态，不能用工件 404 覆盖真实错误。
     payload = (
         await _load_job_meta(toolbox, receipt.job_id)
@@ -572,7 +575,7 @@ async def run_http_request(
                 data["body_preview"] = preview
         if payload.get("decode_error"):
             data["decode_error"] = payload["decode_error"]
-    if status is OperationStatus.FAILED:
+    if status in {OperationStatus.FAILED, OperationStatus.UNKNOWN}:
         failure_code = snapshot.error.code if snapshot.error else None
         if failure_code in {"request_construction_error", "csrf_unavailable"}:
             data.update(error_category="construction", delivery_state="not_applied")
@@ -589,15 +592,17 @@ async def run_http_request(
         data.update(error_category="response", delivery_state="delivered")
 
     error = None
-    if status is OperationStatus.FAILED and snapshot.error is not None:
+    if status in {OperationStatus.FAILED, OperationStatus.UNKNOWN} and snapshot.error is not None:
         error = ToolError(
             code=snapshot.error.code,
             message=snapshot.error.message or "执行岛未返回明确原因",
-            retryable=snapshot.error.retryable,
+            retryable=False if status is OperationStatus.UNKNOWN else snapshot.error.retryable,
             recovery_hint=(
                 "证书校验失败。若需要检查使用自签名证书的测试服务，可显式设置 verify_tls=false"
                 "发起新的请求；结果会注明未校验证书，不可当作证书可信的证据。"
                 if snapshot.error.code == "tls_certificate_error"
+                else "先用 get_job 核对原操作；请求可能已经执行，不要盲目重试。"
+                if status is OperationStatus.UNKNOWN
                 else snapshot.error.recovery_hint
             ),
         )
@@ -613,7 +618,7 @@ async def run_http_request(
         operation_id=operation_id,
         job_id=receipt.job_id,
         status=status,
-        summary=_summarize_http(str(snapshot.state), payload),
+        summary=_summarize_http(str(status), payload),
         data=data,
         artifact_refs=refs,
         error=error,
@@ -633,7 +638,7 @@ async def run_http_request(
         toolbox,
         operation_id=operation_id,
         job_id=receipt.job_id,
-        status=str(snapshot.state),
+        status=str(status),
         refs=refs,
         snapshot=snapshot,
         result_summary={

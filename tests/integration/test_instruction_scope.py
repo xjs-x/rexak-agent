@@ -83,7 +83,7 @@ async def test_instruction_message_updates_scope_once_and_refreshes_runtime(data
             SimpleNamespace(context=SimpleNamespace(toolbox=toolbox)),
         )
         assert update is not None
-        assert update["completion_proposal"] is None, "追加指令必须使此前结束信号失效"
+        assert "completion_proposal" not in update, "退役提议不再被新循环写入或读取"
         assert toolbox.scope_revision == 2 and toolbox.control_version == 1
         assert toolbox.scope.is_allowed("http://second.example.test:8080/")
         assert not toolbox.scope.is_allowed("http://third.example.test/")

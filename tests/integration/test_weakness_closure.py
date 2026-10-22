@@ -25,7 +25,6 @@ from sqlalchemy import select
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.middleware.command_guard import CommandGuardMiddleware
 from agent_workbench.agent.middleware.context_builder import ContextBuilderMiddleware
-from agent_workbench.agent.middleware.finish_gate import FinishGateMiddleware
 from agent_workbench.agent.middleware.tool_dispatch import ToolDispatchMiddleware
 from agent_workbench.agent.middleware.working_context import WorkingContextMiddleware
 from agent_workbench.agent.state import AgentGraphState
@@ -38,7 +37,6 @@ from agent_workbench.persistence.tables import (
     LeadRow,
     ToolOperationRow,
 )
-from agent_workbench.tools.completion import propose_completion
 from agent_workbench.tools.execution_context import execution_context
 from agent_workbench.tools.operation import OperationRegistry
 from agent_workbench.tools.task import record_lead, update_plan
@@ -154,7 +152,6 @@ def _middleware() -> list[AgentMiddleware[Any, Any]]:
         WorkingContextMiddleware(),
         ContextBuilderMiddleware(profile()),
         ToolDispatchMiddleware(),
-        FinishGateMiddleware(),
     ]
 
 
@@ -203,7 +200,7 @@ async def test_optional_plan_and_lead_associate_execution_without_proof_protocol
     result = await graph.ainvoke(
         cast(Any, {"messages": [HumanMessage(content="仅本地工具")]}), context=context
     )
-    assert result["completion_proposal"]["goal_answer"].startswith("已取得")
+    assert result["messages"][-1].text.startswith("已取得")
     assert result["plan"][0]["status"] == "in_progress"
     assert "work_assessment" not in result
     assert PROBE_CALLS[0]["step_id"] == "s1"
@@ -232,12 +229,12 @@ async def test_candidate_remains_candidate_when_model_finishes_without_verificat
             lambda _: _call(
                 "propose_finding", {"title": "未验证候选", "description": "本地记录"}, "candidate"
             ),
-            lambda _: _call("propose_completion", {"goal_answer": "候选未经过独立验证"}, "finish"),
+            lambda _: AIMessage(content="候选未经过独立验证"),
         ]
     )
     graph = create_agent(
         model=model,
-        tools=[propose_finding, propose_completion],
+        tools=[propose_finding],
         middleware=_middleware(),
         state_schema=AgentGraphState,
         context_schema=RunContext,
@@ -245,7 +242,7 @@ async def test_candidate_remains_candidate_when_model_finishes_without_verificat
     result = await graph.ainvoke(
         cast(Any, {"messages": [HumanMessage(content="保存候选并结束")]}), context=context
     )
-    assert result["completion_proposal"]["goal_answer"] == "候选未经过独立验证"
+    assert result["messages"][-1].text == "候选未经过独立验证"
     assert len(model.received) == 2
     async with database.session() as db:
         row = (

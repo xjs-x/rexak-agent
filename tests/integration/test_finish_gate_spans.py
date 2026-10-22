@@ -1,4 +1,4 @@
-"""结束提议的中间件检查与 Runner 复核分别留下可归属的耗时记录。"""
+"""退役结束协议不再产生审查耗时或反馈。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import pytest
 from sqlalchemy import select
 
 from agent_workbench.agent.middleware.finish_gate import FinishGateMiddleware
-from agent_workbench.contracts.enums import RunStatus
 from agent_workbench.observability.spans import SpanRecorder
 from agent_workbench.persistence.repositories import ProjectRepository, SessionRepository
 from agent_workbench.persistence.tables import RunRow, SessionRow, SpanRow
@@ -19,7 +18,7 @@ from agent_workbench.runtime.runner import AgentRunner
 pytestmark = pytest.mark.integration
 
 
-async def test_finish_gate_phases_persist_separate_spans(database, unique_name) -> None:
+async def test_retired_finish_gate_emits_no_review_spans(database, unique_name) -> None:
     async with database.transaction() as db:
         project = await ProjectRepository(db).create(
             owner_id="finish-span-test",
@@ -57,18 +56,16 @@ async def test_finish_gate_phases_persist_separate_spans(database, unique_name) 
         cast(Any, {"completion_proposal": proposal, "messages": []}), cast(Any, runtime)
     )
 
+    # 历史 proposal 不能再触发审查、反馈或完成。
     async def get_state(_config: Any) -> Any:
-        return SimpleNamespace(values={"completion_proposal": proposal})
+        return SimpleNamespace(values={"completion_proposal": proposal}, next=())
 
     runner = AgentRunner(database=database)
     graph_runtime = SimpleNamespace(graph=SimpleNamespace(aget_state=get_state))
     run_ref = RunRow(id=run_id, session_id=session_id)
     session_ref = SessionRow(id=session_id, thread_id=thread_id)
-    status, reason = await runner._resolve_after_segment(
-        cast(Any, graph_runtime), run_ref, session_ref, spans
-    )
-    assert status is RunStatus.COMPLETED
-    assert reason is not None
+    status, reason = await runner._resolve_after_segment(cast(Any, graph_runtime), run_ref, session_ref, spans)
+    assert status is reason is None
     assert spans.pending == 0
 
     async with database.session() as db:
@@ -79,7 +76,4 @@ async def test_finish_gate_phases_persist_separate_spans(database, unique_name) 
                 )
             ).scalars()
         )
-    assert {row.name for row in rows} == {"finish_gate.middleware", "finish_gate.runner"}
-    assert all(row.session_id == session_id for row in rows)
-    assert all(row.duration_ms is not None and row.duration_ms >= 0 for row in rows)
-    assert all(row.attributes["decision"] == "complete" for row in rows)
+    assert rows == []

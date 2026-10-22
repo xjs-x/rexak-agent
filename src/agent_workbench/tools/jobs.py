@@ -23,7 +23,7 @@ from sqlalchemy import select
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.contracts.enums import ErrorCode, OperationStatus
-from agent_workbench.contracts.tool import ToolError, ToolResult
+from agent_workbench.contracts.tool import ToolError, ToolResult, execution_job_state
 from agent_workbench.execution.client import (
     ExecutorConnectionError,
     ExecutorProtocolError,
@@ -59,8 +59,12 @@ def _result(payload: dict[str, object], summary: str, job_id: UUID | None) -> st
 
 
 def _error_result(
-    summary: str, code: ErrorCode | str, message: str, job_id: UUID | None,
-    *, recovery_hint: str | None = None,
+    summary: str,
+    code: ErrorCode | str,
+    message: str,
+    job_id: UUID | None,
+    *,
+    recovery_hint: str | None = None,
 ) -> str:
     return ToolResult(
         operation_id=UUID(int=0),
@@ -126,9 +130,7 @@ async def _resolve_job_id(toolbox: Toolbox, job_id: str) -> UUID:
     if len(matches) == 1:
         return UUID(matches[0])
     if not matches:
-        raise ValueError(
-            f"找不到 job：{candidate}。可从 list_jobs 或工具返回中获取完整 ID。"
-        )
+        raise ValueError(f"找不到 job：{candidate}。可从 list_jobs 或工具返回中获取完整 ID。")
     raise ValueError(f"前缀匹配到 {len(matches)} 条，请给出更完整的 ID")
 
 
@@ -253,16 +255,45 @@ async def get_job(runtime: ToolRuntime[RunContext], job_id: str) -> str:
         )
 
     async with toolbox.db.transaction() as db:
+        operation = (
+            await db.execute(
+                select(ToolOperationRow).where(
+                    ToolOperationRow.session_id == toolbox.session_id,
+                    ToolOperationRow.job_id == resolved,
+                )
+            )
+        ).scalar_one_or_none()
+        if (
+            operation is None
+            or snapshot.job_id != resolved
+            or (
+                snapshot.operation_id is not None
+                and snapshot.operation_id != operation.operation_id
+            )
+        ):
+            raise ExecutorProtocolError("Job 返回的身份与当前会话原始 Operation 不一致")
         await ToolJobRepository(db).upsert(
             job_id=resolved,
-            operation_id=UUID(int=0) if snapshot.operation_id is None else snapshot.operation_id,
+            operation_id=operation.operation_id,
             executor_id=toolbox.settings.executor_id,
-            state=str(snapshot.state),
+            state=execution_job_state(snapshot),
+            sync_status="uncertain" if execution_job_state(snapshot) == "unknown" else "in_sync",
             output_cursor=snapshot.output_cursor,
             executor_started_at=snapshot.started_at,
             executor_finished_at=snapshot.finished_at,
         )
-    payload = {**snapshot.model_dump(mode="json"), **direction}
+        if (
+            operation is not None
+            and operation.session_id == toolbox.session_id
+            and operation.job_id == resolved
+            and operation.status in {"accepted", "running", "unknown"}
+        ):
+            operation.status = execution_job_state(snapshot)
+    payload = {
+        **snapshot.model_dump(mode="json"),
+        **direction,
+        "state": execution_job_state(snapshot),
+    }
     return _result(
         payload,
         f"job {resolved} 当前状态：{snapshot.state}{_direction_warning(direction)}",
@@ -453,9 +484,7 @@ async def cancel_job(
     return _result(receipt.model_dump(mode="json"), summary, resolved)
 
 
-async def _request_id_belongs_to_resource(
-    toolbox: Toolbox, job_id: UUID, request_id: UUID
-) -> bool:
+async def _request_id_belongs_to_resource(toolbox: Toolbox, job_id: UUID, request_id: UUID) -> bool:
     async with toolbox.db.session() as db:
         row = (
             await db.execute(
@@ -527,8 +556,11 @@ def json_dumps(payload: object) -> str:
 
 @tool("export_execution_output")
 async def export_execution_output(
-    runtime: ToolRuntime[RunContext], job_id: str, stream: str = "stdout",
-    offset: int = 0, limit: int = 262144,
+    runtime: ToolRuntime[RunContext],
+    job_id: str,
+    stream: str = "stdout",
+    offset: int = 0,
+    limit: int = 262144,
 ) -> str:
     """将原始输出的一个区间保存为不可变证据工件（含非法 UTF-8 字节）。
 
@@ -546,26 +578,65 @@ async def export_execution_output(
     toolbox = runtime.context.toolbox
     resolved = await _resolve_job_id(toolbox, job_id)
     snapshot = await toolbox.executor.execution_raw_output(
-        str(resolved), session_id=str(toolbox.session_id), stream=stream,
-        offset=max(0, offset), limit=max(1, min(limit, 1048576)),
+        str(resolved),
+        session_id=str(toolbox.session_id),
+        stream=stream,
+        offset=max(0, offset),
+        limit=max(1, min(limit, 1048576)),
     )
     data = base64.b64decode(snapshot["data_base64"], validate=True)
     if hashlib.sha256(data).hexdigest() != snapshot["sha256"]:
         raise ExecutorProtocolError("原始日志快照 hash 不匹配")
+    # 只采用同会话中可唯一确定的原始来源，不使用本次导出工具的 Operation 冒充来源。
+    async with toolbox.db.session() as db:
+        sources = set(
+            (
+                await db.execute(
+                    select(ToolOperationRow.operation_id).where(
+                        ToolOperationRow.session_id == toolbox.session_id,
+                        ToolOperationRow.job_id == resolved,
+                    )
+                )
+            ).scalars()
+        )
+        resource = await db.get(ExecutionResourceRow, resolved)
+        if (
+            resource is not None
+            and resource.session_id == toolbox.session_id
+            and resource.origin_operation_id
+        ):
+            origin = await db.get(ToolOperationRow, resource.origin_operation_id)
+            if origin is not None and origin.session_id == toolbox.session_id:
+                sources.add(origin.operation_id)
+    source_operation_id = next(iter(sources)) if len(sources) == 1 else None
     stored = toolbox.artifacts.write_bytes(data, media_type="application/octet-stream")
-    artifact_id = uuid5(toolbox.session_id, f"execution-output:{resolved}:{stream}:{offset}:{stored.sha256}")
+    artifact_id = uuid5(
+        toolbox.session_id, f"execution-output:{resolved}:{stream}:{offset}:{stored.sha256}"
+    )
     async with toolbox.db.transaction() as db:
         repository = ArtifactRepository(db)
         if await repository.get(artifact_id) is None:
             await repository.create(
-                artifact_id=artifact_id, sha256=stored.sha256, byte_size=stored.byte_size,
-                media_type=stored.media_type, relative_key=stored.relative_key,
-                session_id=toolbox.session_id, source_operation_id=None,
-                sensitivity="internal", availability="available", captured_at=stored.captured_at,
+                artifact_id=artifact_id,
+                sha256=stored.sha256,
+                byte_size=stored.byte_size,
+                media_type=stored.media_type,
+                relative_key=stored.relative_key,
+                session_id=toolbox.session_id,
+                source_operation_id=source_operation_id,
+                sensitivity="internal",
+                availability="available",
+                captured_at=stored.captured_at,
                 summary=f"资源 {resolved} {stream} 已存字节 {offset}:{snapshot['next_offset']} 的不可变快照",
             )
-    return _result({**{k: v for k, v in snapshot.items() if k != "data_base64"},
-                    "artifact_id": str(artifact_id)}, "原始日志区间已保存为不可变工件", resolved)
+    return _result(
+        {
+            **{k: v for k, v in snapshot.items() if k != "data_base64"},
+            "artifact_id": str(artifact_id),
+        },
+        "原始日志区间已保存为不可变工件",
+        resolved,
+    )
 
 
 JOB_TOOLS = [get_job, read_job_output, cancel_job, export_execution_output]

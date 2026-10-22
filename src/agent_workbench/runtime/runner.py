@@ -27,7 +27,6 @@ from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.factory import AgentRuntime, open_agent_runtime
 from agent_workbench.agent.middleware.segment import YIELD_REASON, SegmentSchedulingError
 from agent_workbench.agent.signals import (
-    FinishGateRejected,
     GraphRunAborted,
     LeaseLostError,
     NoProgressBlocked,
@@ -742,6 +741,13 @@ class AgentRunner:
             while True:
                 segments += 1
                 try:
+                    if segments == 1:
+                        resolved, reason = await self._resolve_after_segment(
+                            runtime, run, session_row, spans
+                        )
+                        if resolved is not None:
+                            status, completion_reason = resolved, reason
+                            break
                     payload = await self._segment_input(runtime, run, session_row, segments)
                     toolbox.reset_segment_work_units()
                     await self._stream_once(runtime, context, toolbox, session_row, run, payload)
@@ -836,10 +842,6 @@ class AgentRunner:
                 except LeaseLostError as exc:
                     status, detail = RunStatus.FAILED, str(exc)
                     break
-                except FinishGateRejected as exc:
-                    detail = "; ".join(exc.feedback)
-                    status = RunStatus.WAITING_USER
-                    break
                 except NoProgressBlocked as exc:
                     from agent_workbench.runtime.jobs import run_has_pending_work
 
@@ -869,7 +871,16 @@ class AgentRunner:
             finally:
                 await self._shutdown(tunnel, executor)
 
-        await self._finalize(run.id, status, detail=detail, completion_reason=completion_reason)
+        status = await self._finalize(
+            run.id,
+            status,
+            detail=detail,
+            completion_reason=completion_reason,
+            expected_generation=generation,
+            expected_control_version=toolbox.control_version,
+        )
+        if status is not RunStatus.COMPLETED:
+            completion_reason = None
         if status in {
             RunStatus.COMPLETED,
             RunStatus.PAUSED,
@@ -1204,9 +1215,6 @@ class AgentRunner:
             if values.get("active_run_id") == str(run.id):
                 return {
                     "messages": [],
-                    "completion_proposal": None,
-                    "finish_gate_feedback": [],
-                    "finish_gate_attempts": 0,
                 }
             payload = next_input_state(
                 session_id=run.session_id,
@@ -1367,20 +1375,7 @@ class AgentRunner:
 
     async def _handle_update(self, run: RunRow, toolbox: Toolbox, chunk: dict[str, Any]) -> None:
         """把图节点更新投影为事件。"""
-        for update in (chunk or {}).values():
-            if not isinstance(update, dict):
-                continue
-            # 流式节点更新尚不是 checkpoint 提交回执，不在这里宣布计划生效。
-            if update.get("completion_proposal") is not None:
-                await self._emit(
-                    run,
-                    EventType.RUN_STATUS,
-                    {
-                        "event": "completion_proposed",
-                        "proposal": update["completion_proposal"],
-                    },
-                )
-        _ = toolbox
+        _ = run, toolbox, chunk
 
     async def _emit_delta(self, run: RunRow, text: str, *, response_id: str | None = None) -> None:
         await self._emit(
@@ -1425,135 +1420,136 @@ class AgentRunner:
         session_row: SessionRow,
         spans: SpanRecorder,
     ) -> tuple[RunStatus | None, CompletionReason | None]:
-        """读取图状态，判断 run 是否已经该结束。"""
-        try:
-            snapshot = await runtime.graph.aget_state(
-                {"configurable": {"thread_id": session_row.thread_id}}
-            )
-        except Exception as exc:
-            log.warning("state_read_failed", error=f"{type(exc).__name__}: {exc}")
-            return None, None
-
-        values = (snapshot.values or {}) if snapshot is not None else {}
-        proposal = values.get("completion_proposal")
-        if not proposal:
-            return None, None
-
-        from agent_workbench.runtime.stopping import FinishGate
-
-        span = spans.start(
-            "finish_gate.runner",
-            session_id=run.session_id,
-            run_id=run.id,
+        """只识别官方 END 与运行状态，不评估业务目标或证据。"""
+        _ = spans
+        snapshot = await runtime.graph.aget_state(
+            {"configurable": {"thread_id": session_row.thread_id}}
         )
-        try:
-            async with self._db.session() as session:
-                decision = await FinishGate(session).evaluate(
-                    session_id=run.session_id,
-                    proposal=proposal,
-                    run_id=run.id,
-                )
-            span.finish()
-            spans.record(span, decision=decision.decision)
-        except Exception as exc:
-            span.finish(error=type(exc).__name__)
-            raise
-        finally:
-            try:
-                async with self._db.transaction() as session:
-                    await spans.flush(session)
-            except Exception as exc:
-                log.warning(
-                    "finish_gate_span_persist_failed",
-                    run_id=str(run.id),
-                    error_type=type(exc).__name__,
-                )
-        if decision.decision == "wait_user":
-            return RunStatus.WAITING_USER, None
-        if decision.decision == "wait_tool":
-            return RunStatus.WAITING_TOOL, None
-        if not decision.allowed:
+        if snapshot is None or snapshot.next:
             return None, None
+        values = snapshot.values or {}
+        if values.get("segment_yield_reason") or values.get("active_run_id") != str(run.id):
+            return None, None
+        messages = values.get("messages") or []
+        message = messages[-1] if messages else None
+        if not isinstance(message, AIMessage) or message.tool_calls or message.invalid_tool_calls:
+            return None, None
+        if not message.text.strip():
+            raise SegmentSchedulingError("官方图结束但没有可保存的最终回复")
+        from agent_workbench.agent.checkpoint_boundary import unresolved_tool_messages
+        from agent_workbench.persistence.tables import ToolOperationRow
+        from agent_workbench.runtime.jobs import run_has_pending_work
 
-        # 显式结束工具生成的最终回答从已提交 checkpoint 投影一次，重启不重复。
-        result_message_id = f"completion-{run.id}-{proposal.get('proposed_at_turn', 0)}"
-        for message in values.get("messages") or []:
-            if (
-                isinstance(message, AIMessage)
-                and message.id == result_message_id
-                and message.additional_kwargs.get("workbench_completion_result")
-            ):
-                from uuid import NAMESPACE_URL, uuid5
-
-                from agent_workbench.evidence.artifacts import ArtifactStore
-                from agent_workbench.persistence.repositories import ArtifactRepository
-                from agent_workbench.persistence.tables import ArtifactRow, EventRow
-
-                event_id = uuid5(NAMESPACE_URL, f"rexak-final:{run.id}:{message.id}")
-                artifact_id = uuid5(NAMESPACE_URL, f"rexak-final-artifact:{run.id}:{message.id}")
-                stored = ArtifactStore(self._settings).write_bytes(
-                    str(message.content).encode("utf-8"), media_type="text/plain"
-                )
-                async with self._db.transaction() as db:
-                    await db.execute(
-                        select(SessionRow).where(SessionRow.id == run.session_id).with_for_update()
+        if unresolved_tool_messages(values):
+            raise SegmentSchedulingError("图结束仍有未结算 ToolCall，拒绝记录为完成")
+        await self._assert_dispatch_allowed(
+            run.id, self._owner, run.owner_generation, values.get("dispatch_control_version")
+        )
+        if await self._segment_should_continue(run):
+            return None, None
+        pending, wait_sets = await run_has_pending_work(self._db, run.id)
+        async with self._db.session() as db:
+            unsettled = (
+                await db.execute(
+                    select(ToolOperationRow.operation_id).where(
+                        ToolOperationRow.run_id == run.id,
+                        ToolOperationRow.status.in_(["accepted", "running", "unknown"]),
+                        ToolOperationRow.job_id.is_(None),
                     )
-                    artifact = await db.get(ArtifactRow, artifact_id)
-                    if artifact is None:
-                        artifact = await ArtifactRepository(db).create(
-                            artifact_id=artifact_id,
-                            sha256=stored.sha256,
-                            byte_size=stored.byte_size,
-                            media_type=stored.media_type,
-                            relative_key=stored.relative_key,
-                            session_id=run.session_id,
-                            source_operation_id=None,
-                            sensitivity="internal",
-                            availability="available",
-                            captured_at=stored.captured_at,
-                            summary="已提交 checkpoint 的显式最终回答投影",
-                        )
-                        artifact.protected = True
-                    elif artifact.sha256 != stored.sha256:
-                        raise RuntimeError("同一最终回答的不可变工件内容冲突")
-                    saved_run = await db.get(RunRow, run.id, populate_existing=True)
-                    if saved_run is None:
-                        raise RuntimeError("最终回答投影找不到原运行")
-                    # 只保存可重建的读取指针；结果权威仍是已提交 checkpoint。
-                    saved_run.config_snapshot = {
-                        **saved_run.config_snapshot,
-                        "completion_result_artifact_id": str(artifact_id),
-                    }
-                    if (
-                        await db.execute(select(EventRow.id).where(EventRow.event_id == event_id))
-                    ).scalar_one_or_none() is None:
-                        event = await append_event(
-                            db,
-                            session_id=run.session_id,
-                            run_id=run.id,
-                            event_type=EventType.MESSAGE_DELTA,
-                            event_id=event_id,
-                            payload={
-                                "role": "assistant",
-                                "delta": str(message.content)[:1200],
-                                "artifact_id": str(artifact_id),
-                                "response_id": message.id,
-                                "redaction_version": 1,
-                            },
-                        )
-                        envelope = event.model_dump(mode="json")
-                    else:
-                        envelope = None
-                if envelope is not None and self._on_event is not None:
-                    with contextlib.suppress(Exception):
-                        self._on_event(envelope)
-        reason_raw = str(proposal.get("reason") or "")
-        reason = (
-            CompletionReason.GOAL_ANSWERED
-            if reason_raw == str(CompletionReason.GOAL_ANSWERED)
-            else CompletionReason.EXPLORATION_CONVERGED
+                )
+            ).first()
+        from agent_workbench.persistence.tables import ExecutionResourceRow
+
+        async with self._db.session() as db:
+            finite = (
+                await db.execute(
+                    select(ExecutionResourceRow.resource_id).where(
+                        ExecutionResourceRow.origin_run_id == run.id,
+                        ExecutionResourceRow.kind.in_(["command", "script"]),
+                        ExecutionResourceRow.state.in_(["starting", "running", "unknown"]),
+                        ExecutionResourceRow.detail["completion_role"].astext.is_distinct_from(
+                            "resource"
+                        ),
+                    )
+                )
+            ).first()
+        if pending or wait_sets:
+            return RunStatus.WAITING_TOOL, None
+        if unsettled or finite:
+            return RunStatus.RECOVERING, None
+        await self._archive_final_response(run, message)
+        return RunStatus.COMPLETED, CompletionReason.MODEL_FINISHED
+
+    async def _archive_final_response(self, run: RunRow, message: AIMessage) -> None:
+        """从已提交 checkpoint 投影真实最终回复，不创建模型调用或业务完成证明。"""
+        from uuid import NAMESPACE_URL, uuid5
+
+        from agent_workbench.evidence.artifacts import ArtifactStore
+        from agent_workbench.persistence.repositories import ArtifactRepository
+        from agent_workbench.persistence.tables import ArtifactRow, EventRow
+
+        event_id = uuid5(NAMESPACE_URL, f"rexak-final:{run.id}:{message.id}")
+        artifact_id = uuid5(NAMESPACE_URL, f"rexak-final-artifact:{run.id}:{message.id}")
+        stored = ArtifactStore(self._settings).write_bytes(
+            message.text.encode("utf-8"), media_type="text/plain"
         )
-        return RunStatus.COMPLETED, reason
+        async with self._db.transaction() as db:
+            await db.execute(
+                select(SessionRow).where(SessionRow.id == run.session_id).with_for_update()
+            )
+            artifact = await db.get(ArtifactRow, artifact_id)
+            if artifact is None:
+                artifact = await ArtifactRepository(db).create(
+                    artifact_id=artifact_id,
+                    sha256=stored.sha256,
+                    byte_size=stored.byte_size,
+                    media_type=stored.media_type,
+                    relative_key=stored.relative_key,
+                    session_id=run.session_id,
+                    source_operation_id=None,
+                    sensitivity="internal",
+                    availability="available",
+                    captured_at=stored.captured_at,
+                    summary="已提交 checkpoint 的最终回答投影",
+                )
+                artifact.protected = True
+            elif artifact.sha256 != stored.sha256:
+                raise RuntimeError("同一最终回答的不可变工件内容冲突")
+            saved_run = await db.get(RunRow, run.id, populate_existing=True)
+            if saved_run is None:
+                raise RuntimeError("最终回答投影找不到原运行")
+            # 只保存可重建的读取指针；结果权威仍是已提交 checkpoint。
+            saved_run.config_snapshot = {
+                **saved_run.config_snapshot,
+                "completion_result_artifact_id": str(artifact_id),
+                "completion_result_model_call_id": message.response_metadata.get(
+                    "workbench_model_call_id"
+                ),
+            }
+            if (
+                await db.execute(select(EventRow.id).where(EventRow.event_id == event_id))
+            ).scalar_one_or_none() is None:
+                event = await append_event(
+                    db,
+                    session_id=run.session_id,
+                    run_id=run.id,
+                    event_type=EventType.MESSAGE_DELTA,
+                    event_id=event_id,
+                    payload={
+                        "role": "assistant",
+                        "delta": "",
+                        "event": "final_response_saved",
+                        "artifact_id": str(artifact_id),
+                        "response_id": message.id,
+                        "redaction_version": 1,
+                    },
+                )
+                envelope = event.model_dump(mode="json")
+            else:
+                envelope = None
+        if envelope is not None and self._on_event is not None:
+            with contextlib.suppress(Exception):
+                self._on_event(envelope)
 
     async def _segment_should_continue(self, run: RunRow) -> bool:
         """是否还有可以立即推进的工作（新的待消费指令）。"""
@@ -1859,16 +1855,43 @@ class AgentRunner:
         *,
         detail: str,
         completion_reason: CompletionReason | None,
-    ) -> None:
+        expected_generation: int | None = None,
+        expected_control_version: int | None = None,
+    ) -> RunStatus:
         async with self._db.transaction() as session:
             run = (
                 await session.execute(select(RunRow).where(RunRow.id == run_id))
             ).scalar_one_or_none()
             if run is None:
-                return
+                raise RuntimeError("终结运行时原记录不存在")
             await session.execute(
                 select(SessionRow).where(SessionRow.id == run.session_id).with_for_update()
             )
+            # 与用户指令事务共用 Session 锁，再锁定并刷新 Run，避免检查与提交间的竞态。
+            run = (
+                await session.execute(
+                    select(RunRow)
+                    .where(RunRow.id == run_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one()
+            if expected_generation is not None and not await is_current_owner(
+                session, run_id=run_id, owner=self._owner, generation=expected_generation
+            ):
+                return RunStatus(run.status)
+            if status is RunStatus.COMPLETED:
+                if expected_generation is None or expected_control_version is None:
+                    raise RuntimeError("自然结束缺少运行控制边界")
+                current = RunStatus(run.status)
+                if current in {RunStatus.CANCELLING, RunStatus.CANCELLED}:
+                    # 取消可能还要终止保留的终端/监视器；交给原取消核对链，不能虚报已停止。
+                    status, completion_reason = current, None
+                elif current in {RunStatus.PAUSING, RunStatus.PAUSED}:
+                    status, completion_reason = RunStatus.PAUSED, None
+                elif run.control_version != expected_control_version:
+                    status, completion_reason = RunStatus.RECOVERING, None
+                    detail = "最终回复提交前控制版本变化，保留 checkpoint 等待恢复"
             if status is RunStatus.PAUSED:
                 if RunStatus(run.status) not in {
                     RunStatus.PAUSING,
@@ -1926,6 +1949,8 @@ class AgentRunner:
                     ),
                 },
             )
+
+        return status
 
     async def _fail(self, run_id: UUID, code: ErrorCode, message: str) -> None:
         async with self._db.transaction() as session:

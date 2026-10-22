@@ -9,18 +9,15 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import select
 
 from agent_workbench.agent.context import RunContext
-from agent_workbench.agent.middleware.finish_gate import FinishGateMiddleware
 from agent_workbench.agent.middleware.stage_report import StageReportMiddleware
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.domain.leads import LeadService
 from agent_workbench.domain.reports import create_report_snapshot
 from agent_workbench.evidence.artifacts import ArtifactStore
-from agent_workbench.observability.spans import SpanRecorder
 from agent_workbench.persistence.tables import ReportVersionRow
 from agent_workbench.runtime.stopping import FinishGate
-from agent_workbench.tools.completion import propose_completion
 from tests.integration.test_request_budget import context_for
-from tests.support.scripted_model import ScriptedChatModel, final_text, tool_call
+from tests.support.scripted_model import ScriptedChatModel, final_text
 
 pytestmark = pytest.mark.integration
 
@@ -129,47 +126,15 @@ async def test_optional_leads_do_not_block_finish_but_forged_evidence_does(datab
 
 
 
-async def test_repeated_completion_rejections_continue_without_user_or_extra_evaluator(
-    database, unique_name
-):
+async def test_final_message_needs_no_evidence_submission_or_evaluator(database, unique_name):
     context = await context_for(database, unique_name)
-    context.toolbox.spans = SpanRecorder()
-    calls = [
-        tool_call(
-            "propose_completion",
-            {
-                "reason": "exploration_converged",
-                "goal_answer": "未登记覆盖",
-                "evidence_refs": ["不存在的证据"],
-            },
-            f"proposal-{index}",
-        )
-        for index in range(5)
-    ]
-    calls += [
-        tool_call(
-            "propose_completion",
-            {
-                "reason": "goal_answered",
-                "goal_answer": "明确回答边界",
-            },
-            "final-proposal",
-        ),
-        final_text("不应调用"),
-    ]
-    model = ScriptedChatModel(responses=calls)
+    model = ScriptedChatModel(responses=[final_text("未发现漏洞；引用不存在的工件只是模型文本，不生成真实证据。")])
     graph = create_agent(
-        model=model,
-        tools=[propose_completion],
-        middleware=[FinishGateMiddleware()],
-        state_schema=AgentGraphState,
-        context_schema=RunContext,
+        model=model, tools=[], middleware=[], state_schema=AgentGraphState, context_schema=RunContext,
     )
     result = await graph.ainvoke(
-        cast(Any, {"messages": [HumanMessage(content="本地提议协议测试")]}),
-        {"recursion_limit": 100},
-        context=context,
+        cast(Any, {"messages": [HumanMessage(content="本地自然结束测试")]}), context=context,
     )
-    assert result["completion_proposal"]["reason"] == "goal_answered"
-    assert result["finish_gate_attempts"] == 5
-    assert len(model.seen_message_counts) == 6
+    assert result["messages"][-1].text.startswith("未发现漏洞")
+    assert not result.get("completion_proposal") and not result.get("finish_gate_feedback")
+    assert len(model.seen_message_counts) == 1

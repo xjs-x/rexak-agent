@@ -22,7 +22,6 @@ from agent_workbench.config.settings import Settings, get_settings
 from agent_workbench.contracts.tool import ExecutorCapabilities
 from agent_workbench.tools.browser import BROWSER_TOOLS
 from agent_workbench.tools.commands import COMMAND_TOOLS
-from agent_workbench.tools.completion import COMPLETION_TOOLS
 from agent_workbench.tools.evidence import EVIDENCE_TOOLS
 from agent_workbench.tools.execution_resources import (
     ENVIRONMENT_TOOLS,
@@ -57,7 +56,8 @@ class ToolSelection:
     knowledge: bool = True
     #: 用户显式发布的外部扩展，与宿主 knowledge/methods 独立。
     skills: bool = False
-    completion: bool = True
+    #: 旧配置兼容字段；即使为 True 也不再注册退役结束工具。
+    completion: bool = False
     verification: bool = False
     #: 命令/脚本/监视（run_command / run_script / start_monitor）
     command: bool = True
@@ -79,7 +79,7 @@ class ToolSelection:
             "task": self.task,
             "knowledge": self.knowledge,
             **({"skills": True} if self.skills else {}),
-            "completion": self.completion,
+            "completion": False,
             "verification": self.verification,
             "command": self.command,
             "terminals": self.terminals,
@@ -216,8 +216,6 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
         tools.extend(
             item for item in SKILL_TOOLS if chosen.command or item.name != "run_skill_script"
         )
-    if chosen.completion:
-        tools.extend(COMPLETION_TOOLS)
     if chosen.verification:
         tools.extend(VERIFICATION_TOOLS)
     names = [getattr(item, "name", str(item)) for item in tools]

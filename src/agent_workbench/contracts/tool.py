@@ -236,3 +236,22 @@ class CancelReceipt(_Base):
     state: JobState
     process_confirmed_exited: bool = False
     previous_cancel_request_id: UUID | None = None
+
+
+def execution_job_state(snapshot: JobSnapshot) -> str:
+    """旧执行器把 HTTP 接收失败记作 failed；此时目标副作用仍未知。"""
+    state = str(snapshot.state)
+    error = getattr(snapshot, "error", None)
+    if (
+        state == "failed"
+        and error
+        and error.code
+        in {
+            "tls_certificate_error",
+            "http_timeout",
+            "http_connection_error",
+            "http_transport_error",
+        }
+    ):
+        return "unknown"
+    return state

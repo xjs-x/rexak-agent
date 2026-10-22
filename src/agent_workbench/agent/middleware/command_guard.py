@@ -93,7 +93,6 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         merged: dict[str, Any] = {"dispatch_control_version": pinned}
         if update:
             merged.update(update)
-            merged["completion_proposal"] = None
         effective = {**dict(_state or {}), **merged}
         toolbox.execution_delegation_id = effective.get("execution_delegation_id")
         toolbox.execution_delegation_revision = effective.get("execution_delegation_revision")

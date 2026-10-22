@@ -123,7 +123,8 @@ async def test_failed_http_uses_executor_error_without_downloading_response(data
     result = await run_http_request(
         HttpRequestArgs(url="https://127.0.0.1:9443/"), context.toolbox, "failed-tls"
     )
-    assert result.status is OperationStatus.FAILED
+    assert result.status is OperationStatus.UNKNOWN
+    assert result.execution_certainty == "uncertain"
     assert result.error and result.error.code == "tls_certificate_error"
     assert "self-signed certificate" in result.summary
     assert result.job_id and result.operation_id.int != 0 and result.artifact_refs == []
@@ -131,7 +132,7 @@ async def test_failed_http_uses_executor_error_without_downloading_response(data
     assert executor.submitted["payload"]["verify_tls"] is True
     async with database.session() as db:
         operation = await db.get(ToolOperationRow, result.operation_id)
-        assert operation.status == "failed", "原来的工件下载异常会让控制端操作一直留在 running"
+        assert operation.status == "unknown", "保留目标执行未知，不能因工件缺失卡在 running 或编造未执行"
         previous_arguments = HttpRequestArgs(url="https://127.0.0.1:9443/").model_dump(
             exclude={"note", "verify_tls"}
         )

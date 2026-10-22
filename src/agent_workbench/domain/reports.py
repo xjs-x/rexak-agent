@@ -247,7 +247,26 @@ class ReportService:
                 if usable and artifact is not None:
                     protected[artifact.id] = (artifact.id, artifact.relative_key, artifact.sha256)
             observation_sources[str(observation.id)] = sources
+        final_responses = []
+        for run in runs:
+            raw = (run.config_snapshot or {}).get("completion_result_artifact_id")
+            if not raw:
+                continue
+            try:
+                artifact = await self._s.get(ArtifactRow, UUID(raw))
+            except ValueError:
+                artifact = None
+            if (
+                artifact is not None
+                and artifact.session_id == session_id
+                and artifact.availability == "available"
+            ):
+                protected[artifact.id] = (artifact.id, artifact.relative_key, artifact.sha256)
+                final_responses.append(
+                    {"run_id": str(run.id), "artifact_id": str(artifact.id), "status": run.status}
+                )
         snapshot = {
+            "final_responses": final_responses,
             "session_id": str(session_id),
             "version": version,
             "generated_at": datetime.now(UTC).isoformat(),
@@ -675,6 +694,10 @@ async def _create_report_snapshot(
                 if not valid:
                     raise ApiError(ErrorCode.CONFLICT, f"证据 {artifact_id} 文件缺失或哈希不符")
         with _report_stage(spans, "report.render", session_id, captured.run_id):
+            by_id = {str(item[0]): item[1] for item in captured.artifacts}
+            for response in captured.snapshot.get("final_responses", []):
+                key = by_id[response["artifact_id"]]
+                response["text"] = redact_text(store.read_bytes(key).decode("utf-8"))
             md = store.write_bytes(
                 render_markdown(captured.snapshot).encode("utf-8"),
                 media_type="text/markdown",
@@ -776,6 +799,21 @@ def render_markdown(snapshot: dict[str, Any]) -> str:
         "",
     ]
     lines.extend(f"- {_safe_markdown(item)}" for item in snapshot["objectives"])
+    for response in snapshot.get("final_responses", []):
+        lines.extend(
+            [
+                "",
+                "## 模型最终回复",
+                "",
+                "模型原文不等同于独立验证；运行状态：" + response["status"],
+                "",
+                "工件：" + response["artifact_id"],
+                "",
+                _safe_markdown(response.get("text", "正文见原始工件")),
+                "",
+            ]
+        )
+
     stage = snapshot.get("stage")
     if stage:
         lines.extend(["", "## 阶段进度与当前判断", ""])

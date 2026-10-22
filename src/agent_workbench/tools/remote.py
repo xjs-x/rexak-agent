@@ -26,7 +26,13 @@ from agent_workbench.contracts.enums import (
     OperationStatus,
     ToolEffectClass,
 )
-from agent_workbench.contracts.tool import ArtifactRef, JobSnapshot, ToolError, ToolResult
+from agent_workbench.contracts.tool import (
+    ArtifactRef,
+    JobSnapshot,
+    ToolError,
+    ToolResult,
+    execution_job_state,
+)
 from agent_workbench.execution.client import (
     ExecutorConnectionError,
     ExecutorProtocolError,
@@ -123,8 +129,8 @@ async def record_result(
                 job_id=job_id,
                 operation_id=operation_id,
                 executor_id=toolbox.settings.executor_id,
-                state=str(snapshot.state) if snapshot else status,
-                sync_status="in_sync",
+                state=execution_job_state(snapshot) if snapshot else status,
+                sync_status="uncertain" if status == "unknown" else "in_sync",
                 executor_started_at=snapshot.started_at if snapshot else None,
                 executor_finished_at=snapshot.finished_at if snapshot else None,
             )

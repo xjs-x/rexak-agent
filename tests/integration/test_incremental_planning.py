@@ -24,7 +24,6 @@ from agent_workbench.models.provider import ModelBinding
 from agent_workbench.persistence.bootstrap import open_checkpointer_connection
 from agent_workbench.persistence.repositories import ArtifactRepository
 from agent_workbench.persistence.tables import ArtifactRow, ToolOperationRow
-from agent_workbench.tools.completion import propose_completion
 from agent_workbench.tools.operation import OperationRegistry
 from agent_workbench.tools.plan_revisions import project_committed_plan
 from agent_workbench.tools.task import update_plan
@@ -295,17 +294,10 @@ async def test_checkpoint_restart_after_each_tool_keeps_one_external_operation(
             ),
             lambda _: tool_call("fixture_once", {}, "stable-external-call"),
             done,
-            lambda _: tool_call(
-                "propose_completion",
-                {
-                    "reason": "goal_answered",
-                    "goal_answer": "结果已核对",
-                },
-                "end",
-            ),
+            lambda _: AIMessage(content="结果已核对"),
         ]
     )
-    tools = [fixture_once, update_plan, propose_completion]
+    tools = [fixture_once, update_plan]
     config = {"configurable": {"thread_id": ctx.thread_id}, "recursion_limit": 100}
     for index in range(4):
         # 每个工具边界都关闭连接并重新构建官方图，禁止用另一条工具循环补跑。

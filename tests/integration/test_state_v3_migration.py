@@ -35,7 +35,8 @@ def test_needs_migration_only_for_older_supported_versions() -> None:
     assert needs_migration({"state_schema_version": 4})
     assert needs_migration({"state_schema_version": 5})
     assert needs_migration({"state_schema_version": 6})
-    assert not needs_migration({"state_schema_version": 7})
+    assert needs_migration({"state_schema_version": 7})
+    assert not needs_migration({"state_schema_version": 8})
 
 
 def test_adapt_v2_only_accepts_explicit_v2() -> None:
@@ -299,7 +300,7 @@ async def test_v6_checkpoint_retains_legacy_channels_and_pending_operation() -> 
     )
     before = await graph.aget_state(cast(Any, config))
     after = await ensure_current_checkpoint(graph, config, before, database=None, session_id=None)
-    assert after.values["state_schema_version"] == 7 and after.next == before.next == ("tools",)
+    assert after.values["state_schema_version"] == 8 and after.next == before.next == ("tools",)
     for key, value in legacy.items():
         assert after.values[key] == value
     assert submitted == []
@@ -346,3 +347,28 @@ async def test_old_protocol_node_restores_as_inert_bridge():
     result = await new.ainvoke(None, cast(Any, config))
     assert result["messages"][-1].content == "完成"
     assert "progress_feedback" not in result and "report_retry_key" not in result
+
+
+async def test_v7_finish_node_resumes_without_review_or_history_rewrite():
+    from agent_workbench.agent.middleware.finish_gate import FinishGateMiddleware
+
+    saver = InMemorySaver()
+    model = ScriptedChatModel(responses=[final_text("条件不足，自然结束")])
+    config = {"configurable": {"thread_id": str(uuid4())}}
+    proposal = {"goal_answer": "旧提议", "evidence_refs": ["历史无效引用"]}
+    old = create_agent(model=model, tools=[], state_schema=AgentGraphState,
+        checkpointer=saver, middleware=[FinishGateMiddleware()],
+        interrupt_before=["FinishGateMiddleware.before_model"])
+    await old.ainvoke(cast(Any, {"state_schema_version": 7,
+        "completion_proposal": proposal,
+        "messages": [HumanMessage(content="保留历史", id="original")]}), cast(Any, config))
+    graph = create_agent(model=model, tools=[], state_schema=AgentGraphState,
+        checkpointer=saver, middleware=[FinishGateMiddleware()])
+    before = await graph.aget_state(cast(Any, config))
+    after = await ensure_current_checkpoint(graph, config, before, database=None, session_id=None)
+    assert after.next == before.next == ("FinishGateMiddleware.before_model",)
+    assert after.values["completion_proposal"] == proposal
+    result = await graph.ainvoke(None, cast(Any, config))
+    assert result["messages"][-1].text == "条件不足，自然结束"
+    assert len(model.seen_message_counts) == 1
+    assert "finish_gate_feedback" not in result
