@@ -93,6 +93,7 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         merged: dict[str, Any] = {"dispatch_control_version": pinned}
         if update:
             merged.update(update)
+            merged["completion_proposal"] = None
         effective = {**dict(_state or {}), **merged}
         toolbox.execution_delegation_id = effective.get("execution_delegation_id")
         toolbox.execution_delegation_revision = effective.get("execution_delegation_revision")
@@ -102,11 +103,13 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
     def _event_update(command: Any) -> dict[str, Any]:
         payload = command.payload or {}
         return {
-            "messages": [HumanMessage(
-                content=command.content,
-                id=f"exec-delivery-{payload['batch_id']}",
-                additional_kwargs={"source": "execution_events", "untrusted_data": True},
-            )],
+            "messages": [
+                HumanMessage(
+                    content=command.content,
+                    id=f"exec-delivery-{payload['batch_id']}",
+                    additional_kwargs={"source": "execution_events", "untrusted_data": True},
+                )
+            ],
             "execution_delivery_batch_id": str(payload["batch_id"]),
             "execution_delegation_id": payload.get("delegation_id"),
             "execution_delegation_revision": payload.get("delegation_revision"),
@@ -115,15 +118,17 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
     async def _replay_delivery(self, toolbox: Any, state: dict[str, Any]) -> dict[str, Any] | None:
         # 指令消费事务可能先于图写盘成功。仅重放有稳定 ID 的通知，不重放工具。
         async with toolbox.db.session() as db:
-            rows = (await db.execute(
-                select(ExecutionDeliveryBatchRow, CommandRow)
-                .join(CommandRow, CommandRow.id == ExecutionDeliveryBatchRow.message_command_id)
-                .where(
-                    ExecutionDeliveryBatchRow.session_id == toolbox.session_id,
-                    ExecutionDeliveryBatchRow.status == "injected",
-                    CommandRow.status == str(CommandStatus.CONSUMED),
+            rows = (
+                await db.execute(
+                    select(ExecutionDeliveryBatchRow, CommandRow)
+                    .join(CommandRow, CommandRow.id == ExecutionDeliveryBatchRow.message_command_id)
+                    .where(
+                        ExecutionDeliveryBatchRow.session_id == toolbox.session_id,
+                        ExecutionDeliveryBatchRow.status == "injected",
+                        CommandRow.status == str(CommandStatus.CONSUMED),
+                    )
                 )
-            )).all()
+            ).all()
             for batch, command in rows:
                 if str(batch.id) != state.get("execution_delivery_batch_id"):
                     return self._event_update(command)
@@ -158,8 +163,6 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                                 )
                             )
                         ],
-                        "no_progress_streak": 0,
-                        "last_progress_signature": "",
                     }
                 # 兼容旧的未应用指令：绝不在图里悄悄改范围。
                 await append_event(
@@ -197,14 +200,17 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 run_id=toolbox.run_id,
                 event_type=EventType.MESSAGE_COMPLETED,
                 payload={
-                    "role": "system" if pending.payload.get("source") in {"execution_duty", "execution_events"} else "user",
+                    "role": "system"
+                    if pending.payload.get("source") in {"execution_duty", "execution_events"}
+                    else "user",
                     "command_id": str(pending.id),
                     "consumed_at_boundary": "before_model",
                 },
             )
             text = pending.content
             is_execution_event = pending.payload.get("source") in {
-                "execution_duty", "execution_events"
+                "execution_duty",
+                "execution_events",
             }
             if is_execution_event:
                 return self._event_update(pending)
@@ -213,12 +219,15 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             if pending.payload.get("constraints"):
                 text = f"{text}\n\n【本次补充的约束】{pending.payload['constraints']}"
             return {
-                "messages": [HumanMessage(content=text, id=f"command-{pending.id}",
-                    additional_kwargs={"skill_refs": pending.payload.get("skill_refs") or []})],
+                "messages": [
+                    HumanMessage(
+                        content=text,
+                        id=f"command-{pending.id}",
+                        additional_kwargs={"skill_refs": pending.payload.get("skill_refs") or []},
+                    )
+                ],
                 "execution_delegation_id": None,
                 "execution_delegation_revision": None,
-                "no_progress_streak": 0,
-                "last_progress_signature": "",
             }
 
 

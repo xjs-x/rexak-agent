@@ -159,7 +159,7 @@ async def test_streak_does_not_pause_at_clean_model_boundary() -> None:
     assert repeated["no_progress_streak"] == PAUSE_STREAK
     changed = next_progress_state("same", PAUSE_STREAK, "new")
     assert changed["no_progress_streak"] == 0
-    assert await ProgressMiddleware().abefore_model(cast(Any, repeated), cast(Any, None)) is None
+    assert await ProgressMiddleware(enabled=True).abefore_model(cast(Any, repeated), cast(Any, None)) is None
 
 
 async def test_progress_middleware_persists_in_langgraph_checkpoint(
@@ -188,7 +188,7 @@ async def test_progress_middleware_persists_in_langgraph_checkpoint(
         graph = create_agent(
             model=model,
             tools=[],
-            middleware=[SegmentMiddleware(4), ProgressMiddleware()],
+            middleware=[SegmentMiddleware(4), ProgressMiddleware(enabled=True)],
             state_schema=AgentGraphState,
             context_schema=RunContext,
             checkpointer=AsyncPostgresSaver(connection),
@@ -282,7 +282,7 @@ async def test_similarity_reminder_is_a_soft_fixed_sentence_with_cooldown(
     await _operation(database, context, digest="d" * 64, tool_call_id="call-4", status="succeeded")
     async with database.session() as db:
         signature = await similar_result_signature(db, context.toolbox.session_id, None)
-    middleware = ProgressMiddleware()
+    middleware = ProgressMiddleware(enabled=True)
     state: dict[str, Any] = {
         "completed_decision_rounds": 10,
         "last_progress_signature": "",

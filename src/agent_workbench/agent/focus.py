@@ -33,7 +33,7 @@ def _step_id(step: Mapping[str, Any]) -> str:
     return str(step.get("step_id") or "")
 
 
-def focus_signature(focus: CurrentFocus | None) -> tuple[Any, ...]:
+def focus_signature(focus: Mapping[str, Any] | None) -> tuple[Any, ...]:
     """焦点的语义签名；用于判断"是否真的变了"，避免无意义地递增 revision。"""
     if not focus:
         return ()
@@ -119,7 +119,7 @@ def resolve_focus(
             return CurrentFocus(**kept), None  # type: ignore[typeddict-item]
         return None, (
             "存在多个进行中步骤，未自动选择焦点。"
-            "请在 update_plan 的 focus_json 里明确当前主线（step_id、intent、reason）。"
+            "可选地用 update_plan 的 focus 简述当前调查方向，也可直接继续调用工具。"
         )
     # 零个进行中步骤：可能是初始探索，也可能是原焦点步骤已完成/被移除。
     # 两种情况都不继续沿用旧焦点，但也不强造步骤。

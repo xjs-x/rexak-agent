@@ -184,6 +184,24 @@ def adapt_v5(
     }
 
 
+def adapt_v6(
+    values: dict[str, Any], *, checkpoint_id: str, next_nodes: tuple[str, ...]
+) -> dict[str, Any]:
+    """保留全部历史协议内容，只切换生产语义；不重写消息或旧完成证据。"""
+    if type(values.get("state_schema_version")) is not int or values["state_schema_version"] != 6:
+        raise StateSchemaIncompatibleError("只支持显式 v6 到 v7 适配")
+    return {
+        "state_schema_version": 7,
+        "state_migration": {
+            "adapter": "v6_to_v7_minimal_loop_v1",
+            "from": 6,
+            "to": 7,
+            "source_checkpoint_id": checkpoint_id,
+            "expected_next": list(next_nodes),
+        },
+    }
+
+
 async def _apply_update(
     graph: Any, snapshot: Any, update: dict[str, Any], read_config: dict[str, Any]
 ) -> Any:
@@ -362,6 +380,29 @@ async def ensure_current_checkpoint(
         )
         snapshot = migrated
         values = dict(migrated.values or {})
+    if values.get("state_schema_version") == 6:
+        if any(
+            getattr(task, "result", None) is not None
+            for task in (getattr(snapshot, "tasks", None) or ())
+        ):
+            raise StateSchemaIncompatibleError(
+                "v6 checkpoint 含未提交并行结果，拒绝迁移；需先核对操作台账"
+            )
+        migrated = await _apply_update(
+            graph,
+            snapshot,
+            adapt_v6(
+                values,
+                checkpoint_id=str(snapshot.config["configurable"]["checkpoint_id"]),
+                next_nodes=tuple(snapshot.next),
+            ),
+            config,
+        )
+        _assert_migration_preserved(
+            {"next": snapshot.next, "messages": values.get("messages", [])}, migrated
+        )
+        snapshot = migrated
+        values = dict(migrated.values or {})
     assert_compatible_state(values)
     if values.get("state_schema_version") != CURRENT_STATE_SCHEMA_VERSION:
         raise StateSchemaIncompatibleError("迁移后状态版本仍不是当前版本，拒绝恢复")
@@ -373,6 +414,7 @@ __all__ = [
     "adapt_v2",
     "adapt_v3",
     "adapt_v5",
+    "adapt_v6",
     "ensure_current_checkpoint",
     "needs_migration",
 ]

@@ -95,10 +95,9 @@ async def test_report_versions_export_only_verified_evidence(
                 "stop_rationale": "目标已回答",
             },
         )
-    # V3：已保存的实质弱点必须先做后续用途判断，不能自动结束。
-    assert decision.allowed is False
-    assert decision.unreviewed_count >= 2
-    assert "review_page" in decision.blocking_objects
+    # 完成不要求消费全部候选；已确认记录的证据检查继续保留。
+    assert decision.allowed is True
+    assert decision.unreviewed_count == 0
     async with database.transaction() as db:
         service = FindingService(db)
         for target in (candidate, verified):
@@ -129,8 +128,8 @@ async def test_report_versions_export_only_verified_evidence(
                 "stop_rationale": "没有新方向",
             },
         )
-    assert open_exploration.allowed is False
-    assert "尚未登记任何覆盖" in open_exploration.reasons[0]
+    assert open_exploration.allowed is True
+    assert open_exploration.reasons == []
     async with database.session() as db:
         missing_login = await FinishGate(db, store).evaluate(
             session_id=session_id,
@@ -141,7 +140,7 @@ async def test_report_versions_export_only_verified_evidence(
                 "missing_conditions": ["测试账号"],
             },
         )
-    assert missing_login.decision == "continue", "仅结束申请里的缺失条件不能代替领域条件依据"
+    assert missing_login.allowed, "缺失条件在最终结果说明，不再强制建立领域协议"
     second = await create_report_snapshot(database, store, session_id)
     assert second.version == 2
     async with database.session() as db:

@@ -157,7 +157,7 @@ async def _run_runner(
 
         log.info("runner_runtime_versions", prompt_version=PROMPT_VERSION,
                  code_version=loaded_code_version(),
-                 scope="loaded_planning_entrypoints_contracts_and_prompt_not_entire_process")
+                 scope="loaded_minimal_loop_entrypoints_and_prompt_not_entire_process")
         if once:
             outcome = await runner.step(only_run_id=target)
             if outcome is None:

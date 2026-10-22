@@ -623,3 +623,67 @@ def _focus_step(state: dict[str, Any], focus: dict[str, Any]) -> dict[str, Any] 
         if step.get("step_id") == step_id:
             return step
     return None
+
+
+async def assemble_basic_context(
+    db: AsyncSession, session_id: UUID, state: dict[str, Any]
+) -> dict[str, Any]:
+    """最小循环的已有记录目录；可选记录不产生额外登记或结束义务。"""
+    focus = state.get("current_focus") or {}
+    lead_query = select(LeadRow).where(
+        LeadRow.session_id == session_id, LeadRow.merged_into_id.is_(None)
+    )
+    if focus.get("lead_id"):
+        lead_query = lead_query.order_by((LeadRow.id == UUID(focus["lead_id"])).desc())
+    leads = list(
+        (
+            await db.execute(lead_query.order_by(LeadRow.updated_at.desc(), LeadRow.id).limit(4))
+        ).scalars()
+    )
+    findings = list(
+        (
+            await db.execute(
+                select(FindingRow)
+                .where(FindingRow.session_id == session_id)
+                .order_by(FindingRow.updated_at.desc(), FindingRow.id)
+                .limit(4)
+            )
+        ).scalars()
+    )
+    jobs = list(
+        (
+            await db.execute(
+                select(ToolJobRow)
+                .join(ToolOperationRow, ToolOperationRow.job_id == ToolJobRow.job_id)
+                .where(
+                    ToolOperationRow.session_id == session_id,
+                    ToolJobRow.state.in_(["received", "starting", "running", "unknown"]),
+                )
+                .order_by(ToolJobRow.created_at.desc())
+                .limit(20)
+            )
+        ).scalars()
+    )
+    return {
+        "leads": [
+            {
+                "lead_id": str(row.id),
+                "hypothesis": row.hypothesis,
+                "status": row.status,
+                "next_action": row.next_action,
+                "evidence_refs": row.evidence_refs,
+            }
+            for row in leads
+        ],
+        "findings": [
+            {
+                "finding_id": str(row.id),
+                "title": row.title,
+                "status": row.status,
+                "evidence_refs": row.evidence_refs,
+            }
+            for row in findings
+        ],
+        "pending_job_ids": list(dict.fromkeys(str(row.job_id) for row in jobs)),
+        "note": "可选记录目录；完整历史用 search_history 查询。候选未经独立验证；无需逐次登记或关闭这些记录。",
+    }

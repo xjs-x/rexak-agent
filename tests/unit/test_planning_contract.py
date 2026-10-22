@@ -70,7 +70,7 @@ def test_check_method_requires_exact_parameters(extra):
 
 def test_dependency_and_program_check_fields_are_not_silently_accepted():
     for extra in ({"depends_on": ["A"]}, {"completion_protocol": 1}, {"legacy_completion": False}):
-        with pytest.raises(ValueError, match="未实现"):
+        with pytest.raises(ValueError, match="Extra inputs"):
             normalize_steps([{"step_id": "A", "description": "工作", **extra}], [], None)
 
 
@@ -89,8 +89,8 @@ def test_http_work_scope_does_not_store_credentials_or_payload(url):
 
 def test_loaded_version_changes_with_loaded_planning_checks(monkeypatch):
     from agent_workbench.agent.factory import loaded_code_version
-    from agent_workbench.domain import planning_http
+    from agent_workbench.tools import planning
 
     original = loaded_code_version()
-    monkeypatch.setattr(planning_http, "check_http_work", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(planning, "normalize_steps", lambda *_args, **_kwargs: [])
     assert loaded_code_version() != original

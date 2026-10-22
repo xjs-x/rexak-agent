@@ -216,7 +216,7 @@ async def test_plan_read_maps_legacy_lead_id_to_lead_ids(database, unique_name) 
         response = client.get(f"/api/sessions/{session_id}/plan")
     assert response.status_code == 200
     step = response.json()["steps"][0]
-    assert step["lead_ids"] == [lead_id]
+    assert "lead_ids" not in step
     assert step["lead_id"] == lead_id
-    assert step["kind"] == "mixed", "没有依据的旧步骤按兼容默认读取"
+    assert "kind" not in step, "当前计划读取不再制造覆盖/跟进协议字段"
     assert UUID(step["lead_id"]) == UUID(lead_id)

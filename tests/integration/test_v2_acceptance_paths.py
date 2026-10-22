@@ -250,7 +250,7 @@ async def test_first_assessment_generates_report_without_compaction_and_reuses_s
             "revision": 1,
         },
     }
-    middleware = StageReportMiddleware()
+    middleware = StageReportMiddleware(enabled=True)
     update = await middleware.abefore_model(
         cast(Any, state), cast(Any, SimpleNamespace(context=context))
     )

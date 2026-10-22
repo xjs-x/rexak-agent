@@ -1,21 +1,11 @@
-"""阶段结束判定（模型提出阶段结束时）。
-
-流程（§6.5）：
-1. 模型调用 `propose_completion`，写出结构化 `completion_proposal`；
-2. 本中间件用**确定性检查**评估（见 `runtime/stopping.FinishGate`）；
-3. 不通过 -> 把**具体反馈**写回状态并清除提议，让模型继续；
-4. 已提交提议反复被拒时继续反馈具体未决项，不按次数要求用户介入。
-   普通文字未形成提议时保留原有有限格式提醒，不冒充通过结束判定。
-"""
+"""将显式提议或模型正常最终回复交给同一个执行一致性检查。"""
 
 from __future__ import annotations
 
-import re
-from collections.abc import Mapping, Sequence
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, hook_config
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.state import AgentGraphState
@@ -24,50 +14,73 @@ from agent_workbench.observability.events import append_event
 from agent_workbench.observability.logging import get_logger
 from agent_workbench.runtime.stopping import FinishGate
 
-#: 允许的修正反馈次数上限。超过后停止空转并把问题暴露给用户。
-MAX_FEEDBACK_ROUNDS = 3
 log = get_logger("agent_workbench.finish_gate")
 
 
 class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
     @hook_config(can_jump_to=["end"])
     async def abefore_model(self, state, runtime):  # type: ignore[no-untyped-def]
-        if not state.get("completion_proposal") or getattr(runtime, "context", None) is None:
+        proposal = state.get("completion_proposal")
+        if not proposal or getattr(runtime, "context", None) is None:
             return None
-        update = await self.aafter_model(state, runtime)
+        update = await self._review(state, runtime, dict(proposal))
         if update is None:
-            return {"jump_to": "end"}
+            result: dict[str, Any] = {"jump_to": "end"}
+            if proposal.get("source") != "final_message":
+                text = proposal["goal_answer"]
+                if proposal.get("limitations"):
+                    text += "\n\n局限与未验证项：" + str(proposal.get("limitations") or "")
+                result["messages"] = [
+                    AIMessage(
+                        content=text,
+                        id=f"completion-{runtime.context.toolbox.run_id}-{proposal.get('proposed_at_turn', 0)}",
+                        additional_kwargs={"workbench_completion_result": True},
+                    )
+                ]
+            return result
+        # before_model 拒绝后按官方边继续进入模型；跳到 model 会在仅有
+        # 此 before_model 节点时跳回自身，跳过正常请求或触发分支错误。
         update.pop("jump_to", None)
         return update
 
     @hook_config(can_jump_to=["model"])
     async def aafter_model(self, state, runtime):  # type: ignore[no-untyped-def]
-        context: RunContext | None = getattr(runtime, "context", None)
-        if context is None:
+        if getattr(runtime, "context", None) is None:
             return None
-        toolbox = context.toolbox
-
         proposal = state.get("completion_proposal")
-        attempts = int(state.get("finish_gate_attempts") or 0)
+        if proposal:
+            return await self._review(state, runtime, dict(proposal))
         messages = state.get("messages") or []
+        last = messages[-1] if messages else None
+        if not isinstance(last, AIMessage) or last.tool_calls or last.invalid_tool_calls:
+            return None
+        text = last.text.strip()
+        if not text:
+            return None
+        # 官方模型无工具的最终消息就是结束信号，无需再调模型填表。
+        proposal = {
+            "reason": "goal_answered",
+            "goal_answer": text,
+            "limitations": "",
+            "evidence_refs": [],
+            "proposed_at_turn": len(messages),
+            "source": "final_message",
+        }
+        update = await self._review(state, runtime, dict(proposal))
+        return update if update is not None else {"completion_proposal": proposal}
 
-        if proposal is None:
-            return await self._handle_plain_text_finish(state, attempts, messages)
-
+    async def _review(
+        self, state: Any, runtime: Any, proposal: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        toolbox = runtime.context.toolbox
         span = toolbox.spans.start(
-            "finish_gate.middleware",
-            session_id=toolbox.session_id,
-            run_id=toolbox.run_id,
+            "finish_gate.middleware", session_id=toolbox.session_id, run_id=toolbox.run_id
         )
         decision = None
         try:
             async with toolbox.db.session() as db:
                 decision = await FinishGate(db).evaluate(
-                    session_id=toolbox.session_id,
-                    proposal=proposal,
-                    plan=list(state.get("plan") or []),
-                    review_cursor=state.get("weakness_review_cursor"),
-                    run_id=toolbox.run_id,
+                    session_id=toolbox.session_id, proposal=proposal, run_id=toolbox.run_id
                 )
             span.finish()
             toolbox.spans.record(span, **decision.as_metadata())
@@ -92,126 +105,25 @@ class FinishGateMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     run_id=str(toolbox.run_id),
                     error_type=type(exc).__name__,
                 )
-
         if decision is None:
             raise RuntimeError("结束检查没有返回决策")
         if decision.allowed or decision.decision in {"wait_user", "wait_tool"}:
-            # 通过：保留提议，由 Runner 在一致边界把 run 置为 completed
             return None
-
-        feedback = _render_feedback(decision)
+        messages = state.get("messages") or []
         return {
             "completion_proposal": None,
             "finish_gate_feedback": decision.reasons,
-            "finish_gate_attempts": attempts + 1,
-            # 复查分页游标放 checkpoint；对象判断本身写业务表，不另建可写任务清单。
-            "weakness_review_cursor": (
-                decision.review_next_cursor
-                if decision.unreviewed_count
-                else state.get("weakness_review_cursor")
-            ),
-            "messages": [SystemMessage(content=feedback)],
+            "finish_gate_attempts": int(state.get("finish_gate_attempts") or 0) + 1,
+            "messages": [
+                SystemMessage(
+                    content="结束一致性检查："
+                    + "; ".join(decision.reasons)
+                    + "。请处理指令或修正引用；不要求补齐计划、假设或覆盖记录。"
+                )
+            ],
             **(
                 {"jump_to": "model"}
                 if messages and not getattr(messages[-1], "tool_calls", None)
                 else {}
             ),
         }
-
-    async def _handle_plain_text_finish(
-        self, _state: Mapping[str, Any], attempts: int, messages: Sequence[Any]
-    ) -> dict[str, Any] | None:
-        """模型用普通文本收尾但没有结构化提议。
-
-        只在**看起来像要收尾**时给出修正反馈，避免对正常中间轮次叽叽歪歪。
-        """
-        if not messages:
-            return None
-        last = messages[-1]
-        if getattr(last, "tool_calls", None):
-            return None  # 还在调工具，不是收尾
-
-        text = str(getattr(last, "content", "") or "")
-        if not _looks_like_finish(text):
-            return None
-
-        if attempts >= MAX_FEEDBACK_ROUNDS:
-            return {
-                "finish_gate_feedback": [
-                    "多次尝试收尾但都没有形成结构化结束提议。"
-                    "请直接用普通文本把结论、限制与未决问题讲清楚，并说明为什么无法形成提议。"
-                ],
-                "finish_gate_attempts": attempts + 1,
-            }
-
-        return {
-            "finish_gate_attempts": attempts + 1,
-            "messages": [
-                SystemMessage(
-                    content=(
-                        "【系统提示】看起来你在收尾，但没有提交结构化结束提议。"
-                        "如果要结束本阶段，请调用 `propose_completion` 并给出："
-                        "结束理由、对目标的回答、已确认发现、覆盖摘要、剩余线索、停止依据、证据引用。"
-                        "如果还不能结束，请继续推进下一条线索。"
-                    )
-                )
-            ],
-        }
-
-
-_FINISH_MARKERS = (
-    "测试完成",
-    "已完成测试",
-    "测试已结束",
-    "没有发现问题",
-    "未发现漏洞",
-    "未发现安全问题",
-    "报告如下",
-    "testing is complete",
-)
-_FINISH_HEADING = re.compile(
-    r"(?im)^\s*(?:#{1,6}\s*)?(?:总结|结论|综上|conclusion|summary)\s*[:：]"
-)
-
-
-def _looks_like_finish(text: str) -> bool:
-    stripped = text.strip()
-    if len(stripped) < 40:
-        return False
-    lowered = stripped.lower()
-    # 普通能力说明中的“结论/总结”不等于实际完成测试；只识别明确的收尾声明。
-    return bool(_FINISH_HEADING.search(stripped)) or any(
-        marker in stripped or marker in lowered for marker in _FINISH_MARKERS
-    )
-
-
-def _render_feedback(decision: Any) -> str:
-    lines = [
-        "【系统提示】结束提议未通过检查，原因如下：",
-    ]
-    lines.extend(f"- {reason}" for reason in decision.reasons)
-    counts = (
-        f"（未复查/过期 {decision.unreviewed_count} 项，可推进 {decision.ready_count} 项，"
-        f"缺外部条件 {decision.blocked_count} 项）"
-        if any((decision.unreviewed_count, decision.ready_count, decision.blocked_count))
-        else ""
-    )
-    if counts:
-        lines.append(f"复查集合概览{counts}")
-    if decision.blocking_objects:
-        lines.append("待处理对象：")
-        for key, values in decision.blocking_objects.items():
-            lines.append(f"- {key}: {values[:10]}")
-    if decision.coverage_gap:
-        lines.append(
-            "覆盖缺口："
-            f"未检查 {len(decision.coverage_gap.get('not_checked_entries') or [])} 项，"
-            f"受阻 {len(decision.coverage_gap.get('blocked_entries') or [])} 项。"
-        )
-    lines.append(
-        "请针对上述具体问题补齐。**不要**把线索改成 deferred 来绕过检查，"
-        "也不要把 `outside_goal` / `not_required` 当作放行理由——这些标签已经不再豁免；"
-        "不要重复提交同一份提议。如果确实无法完成（例如缺少账号或目标不可达），"
-        "请明确说明缺少什么条件，系统会进入等待用户状态并保留全部未决项。"
-    )
-    return "\n".join(lines)

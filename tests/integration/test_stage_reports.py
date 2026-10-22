@@ -87,7 +87,7 @@ async def test_stage_report_no_confirmed_is_deduplicated_and_failure_retries_ori
 
 async def test_stage_report_only_triggers_for_domain_turning_point(database, unique_name):
     context = await context_for(database, unique_name)
-    middleware = StageReportMiddleware()
+    middleware = StageReportMiddleware(enabled=True)
     runtime = cast(Any, type("Runtime", (), {"context": context})())
     state: dict[str, Any] = {"plan": []}
     state.update(await middleware.abefore_model(cast(Any, state), runtime) or {})
@@ -111,72 +111,22 @@ async def test_stage_report_only_triggers_for_domain_turning_point(database, uni
     )
 
 
-async def test_completion_uses_complete_review_inventory_instead_of_score(database, unique_name):
-    """结束复查集合由程序枚举：未申报的线索也拦得住，处置标签不再豁免。"""
+async def test_optional_leads_do_not_block_finish_but_forged_evidence_does(database, unique_name):
     context = await context_for(database, unique_name)
     async with database.transaction() as db:
-        lead = await LeadService(db).upsert(
-            session_id=context.toolbox.session_id,
-            hypothesis="相关未决事项",
-            impact=5,
-            evidence_strength=5,
-            feasibility=5,
-            information_gain=5,
-        )
-    proposal = {
-        "reason": "goal_answered",
-        "goal_answer": "回答当前问题",
-        "stop_rationale": "实际证据足够",
-    }
+        lead = await LeadService(db).upsert(session_id=context.toolbox.session_id,
+            hypothesis="保留未验证的假设", next_action="未来继续")
+    proposal = {"reason": "goal_answered", "goal_answer": "已取得阶段结果，假设未验证"}
     async with database.session() as db:
         gate = FinishGate(db)
-        # 即使提议里**没有**申报任何相关线索，未完成的线索仍会被找到。
-        decision = await gate.evaluate(session_id=context.toolbox.session_id, proposal=proposal)
-        assert not decision.allowed
-        page = decision.blocking_objects.get("review_page") or []
-        assert any(str(lead.id) in item for item in page), page
-        # `outside_goal` + 理由不再是放行凭据。
-        explained = {
-            **proposal,
-            "relevant_lead_ids": [str(lead.id)],
-            "coverage_summary": {
-                "unresolved_items": [
-                    {
-                        "lead_id": str(lead.id),
-                        "disposition": "outside_goal",
-                        "reason": "该问题超出用户本阶段目标，保留来源供后续继续",
-                    }
-                ]
-            },
-        }
-        assert not (
-            await gate.evaluate(session_id=context.toolbox.session_id, proposal=explained)
-        ).allowed
-        assert not (
-            await gate.evaluate(
-                session_id=context.toolbox.session_id,
-                proposal={**proposal, "evidence_refs": ["不存在的证据"]},
-            )
-        ).allowed
-    # 写明缺失条件后：剩余有效方向确实需要外部条件 -> 等待用户，且保留未决项。
-    async with database.transaction() as db:
-        await LeadService(db).update_conditions(
-            lead.id,
-            [{"description": "需要一个已登录账号", "satisfied": False, "external": True}],
-        )
-        await LeadService(db).assess_actionability(lead.id, state="needs_condition", note="需用户提供测试账号")
-    async with database.session() as db:
-        waiting = await FinishGate(db).evaluate(
-            session_id=context.toolbox.session_id,
-            proposal={**proposal, "missing_conditions": ["测试账号"]},
-        )
-    assert waiting.decision == "wait_user"
-    assert waiting.blocking_objects.get("waiting_items")
-    # 没有外部条件说明时不能假装收敛：仍然是可推进/缺条件的未决项。
-    async with database.session() as db:
-        assert not (
-            await FinishGate(db).evaluate(session_id=context.toolbox.session_id, proposal=proposal)
-        ).allowed
+        assert (await gate.evaluate(session_id=context.toolbox.session_id, proposal=proposal)).allowed
+        assert not (await gate.evaluate(session_id=context.toolbox.session_id,
+            proposal={**proposal, "evidence_refs": ["不存在的证据"]})).allowed
+        from agent_workbench.persistence.tables import LeadRow
+        row = await db.get(LeadRow, lead.id)
+        assert row.status == "new", "结束不能顺便关闭或确认假设"
+
+
 
 
 async def test_repeated_completion_rejections_continue_without_user_or_extra_evaluator(
@@ -190,7 +140,7 @@ async def test_repeated_completion_rejections_continue_without_user_or_extra_eva
             {
                 "reason": "exploration_converged",
                 "goal_answer": "未登记覆盖",
-                "stop_rationale": "需要修正",
+                "evidence_refs": ["不存在的证据"],
             },
             f"proposal-{index}",
         )
@@ -202,7 +152,6 @@ async def test_repeated_completion_rejections_continue_without_user_or_extra_eva
             {
                 "reason": "goal_answered",
                 "goal_answer": "明确回答边界",
-                "stop_rationale": "已解释限制",
             },
             "final-proposal",
         ),

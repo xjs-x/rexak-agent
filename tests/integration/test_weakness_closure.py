@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from typing import Annotated, Any, cast
-from uuid import UUID
 
 import pytest
 from langchain.agents import create_agent
@@ -37,13 +36,12 @@ from agent_workbench.observability.spans import SpanRecorder
 from agent_workbench.persistence.tables import (
     FindingRow,
     LeadRow,
-    LeadWeaknessLinkRow,
     ToolOperationRow,
 )
 from agent_workbench.tools.completion import propose_completion
 from agent_workbench.tools.execution_context import execution_context
 from agent_workbench.tools.operation import OperationRegistry
-from agent_workbench.tools.task import record_lead, record_weakness, update_plan
+from agent_workbench.tools.task import record_lead, update_plan
 from tests.integration.test_request_budget import context_for
 from tests.unit.test_context_budget import profile
 
@@ -92,7 +90,9 @@ def _last_tool_payload(messages: list[BaseMessage]) -> dict[str, Any]:
 
 
 def _system_text(messages: list[BaseMessage]) -> str:
-    return "\n".join(str(message.content) for message in messages if isinstance(message, SystemMessage))
+    return "\n".join(
+        str(message.content) for message in messages if isinstance(message, SystemMessage)
+    )
 
 
 def _call(name: str, args: dict[str, Any], call_id: str) -> AIMessage:
@@ -125,15 +125,24 @@ PROBE_CALLS: list[dict[str, Any]] = []
 
 
 @tool
-async def probe(where: str, runtime: ToolRuntime[RunContext], tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+async def probe(
+    where: str, runtime: ToolRuntime[RunContext], tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """只读探测（记录派发时的执行关联，不产生远端副作用）。"""
     PROBE_CALLS.append(dict(execution_context.get() or {}))
     toolbox = runtime.context.toolbox
     async with toolbox.db.transaction() as db:
-        prepared = await OperationRegistry(db).prepare(run_id=toolbox.run_id, session_id=toolbox.session_id,
-            tool_call_id=tool_call_id, tool_name="probe", arguments={"where": where},
-            effect_class=ToolEffectClass.READ_ONLY, policy_revision=toolbox.policy_revision,
-            scope_revision=toolbox.scope_revision, dispatch_control_version=runtime.state.get("dispatch_control_version"))
+        prepared = await OperationRegistry(db).prepare(
+            run_id=toolbox.run_id,
+            session_id=toolbox.session_id,
+            tool_call_id=tool_call_id,
+            tool_name="probe",
+            arguments={"where": where},
+            effect_class=ToolEffectClass.READ_ONLY,
+            policy_revision=toolbox.policy_revision,
+            scope_revision=toolbox.scope_revision,
+            dispatch_control_version=runtime.state.get("dispatch_control_version"),
+        )
         prepared.row.status = "succeeded"
         prepared.row.result_snapshot = {"fixture_result": "observed"}
     return f"probe:{where}"
@@ -149,213 +158,102 @@ def _middleware() -> list[AgentMiddleware[Any, Any]]:
     ]
 
 
-async def test_official_loop_consumes_weakness_and_links_execution(database, unique_name):
+async def test_optional_plan_and_lead_associate_execution_without_proof_protocol(
+    database, unique_name
+):
     context = await context_for(database, unique_name)
     _prepare_context(context, database)
     PROBE_CALLS.clear()
-    seen: dict[str, str] = {}
-    presented: list[str] = []
+    seen = {}
 
-    def step_weakness(messages: list[BaseMessage]) -> AIMessage:
-        return _call(
-            "record_weakness",
-            {
-                "title": "错误页回显内部路径",
-                "description": "不存在路径返回带绝对路径的堆栈",
-                "weakness_kind": "enabling_condition",
-                "provided_conditions_json": [{"statement": "错误页包含绝对路径信息"}],
-            },
-            "weak-1",
-        )
-
-    def step_lead(messages: list[BaseMessage]) -> AIMessage:
-        payload = _last_tool_payload(messages)["weakness"]
-        seen["weakness_id"] = payload["weakness_id"]
-        seen["condition_key"] = payload["condition_keys"][0]
-        seen["revision"] = str(payload["revision"])
-        # 关键断言：**下一次模型请求**里真的带上了这个弱点。
-        text = _system_text(messages)
-        assert payload["weakness_id"] in text, "新弱点必须进入下一次决策的上下文"
-        assert "错误页回显内部路径" in text
-        presented.append(payload["weakness_id"])
-        # 呈现记录来自**本次请求**的 manifest，而不是数据库里有记录。
-        manifest = context.toolbox.context_manifest or {}
-        assert manifest.get("presented_weakness_ids") == [payload["weakness_id"]]
-        assert manifest["working_context"]["weakness_consumption"]["changed_weaknesses"]
-        return _call(
-            "record_lead",
-            {
-                "hypothesis": "借错误页路径做目录穿越",
-                "next_action": "用 ../../ 探测静态目录",
-                "source_weaknesses_json": [
-                    {
-                        "weakness_id": payload["weakness_id"],
-                        "condition_key": payload["condition_keys"][0],
-                        "source_weakness_revision": payload["revision"],
-                    }
-                ],
-                "actionability_json": {"state": "ready", "note": "下一步明确"},
-            },
-            "lead-1",
-        )
-
-    def step_plan(messages: list[BaseMessage]) -> AIMessage:
-        payload = _last_tool_payload(messages)["lead"]
-        seen["lead_id"] = payload["lead_id"]
+    def add_plan(messages):
+        lead = _last_tool_payload(messages)["lead"]
+        seen["lead"] = lead["lead_id"]
         return _call(
             "update_plan",
             {
-                "steps_json": json.dumps(
-                    [
-                        {
-                            "step_id": "s1",
-                            "description": "沿错误页路径推进",
-                            "status": "in_progress",
-                            "kind": "followup",
-                            "lead_ids": [payload["lead_id"]],
-                        },
-                        {
-                            "step_id": "s2",
-                            "description": "补检未覆盖入口",
-                            "status": "pending",
-                            "kind": "coverage",
-                        },
-                    ],
-                    ensure_ascii=False,
-                ),
-                "rationale": "链条建立",
+                "expected_plan_revision": 0,
+                "steps": [
+                    {
+                        "step_id": "s1",
+                        "description": "可选调查",
+                        "status": "in_progress",
+                        "lead_id": lead["lead_id"],
+                    }
+                ],
             },
-            "plan-1",
+            "plan",
         )
-
-    def step_probe(messages: list[BaseMessage]) -> AIMessage:
-        # 新弱点与依赖其 ID 的线索放在不同批次之后，这里执行真实的下一步动作。
-        return _call("probe", {"where": "/static"}, "probe-1")
-
-    def step_review(messages: list[BaseMessage]) -> AIMessage:
-        return _call(
-            "record_weakness",
-            {
-                "weakness_id": seen["weakness_id"],
-                "expected_revision": int(seen["revision"]),
-                "connection_review_json": {"linked_lead_ids": [seen["lead_id"]]},
-            },
-            "weak-review",
-        )
-
-    def step_finish(messages: list[BaseMessage]) -> AIMessage:
-        return AIMessage(content="链条已建立并推进")
 
     model = SteppedModel(
-        steps=[step_weakness, step_lead, step_plan, step_probe, step_review, step_finish]
+        steps=[
+            lambda _: _call("record_lead", {"hypothesis": "可选轻量假设"}, "lead"),
+            add_plan,
+            lambda _: _call("probe", {"where": "local"}, "probe"),
+            lambda _: AIMessage(content="已取得本地结果；假设尚未验证"),
+        ]
     )
     graph = create_agent(
         model=model,
-        tools=[record_weakness, record_lead, update_plan, probe, propose_completion],
+        tools=[record_lead, update_plan, probe],
         middleware=_middleware(),
         state_schema=AgentGraphState,
         context_schema=RunContext,
-        name="closure_fixture",
     )
     result = await graph.ainvoke(
-        cast(Any, {"messages": [HumanMessage(content="本地闭环验证", id="user-1")]}),
-        {"recursion_limit": 50},
-        context=context,
+        cast(Any, {"messages": [HumanMessage(content="仅本地工具")]}), context=context
     )
-
-    # 1) 业务关系真的建立，且 `result` 关系为空时不会伪造组合。
+    assert result["completion_proposal"]["goal_answer"].startswith("已取得")
+    assert result["plan"][0]["status"] == "in_progress"
+    assert "work_assessment" not in result
+    assert PROBE_CALLS[0]["step_id"] == "s1"
+    assert PROBE_CALLS[0]["lead_ids"] == [seen["lead"]]
     async with database.session() as db:
-        links = (
-            (
-                await db.execute(
-                    select(LeadWeaknessLinkRow).where(
-                        LeadWeaknessLinkRow.session_id == context.toolbox.session_id
-                    )
+        operation = (
+            await db.execute(
+                select(ToolOperationRow).where(
+                    ToolOperationRow.run_id == context.toolbox.run_id,
+                    ToolOperationRow.tool_name == "probe",
                 )
             )
-            .scalars()
-            .all()
-        )
-        weakness = await FindingService(db).get(UUID(seen["weakness_id"]))
-    assert [link.role for link in links] == ["basis"]
-    assert str(links[0].lead_id) == seen["lead_id"]
-    assert weakness is not None and weakness.status == "candidate"
-    assert weakness.connection_review, "用途判断必须写进业务表"
-
-    # 2) checkpoint：计划带多线索与类型，且呈现记录已提交。
-    if "plan" not in result:
-        for message in result["messages"]:
-            print(type(message).__name__, str(message.content)[:300])
-    assert "plan" in result, sorted(result.keys())
-    plan = result["plan"]
-    assert plan[0]["lead_ids"] == [seen["lead_id"]] and plan[0]["kind"] == "followup"
-    assert result["presented_weakness_ids"] == presented
-    assert result["last_weakness_revisions"][seen["weakness_id"]] >= 1
-
-    # 3) 真实操作的 execution_context 指向该步骤与该线索。
-    assert PROBE_CALLS, "至少有一次真实工具派发"
-    assert PROBE_CALLS[0]["lead_ids"] == [seen["lead_id"]]
-    assert PROBE_CALLS[0]["step_kind"] == "followup"
-    assert PROBE_CALLS[0]["step_id"] == "s1"
-    async with database.session() as db:
-        operation = (await db.execute(select(ToolOperationRow).where(
-            ToolOperationRow.run_id == context.toolbox.run_id, ToolOperationRow.tool_name == "probe"))).scalar_one()
-    assert operation.status == "succeeded"
-    persisted = dict(operation.execution_context)
-    snapshots = persisted.pop("source_condition_snapshots")
-    assert persisted == PROBE_CALLS[0], "原派发上下文必须原样保留；条件快照是程序额外采集"
-    assert seen["weakness_id"] in snapshots
-    assert snapshots[seen["weakness_id"]]["status"] == "candidate"
+        ).scalar_one()
+        assert operation.status == "succeeded" and operation.execution_context["step_id"] == "s1"
 
 
-async def test_official_loop_never_consuming_weakness_yields_specific_review(database, unique_name):
-    """模型只存不消费时，自主结束必须收到具体复查反馈，而不是静默结束。"""
+async def test_candidate_remains_candidate_when_model_finishes_without_verification(
+    database, unique_name
+):
+    from agent_workbench.tools.task import propose_finding
+
     context = await context_for(database, unique_name)
     _prepare_context(context, database)
-    seen: dict[str, str] = {}
-
-    def step_weakness(messages: list[BaseMessage]) -> AIMessage:
-        return _call(
-            "record_weakness",
-            {"title": "没人管的弱点", "description": "存下来就结束"},
-            "weak-1",
-        )
-
-    def step_finish(messages: list[BaseMessage]) -> AIMessage:
-        seen["weakness_id"] = _last_tool_payload(messages)["weakness"]["weakness_id"]
-        return _call(
-            "propose_completion",
-            {
-                "reason": "goal_answered",
-                "goal_answer": "已完成",
-                "stop_rationale": "没有更多方向",
-            },
-            "proposal-1",
-        )
-
-    def step_after_feedback(messages: list[BaseMessage]) -> AIMessage:
-        text = _system_text(messages)
-        assert seen["weakness_id"] in text, "复查反馈必须点名具体对象"
-        return AIMessage(content="按反馈继续")
-
-    model = SteppedModel(steps=[step_weakness, step_finish, step_after_feedback])
+    model = SteppedModel(
+        steps=[
+            lambda _: _call(
+                "propose_finding", {"title": "未验证候选", "description": "本地记录"}, "candidate"
+            ),
+            lambda _: _call("propose_completion", {"goal_answer": "候选未经过独立验证"}, "finish"),
+        ]
+    )
     graph = create_agent(
         model=model,
-        tools=[record_weakness, propose_completion],
+        tools=[propose_finding, propose_completion],
         middleware=_middleware(),
         state_schema=AgentGraphState,
         context_schema=RunContext,
-        name="closure_review_fixture",
     )
     result = await graph.ainvoke(
-        cast(Any, {"messages": [HumanMessage(content="本地结束判定验证", id="user-1")]}),
-        {"recursion_limit": 50},
-        context=context,
+        cast(Any, {"messages": [HumanMessage(content="保存候选并结束")]}), context=context
     )
-    assert result.get("completion_proposal") is None, "未通过检查的提议必须被清除"
-    assert result["finish_gate_feedback"], "必须给出具体反馈"
-    assert any("尚未复查" in reason for reason in result["finish_gate_feedback"])
-    assert result["finish_gate_attempts"] >= 1
+    assert result["completion_proposal"]["goal_answer"] == "候选未经过独立验证"
+    assert len(model.received) == 2
+    async with database.session() as db:
+        row = (
+            await db.execute(
+                select(FindingRow).where(FindingRow.session_id == context.toolbox.session_id)
+            )
+        ).scalar_one()
+        assert row.status == "candidate"
 
 
 async def test_budget_trimming_does_not_mark_unshown_weakness_as_presented(database, unique_name):
@@ -398,10 +296,22 @@ async def test_budget_trimming_does_not_mark_unshown_weakness_as_presented(datab
 
     async with database.session() as db:
         rows = (
-            (await db.execute(select(FindingRow).where(FindingRow.session_id == context.toolbox.session_id)))
+            (
+                await db.execute(
+                    select(FindingRow).where(FindingRow.session_id == context.toolbox.session_id)
+                )
+            )
             .scalars()
             .all()
         )
-        leads = (await db.execute(select(LeadRow).where(LeadRow.session_id == context.toolbox.session_id))).scalars().all()
+        leads = (
+            (
+                await db.execute(
+                    select(LeadRow).where(LeadRow.session_id == context.toolbox.session_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
     assert len(rows) == 4 and sorted(str(row.id) for row in rows) == sorted(ids)
     assert leads == []

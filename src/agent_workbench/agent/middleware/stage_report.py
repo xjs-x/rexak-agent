@@ -168,7 +168,13 @@ async def _domain_signals(toolbox: Any) -> tuple[dict[str, Any], dict[str, Any]]
 
 
 class StageReportMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
+    def __init__(self, *, enabled: bool = False) -> None:
+        super().__init__()
+        self.enabled = enabled
+
     async def abefore_model(self, state, runtime):  # type: ignore[no-untyped-def]
+        if not self.enabled:
+            return None
         context = getattr(runtime, "context", None)
         if context is None:
             return None

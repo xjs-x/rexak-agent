@@ -58,7 +58,7 @@ class ToolSelection:
     #: 用户显式发布的外部扩展，与宿主 knowledge/methods 独立。
     skills: bool = False
     completion: bool = True
-    verification: bool = True
+    verification: bool = False
     #: 命令/脚本/监视（run_command / run_script / start_monitor）
     command: bool = True
     #: PTY 终端（shell_*）
@@ -139,6 +139,9 @@ def default_selection(
     _ = cfg
     reasons: dict[str, str] = {
         "browser": "浏览器工具已实现；若执行岛没有可用浏览器，动作会返回 browser_unavailable。",
+        "skills": "第一阶段最小闭环暂不启用 Skills。",
+        "verification": "第一阶段专用结果 Verification 暂停启用；候选不自动确认。",
+        "coverage": "第一阶段停止维护 Coverage 协议，仅保留历史读取。",
     }
     if capabilities is None:
         return ToolSelection(disabled_reasons=reasons)
@@ -210,7 +213,9 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
     if chosen.knowledge:
         tools.extend(KNOWLEDGE_TOOLS)
     if chosen.skills:
-        tools.extend(item for item in SKILL_TOOLS if chosen.command or item.name != "run_skill_script")
+        tools.extend(
+            item for item in SKILL_TOOLS if chosen.command or item.name != "run_skill_script"
+        )
     if chosen.completion:
         tools.extend(COMPLETION_TOOLS)
     if chosen.verification:

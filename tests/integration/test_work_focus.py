@@ -50,7 +50,7 @@ def test_multiple_in_progress_keeps_valid_previous_and_otherwise_hints():
     kept, hint = resolve_focus(plan, previous, None)
     assert kept is not None and kept["step_id"] == "s2" and hint is None
     unresolved, hint2 = resolve_focus(plan, None, None)
-    assert unresolved is None and hint2 and "明确" in hint2
+    assert unresolved is None and hint2 and "可选" in hint2 and "直接继续调用工具" in hint2
 
 
 def test_finished_or_dropped_step_is_not_kept_as_focus():

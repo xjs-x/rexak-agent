@@ -23,12 +23,13 @@ from langgraph.graph.message import add_messages
 #: （`presented_weakness_ids` / `weakness_review_cursor` / `last_recall_keys`）。
 #: v5：固定版本的 active_skills 引用与有界 skill_directives；1→2→3→4→5 顺序迁移。
 #: v6：旧快照 assessment、分型完成、不可变修订来源；旧完成仅标记待复查。
-CURRENT_STATE_SCHEMA_VERSION = 6
+#: v7：轻量可选计划与结束信号；旧协议字段仅兼容读取，不再参与生产决策。
+CURRENT_STATE_SCHEMA_VERSION = 7
 
-StateSchemaVersion = Literal[6]
+StateSchemaVersion = Literal[7]
 
 #: 可迁移到当前版本的旧版本（由 `state_migration` 提供显式适配）。
-MIGRATABLE_STATE_SCHEMA_VERSIONS = (1, 2, 3, 4, 5)
+MIGRATABLE_STATE_SCHEMA_VERSIONS = (1, 2, 3, 4, 5, 6)
 
 
 def merge_skill_refs(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
@@ -70,8 +71,8 @@ class PlanStep(TypedDict):
     step_id: str
     description: str
     status: Literal["pending", "in_progress", "done", "dropped", "blocked"]
-    rationale: str | None
-    lead_id: str | None
+    rationale: NotRequired[str | None]
+    lead_id: NotRequired[str | None]
     #: 步骤类型：覆盖检查 / 链条跟进 / 混合。缺失时按 `mixed` 读取（旧 checkpoint 兼容）。
     kind: NotRequired[Literal["coverage", "followup", "mixed"]]
     #: 本步骤服务的**全部**线索。旧步骤只有 `lead_id`，读取时映射为单元素列表。
@@ -110,37 +111,6 @@ class CurrentFocus(TypedDict):
     source: NotRequired[Literal["explicit", "plan_inferred"]]
 
 
-class WorkAssessment(TypedDict):
-    """**最近一次明确判断**（§5.1）。
-
-    历史由消息、领域来源与阶段报告保存，**不在** checkpoint 无限追加日志。
-    保存的是"解释"而不是漏洞事实；只读黑板和报告只做投影。
-    """
-
-    step_id: str | None
-    lead_id: str | None
-    #: 这次结果改变了什么
-    changed: str
-    #: 下一步准备消除哪个不确定性
-    next_action: str
-    #: 已有来源引用；纯计划调整可为空
-    evidence_refs: list[str]
-    #: 未测到、条件不成立、假设受反证等
-    uncertainty: str | None
-    #: 程序注入：产生这次判断的工具调用
-    source_tool_call_id: str
-    #: 程序维护的修订号
-    revision: int
-    evaluated_step_ids: NotRequired[list[str]]
-    evaluated_plan_revision: NotRequired[int | None]
-    decision: NotRequired[str]
-    trigger: NotRequired[str]
-    basis_refs: NotRequired[list[dict[str, Any]]]
-    source_signature: NotRequired[str]
-    next_focus: NotRequired[CurrentFocus | None]
-    resulting_plan_revision: NotRequired[int]
-
-
 def coalesce_plan(_left: list[PlanStep], right: list[PlanStep]) -> list[PlanStep]:
     """计划采用"整体替换 + 显式 revision"语义，不做逐项合并。
 
@@ -175,24 +145,46 @@ class WorkSummary(TypedDict):
 
 
 class CompletionProposal(TypedDict):
-    """完成提议（§6.5）。`finish_gate` 会做确定性检查后才允许真正结束。"""
+    """最终回答或显式结束信号；不绑定计划、Coverage 或 Lead。"""
 
     reason: Literal["goal_answered", "exploration_converged"]
     goal_answer: str
-    verified_findings: list[str]
-    coverage_summary: dict[str, Any]
-    remaining_leads: list[str]
-    relevant_lead_ids: NotRequired[list[str]]
-    stop_rationale: str
-    follow_up_suggestions: list[str]
-    missing_conditions: list[str]
+    limitations: NotRequired[str]
     evidence_refs: list[str]
     proposed_at_turn: int
+    source: NotRequired[str]
 
 
-class AgentGraphState(AgentState):
+class LegacyProtocolState(AgentState):
+    """仅为旧 checkpoint/导出保留的通道；新循环不写入或读取判断。"""
+
     active_skills: NotRequired[Annotated[dict[str, Any], merge_skill_refs]]
     skill_directives: NotRequired[dict[str, Any]]
+    work_assessment: NotRequired[dict[str, Any] | None]
+    presented_weakness_ids: NotRequired[list[str]]
+    weakness_review_cursor: NotRequired[str | None]
+    weakness_review_signature: NotRequired[str]
+    last_weakness_revisions: NotRequired[dict[str, int]]
+    last_recall_keys: NotRequired[list[str]]
+    last_identity_signature: NotRequired[str]
+    review_cursor: NotRequired[str | None]
+    last_review_turn: NotRequired[int]
+    last_review_source_signature: NotRequired[str]
+    last_progress_turn: NotRequired[int]
+    last_progress_reminder_turn: NotRequired[int]
+    progress_feedback: NotRequired[str | None]
+    similar_result_streak: NotRequired[int]
+    last_similar_signature: NotRequired[str]
+    last_similar_reminder_turn: NotRequired[int]
+    report_progress_signature: NotRequired[str]
+    report_retry_key: NotRequired[str | None]
+    coverage_revision: NotRequired[int]
+    no_progress_streak: NotRequired[int]
+    last_progress_signature: NotRequired[str]
+    segment_work_units: NotRequired[int]
+
+
+class AgentGraphState(LegacyProtocolState):
     """扩展后的图状态。
 
     以 `AgentState` 为基类，因此 `messages` 仍由框架的 `add_messages` reducer 管理，
@@ -225,39 +217,13 @@ class AgentGraphState(AgentState):
     #: 最近一次更新的来源；完整历史在不可变工件链，事件只是可重建投影。
     last_plan_change: NotRequired[dict[str, Any] | None]
     current_focus: NotRequired[CurrentFocus | None]
-    #: 最近一次明确判断（解释，不是漏洞事实）。
-    work_assessment: NotRequired[WorkAssessment | None]
-    #: 弱点消费进度：本轮**实际发送**给模型的弱点 ID（预算裁剪掉的条目不计入）。
-    presented_weakness_ids: NotRequired[list[str]]
-    #: 结束复查的分页游标与来源签名（扫描进度放 checkpoint，对象判断放业务表）。
-    weakness_review_cursor: NotRequired[str | None]
-    weakness_review_signature: NotRequired[str]
-    #: 每个弱点的上一版快照 revision，用于识别"条件确实发生变化"。
-    last_weakness_revisions: NotRequired[dict[str, int]]
-    #: 条件变化召回的去重键（对象 + 实质版本 + 触发原因），防止重复召回同一批内容。
-    last_recall_keys: NotRequired[list[str]]
-    #: 上一次实际呈现给模型的身份签名，用于识别"身份/auth 变化"触发。
-    last_identity_signature: NotRequired[str]
-    review_cursor: NotRequired[str | None]
-    last_review_turn: NotRequired[int]
-    last_review_source_signature: NotRequired[str]
-    last_progress_turn: NotRequired[int]
-    last_progress_reminder_turn: NotRequired[int]
-    progress_feedback: NotRequired[str | None]
-    #: 相似结果连续回合数（**不是**"已证实的无进展"），只影响提醒节奏。
-    similar_result_streak: NotRequired[int]
-    last_similar_signature: NotRequired[str]
-    last_similar_reminder_turn: NotRequired[int]
     state_migration: NotRequired[dict[str, Any]]
-    report_progress_signature: NotRequired[str]
-    report_retry_key: NotRequired[str | None]
 
     # --- 线索与任务 ---
     active_lead_ids: NotRequired[list[str]]
     pending_job_ids: NotRequired[list[str]]
 
     # --- 版本与上下文 ---
-    coverage_revision: NotRequired[int]
     working_context_version: NotRequired[int]
     context_manifest: NotRequired[dict[str, Any]]
 
@@ -266,12 +232,7 @@ class AgentGraphState(AgentState):
     finish_gate_feedback: NotRequired[list[str]]
     finish_gate_attempts: NotRequired[int]
 
-    # --- 无进展收敛 ---
-    no_progress_streak: NotRequired[int]
-    last_progress_signature: NotRequired[str]
-
     # --- 运行边界 ---
-    segment_work_units: NotRequired[int]
     segment_completed_rounds: NotRequired[int]
     completed_decision_rounds: NotRequired[int]
     last_completed_model_message_id: NotRequired[str | None]
@@ -301,25 +262,12 @@ def new_graph_state(
         plan_revision=0,
         last_plan_change=None,
         current_focus=None,
-        work_assessment=None,
-        presented_weakness_ids=[],
-        weakness_review_cursor=None,
-        weakness_review_signature="",
-        last_weakness_revisions={},
-        last_recall_keys=[],
-        last_identity_signature="",
         active_lead_ids=[],
         pending_job_ids=[],
-        coverage_revision=0,
         working_context_version=1,
         completion_proposal=None,
         finish_gate_feedback=[],
         finish_gate_attempts=0,
-        no_progress_streak=0,
-        last_progress_signature="",
-        similar_result_streak=0,
-        last_similar_signature="",
-        segment_work_units=0,
         segment_completed_rounds=0,
         completed_decision_rounds=0,
         last_completed_model_message_id=None,
@@ -351,18 +299,6 @@ def next_input_state(
         "finish_gate_feedback": [],
         "finish_gate_attempts": 0,
         "pending_job_ids": [],
-        # 弱点呈现/复查进度置空：恢复后从领域表重新组装，不沿用旧段的发送记录。
-        "presented_weakness_ids": [],
-        "weakness_review_cursor": None,
-        "weakness_review_signature": "",
-        "last_weakness_revisions": {},
-        "last_recall_keys": [],
-        "last_identity_signature": "",
-        "no_progress_streak": 0,
-        "last_progress_signature": "",
-        "similar_result_streak": 0,
-        "last_similar_signature": "",
-        "segment_work_units": 0,
         "segment_completed_rounds": 0,
         "segment_yield_reason": None,
         "state_schema_version": CURRENT_STATE_SCHEMA_VERSION,
@@ -378,7 +314,6 @@ __all__ = [
     "PlanStep",
     "StateSchemaIncompatibleError",
     "StateSchemaVersion",
-    "WorkAssessment",
     "WorkSummary",
     "assert_compatible_state",
     "coalesce_plan",

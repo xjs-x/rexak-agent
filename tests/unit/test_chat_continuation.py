@@ -4,14 +4,12 @@ from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
 
-import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
 from agent_workbench.agent.factory import AgentRuntime
-from agent_workbench.agent.middleware.finish_gate import _looks_like_finish
 from agent_workbench.agent.state import (
     CURRENT_STATE_SCHEMA_VERSION,
     AgentGraphState,
@@ -100,7 +98,11 @@ async def test_pending_graph_nodes_resume_without_new_input():
 
     async def state(_config):
         return SimpleNamespace(
-            values={"state_schema_version": CURRENT_STATE_SCHEMA_VERSION, "messages": ["历史"], "active_run_id": str(run.id)},
+            values={
+                "state_schema_version": CURRENT_STATE_SCHEMA_VERSION,
+                "messages": ["历史"],
+                "active_run_id": str(run.id),
+            },
             next=("tools",),
         )
 
@@ -113,12 +115,6 @@ async def test_pending_graph_nodes_resume_without_new_input():
     assert payload is None
 
 
-def test_capability_explanation_does_not_trigger_testing_completion_feedback():
-    assert not _looks_like_finish(
-        "我可以协助你开展有明确范围的安全测试，整理证据、说明复测结果，并生成带有明确限制的测试结论与报告。"
-    )
-
-
 def test_live_chat_only_displays_assistant_text():
     assert _delta_text((AIMessageChunk(content="可展示的回答"), {})) == "可展示的回答"
     assert (
@@ -127,6 +123,9 @@ def test_live_chat_only_displays_assistant_text():
     assert _delta_text((HumanMessage(content="内部中间件反馈"), {})) == ""
 
 
-@pytest.mark.parametrize("claim", ["测试完成", "未发现漏洞", "结论："])
-def test_actual_security_completion_claim_still_requires_gate(claim):
-    assert _looks_like_finish(f"{claim}。" + "这是需要证据支持的明确测试收尾声明。" * 4)
+def test_completion_schema_only_requires_answer():
+    from agent_workbench.tools.completion import propose_completion
+
+    schema = cast(Any, propose_completion.tool_call_schema).model_json_schema()
+    assert schema["required"] == ["goal_answer"]
+    assert set(schema["properties"]) == {"goal_answer", "reason", "limitations", "evidence_refs"}

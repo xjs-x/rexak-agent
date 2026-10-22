@@ -34,7 +34,8 @@ def test_needs_migration_only_for_older_supported_versions() -> None:
     assert not needs_migration({})
     assert needs_migration({"state_schema_version": 4})
     assert needs_migration({"state_schema_version": 5})
-    assert not needs_migration({"state_schema_version": 6})
+    assert needs_migration({"state_schema_version": 6})
+    assert not needs_migration({"state_schema_version": 7})
 
 
 def test_adapt_v2_only_accepts_explicit_v2() -> None:
@@ -246,11 +247,17 @@ async def test_v4_skill_migration_preserves_pending_tool_and_runs_once() -> None
 async def test_v5_planning_migration_preserves_pending_work_and_marks_old_done() -> None:
     graph, submitted = _graph(InMemorySaver(), interrupt_before=["tools"])
     config = {"configurable": {"thread_id": str(uuid4())}}
-    await graph.ainvoke(cast(Any, {
-        "messages": [HumanMessage(content="保留旧工作", id="v5-original")],
-        "state_schema_version": 5,
-        "plan": [{"step_id": "old", "description": "历史完成", "status": "done"}],
-    }), cast(Any, config))
+    await graph.ainvoke(
+        cast(
+            Any,
+            {
+                "messages": [HumanMessage(content="保留旧工作", id="v5-original")],
+                "state_schema_version": 5,
+                "plan": [{"step_id": "old", "description": "历史完成", "status": "done"}],
+            },
+        ),
+        cast(Any, config),
+    )
     before = await graph.aget_state(cast(Any, config))
     after = await ensure_current_checkpoint(graph, config, before, database=None, session_id=None)
     assert after.next == before.next == ("tools",)
@@ -260,3 +267,82 @@ async def test_v5_planning_migration_preserves_pending_work_and_marks_old_done()
     assert submitted == []
     await graph.ainvoke(None, cast(Any, config))
     assert submitted == ["once"]
+
+
+async def test_v6_checkpoint_retains_legacy_channels_and_pending_operation() -> None:
+    graph, submitted = _graph(InMemorySaver(), interrupt_before=["tools"])
+    config = {"configurable": {"thread_id": str(uuid4())}}
+    legacy = {
+        "work_assessment": {"revision": 4, "decision": "replan"},
+        "progress_feedback": "历史提醒",
+        "coverage_revision": 8,
+        "plan": [
+            {
+                "step_id": "old",
+                "description": "旧计划",
+                "status": "done",
+                "completion_spec": {"mode": "investigate"},
+                "completion": {"summary": "旧记录"},
+            }
+        ],
+    }
+    await graph.ainvoke(
+        cast(
+            Any,
+            {
+                "messages": [HumanMessage(content="原目标", id="original")],
+                "state_schema_version": 6,
+                **legacy,
+            },
+        ),
+        cast(Any, config),
+    )
+    before = await graph.aget_state(cast(Any, config))
+    after = await ensure_current_checkpoint(graph, config, before, database=None, session_id=None)
+    assert after.values["state_schema_version"] == 7 and after.next == before.next == ("tools",)
+    for key, value in legacy.items():
+        assert after.values[key] == value
+    assert submitted == []
+    await graph.ainvoke(None, cast(Any, config))
+    assert submitted == ["once"]
+
+
+async def test_old_protocol_node_restores_as_inert_bridge():
+    from agent_workbench.agent.middleware.progress import ProgressMiddleware
+    from agent_workbench.agent.middleware.stage_report import StageReportMiddleware
+
+    saver = InMemorySaver()
+    model = ScriptedChatModel(responses=[final_text("完成")])
+    config = {"configurable": {"thread_id": str(uuid4())}}
+    old = create_agent(
+        model=model,
+        tools=[],
+        state_schema=AgentGraphState,
+        checkpointer=saver,
+        middleware=[ProgressMiddleware(enabled=True), StageReportMiddleware(enabled=True)],
+        interrupt_before=["ProgressMiddleware.before_model"],
+    )
+    await old.ainvoke(
+        cast(
+            Any,
+            {
+                "state_schema_version": 6,
+                "messages": [HumanMessage(content="保留旧节点", id="original")],
+            },
+        ),
+        cast(Any, config),
+    )
+    new = create_agent(
+        model=model,
+        tools=[],
+        state_schema=AgentGraphState,
+        checkpointer=saver,
+        middleware=[ProgressMiddleware(enabled=False), StageReportMiddleware(enabled=False)],
+    )
+    before = await new.aget_state(cast(Any, config))
+    assert before.next == ("ProgressMiddleware.before_model",)
+    migrated = await ensure_current_checkpoint(new, config, before, database=None, session_id=None)
+    assert migrated.next == before.next
+    result = await new.ainvoke(None, cast(Any, config))
+    assert result["messages"][-1].content == "完成"
+    assert "progress_feedback" not in result and "report_retry_key" not in result

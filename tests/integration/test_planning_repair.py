@@ -1,34 +1,22 @@
-"""P0/P1 回归：真实隔离库、工件、官方图；不调用模型供应商或目标。"""
+"""历史完成记录读取与来源真实性兼容；生产计划不再调用这些证明校验器。"""
 
 from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Annotated, Any, cast
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
-from langchain.agents import create_agent
-from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage
-from langchain_core.tools import InjectedToolCallId, tool
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from sqlalchemy import select
 
-from agent_workbench.agent.context import RunContext
-from agent_workbench.agent.factory import build_agent_middleware, loaded_code_version
+from agent_workbench.agent.factory import loaded_code_version
 from agent_workbench.agent.middleware.tool_dispatch import _render_tool_failure
 from agent_workbench.agent.prompts import PROMPT_VERSION
-from agent_workbench.agent.state import AgentGraphState, new_graph_state
-from agent_workbench.agent.working_context import assemble_working_context
-from agent_workbench.config.catalog import default_price_catalog
 from agent_workbench.contracts.planning import PlanningValidationError, planning_digest
 from agent_workbench.domain.planning import completion_is_current
 from agent_workbench.domain.planning_applicability import condition_snapshot
-from agent_workbench.models.provider import ModelBinding
-from agent_workbench.persistence.bootstrap import open_checkpointer_connection
 from agent_workbench.persistence.tables import (
     ArtifactRow,
     FindingRow,
@@ -39,16 +27,47 @@ from agent_workbench.persistence.tables import (
 )
 from agent_workbench.runtime.runner import AgentRunner
 from agent_workbench.runtime.stopping import FinishGate
-from agent_workbench.tools.completion import propose_completion
-from agent_workbench.tools.task import update_plan
-from tests.integration.test_incremental_planning import claim, result_source, step, update
+from tests.integration.test_incremental_planning import result_source
 from tests.integration.test_tool_dispatch import _build_context
-from tests.integration.test_weakness_closure import SteppedModel
-from tests.support.scripted_model import tool_call
-from tests.unit.test_context_budget import profile
 
 pytestmark = pytest.mark.integration
 URL = "http://127.0.0.1:8899/check"
+
+
+def step(identifier="A", status="in_progress", *, mode="investigate", **kwargs):
+    return {
+        "step_id": identifier,
+        "description": f"历史任务 {identifier}",
+        "status": status,
+        "completion_spec": {"mode": mode, "done_when": "取得结果", "check_type": "model"},
+        **kwargs,
+    }
+
+
+def claim(refs, outcome="satisfied"):
+    return {
+        "outcome": outcome,
+        "summary": "历史来源",
+        "source_refs": [{"kind": "artifact", "id": refs["artifact_id"]}],
+    }
+
+
+async def update(context, state, steps, call_id="legacy-validation", **extra) -> Any:
+    """只验证已有历史协议；不调用生产 update_plan，不提交图或外部执行。"""
+    from copy import deepcopy
+
+    from langgraph.types import Command
+
+    from agent_workbench.tools.planning_validation import validate_plan_steps
+
+    _ = call_id, extra
+    old = {step["step_id"]: step for step in state.get("plan") or []}
+    values = [{**deepcopy(old.get(item["step_id"], {})), **deepcopy(item)} for item in steps]
+    async with context.toolbox.db.session() as db:
+        await validate_plan_steps(db, context.toolbox, list(old.values()), values, steps)
+    return Command(
+        update={"plan": values, "plan_revision": int(state.get("plan_revision") or 0) + 1}
+    )
 
 
 async def http_source(box, call, method="GET", *, source_step="s7", url=URL, status=200):
@@ -304,70 +323,9 @@ async def test_new_conditions_do_not_invalidate_old_conditions_but_retraction_do
         await update(ctx, {}, [http_step(refs=[refs])], "changed-condition")
 
 
-async def test_key_revision_short_assessment_and_precise_change_ids(database, unique_name):
-    ctx = await _build_context(database, unique_name)
-    initial = await update(
-        ctx,
-        {},
-        [step("A"), step("B", "pending")],
-        "initial",
-        focus_json=json.dumps({"step_id": "A", "intent": "当前工作", "reason": "原方向"}),
-    )
-    state = {**initial.update, "plan_revision": 1}
-    new = [{"step_id": "A"}, {"step_id": "B"}, step("C", "pending")]
-    with pytest.raises(PlanningValidationError, match="简短判断"):
-        await update(ctx, state, new, "needs-assessment")
-    revised = await update(
-        ctx,
-        state,
-        new,
-        "expand",
-        assessment_json=json.dumps(
-            {
-                "changed": "需要新工作",
-                "next_action": "检查 C",
-                "decision": "expand",
-                "basis_refs": [],
-            }
-        ),
-    )
-    assessment = revised.update["work_assessment"]
-    assert assessment["evaluated_step_ids"] == ["A"] and assessment["evaluated_plan_revision"] == 1
-    change = revised.update["last_plan_change"]
-    assert change["changed_step_ids"] == ["C"] and change["added_step_ids"] == ["C"]
-    assert not change["order_changed"]
-    reordered = await update(
-        ctx,
-        {**state, **revised.update},
-        [{"step_id": "B"}, {"step_id": "A"}, {"step_id": "C"}],
-        "reorder",
-    )
-    assert reordered.update["last_plan_change"]["order_changed"]
-    assert reordered.update["last_plan_change"]["changed_step_ids"] == []
+async def test_legacy_completion_is_preserved_but_not_a_finish_obligation(database, unique_name):
+    from tests.integration.test_incremental_planning import update as update_current
 
-
-async def test_working_context_reuses_results_and_completed_records_can_be_carried(
-    database, unique_name
-):
-    ctx = await _build_context(database, unique_name)
-    refs = await http_source(ctx.toolbox, "prior")
-    command = await update(ctx, {}, [http_step(refs=[refs])])
-    state = {**command.update, "plan_revision": 1}
-    noop = await update(ctx, state, [{"step_id": "s8"}], "carry")
-    assert "plan" not in noop.update
-    exact = await update(ctx, state, [state["plan"][0]], "exact-carry")
-    assert "plan" not in exact.update
-    async with database.session() as db:
-        context = await assemble_working_context(db, ctx.toolbox.session_id, state)
-    available = context["progress"]["results_and_work"]["available_results"]
-    assert available[0]["operation_id"] == refs["operation_id"]
-    assert available[0]["source_step_id"] == "s7"
-    assert refs["artifact_id"] in available[0]["artifact_ids"]
-
-
-async def test_unchanged_legacy_completion_does_not_block_work_but_gate_requires_review(
-    database, unique_name
-):
     ctx = await _build_context(database, unique_name)
     refs = await result_source(ctx.toolbox, "history", True)
     command = await update(ctx, {}, [step(status="done", completion=claim(refs))])
@@ -375,18 +333,16 @@ async def test_unchanged_legacy_completion_does_not_block_work_but_gate_requires
     old["completion"]["check"]["version"] = 1
     state = {**command.update, "plan": [old], "plan_revision": 1}
     before = planning_digest(state["plan"])
-    carried = await update(ctx, state, [{"step_id": "A"}], "retain-history")
+    carried = await update_current(ctx, state, [{"step_id": "A"}], "retain-history")
     assert "plan" not in carried.update and planning_digest(state["plan"]) == before
-    async with database.session() as db:
+    async with ctx.toolbox.db.session() as db:
         decision = await FinishGate(db).evaluate(
             session_id=ctx.toolbox.session_id,
             run_id=ctx.toolbox.run_id,
             plan=[old],
-            proposal={"reason": "goal_answered", "goal_answer": "结果", "stop_rationale": "复查"},
+            proposal={"reason": "goal_answered", "goal_answer": "历史完成记录保留原样"},
         )
-    assert decision.decision == "continue" and decision.unreviewed_count == 1
-    with pytest.raises(ValueError, match="复查"):
-        await update(ctx, state, [], "cannot-hide-old-completion")
+    assert decision.allowed
 
 
 async def test_loaded_runtime_versions_are_captured_without_changing_history(database, unique_name):
@@ -401,7 +357,7 @@ async def test_loaded_runtime_versions_are_captured_without_changing_history(dat
     async with database.session() as db:
         saved = await db.get(RunRow, run.id)
         assert saved.prompt_version == PROMPT_VERSION and saved.code_version.startswith(
-            "loaded-planning:"
+            "loaded-minimal-loop:"
         )
         assert len(saved.config_snapshot["loaded_runtime_activations"]) == 1
 
@@ -416,140 +372,3 @@ async def test_health_reports_loaded_versions_without_model_call(database):
         assert versions["prompt_version"] == PROMPT_VERSION
         assert versions["code_version"] == loaded_code_version()
         assert "not_entire_process" in versions["scope"]
-
-
-async def test_official_graph_parallel_sources_close_two_steps_after_restart(database, unique_name):
-    ctx = await _build_context(database, unique_name)
-    effects = []
-    received = {}
-
-    @tool("http_request")
-    async def fixture_http(
-        method: str,
-        runtime: ToolRuntime[RunContext],
-        tool_call_id: Annotated[str, InjectedToolCallId],
-    ) -> str:
-        """本地有计数回执；不向网络发送请求。"""
-        refs = await http_source(
-            runtime.context.toolbox,
-            tool_call_id,
-            method,
-            source_step="A",
-            status={"GET": 200, "PUT": 403, "OPTIONS": 405}[method],
-        )
-        effects.append(tool_call_id)
-        received[method] = refs
-        return json.dumps(refs)
-
-    a = http_step("A")
-    b = http_step("B", methods=("PUT", "OPTIONS"))
-
-    def finish(_messages):
-        return tool_call(
-            "update_plan",
-            {
-                "expected_plan_revision": 1,
-                "rationale": "按原声明范围关闭调查",
-                "steps_json": json.dumps(
-                    [
-                        http_step("A", refs=[received["GET"]]),
-                        http_step(
-                            "B",
-                            methods=("PUT", "OPTIONS"),
-                            refs=[received["PUT"], received["OPTIONS"]],
-                            outcome="not_satisfied",
-                        ),
-                    ]
-                ),
-            },
-            "complete-steps",
-        )
-
-    # 并行结果顺序可能变化；按来源回执的方法匹配，不依赖执行顺序。
-    model = SteppedModel(
-        steps=[
-            lambda _: tool_call(
-                "update_plan",
-                {
-                    "expected_plan_revision": 0,
-                    "steps_json": json.dumps([a, b]),
-                    "focus_json": json.dumps(
-                        {"step_id": "A", "intent": "并行检查", "reason": "已有两项调查"}
-                    ),
-                },
-                "initial",
-            ),
-            lambda _: AIMessage(
-                content="",
-                tool_calls=[
-                    {"name": "http_request", "args": {"method": method}, "id": f"http-{method}"}
-                    for method in ("GET", "PUT", "OPTIONS")
-                ],
-            ),
-            finish,
-            lambda _: tool_call(
-                "propose_completion",
-                {
-                    "reason": "goal_answered",
-                    "goal_answer": "声明的调查已有明确结果",
-                    "stop_rationale": "回执齐全，阴性未冒充达成",
-                    "expected_plan_revision": 2,
-                },
-                "end",
-            ),
-        ]
-    )
-    tools = [fixture_http, update_plan, propose_completion]
-    config = {"configurable": {"thread_id": ctx.thread_id}, "recursion_limit": 100}
-    for index in range(4):
-        async with open_checkpointer_connection(database.settings) as connection:
-            graph = create_agent(
-                model=model,
-                tools=tools,
-                middleware=build_agent_middleware(
-                    model,
-                    ModelBinding(profile(200000)),
-                    database.settings,
-                    tools,
-                    default_price_catalog(),
-                ),
-                state_schema=AgentGraphState,
-                context_schema=RunContext,
-                checkpointer=AsyncPostgresSaver(connection),
-                interrupt_after=["tools"],
-            )
-            await graph.ainvoke(
-                cast(
-                    Any,
-                    new_graph_state(
-                        session_id=ctx.toolbox.session_id, run_id=ctx.toolbox.run_id, objective="x"
-                    ),
-                )
-                if index == 0
-                else None,
-                cast(Any, config),
-                context=ctx,
-            )
-    async with open_checkpointer_connection(database.settings) as connection:
-        saved = await AsyncPostgresSaver(connection).aget_tuple(cast(Any, config))
-        assert saved is not None
-        values = saved.checkpoint["channel_values"]
-    assert len(effects) == 3 and values["plan_revision"] == 2
-    assert [z["status"] for z in values["plan"]] == ["done", "done"]
-    assert values["plan"][1]["completion"]["source_refs"][0]["relation"] == "supporting"
-    assert values["completion_proposal"] and values["finish_gate_attempts"] == 0
-    async with database.session() as db:
-        assert (
-            len(
-                list(
-                    (
-                        await db.execute(
-                            select(ToolOperationRow).where(
-                                ToolOperationRow.run_id == ctx.toolbox.run_id
-                            )
-                        )
-                    ).scalars()
-                )
-            )
-            == 3
-        )

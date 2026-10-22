@@ -1180,7 +1180,7 @@ export default function App() {
           {project.projectId && project.sessions.length === 0 && <p className="empty-side">这个项目还没有任务。</p>}
         </div>
         <button className="side-item model-settings-entry" disabled={!project.ready} onClick={() => setShowModelSettings(true)}>⚙ 模型设置</button>
-        <button className="side-item" disabled={!project.ready} onClick={() => setShowSkills(true)}>技能库{selectedSkills.length ? ` · 已选 ${selectedSkills.length}` : ""}</button>
+        <button className="side-item" disabled title="第一阶段最小闭环暂不启用 Skills">技能库 · 暂停启用</button>
         {showSkills && <div className="modal-backdrop" onMouseDown={() => setShowSkills(false)}><div className="modal model-settings-modal" role="dialog" aria-modal="true" aria-label="技能库" onMouseDown={e => e.stopPropagation()}><div className="panel-head"><h2>技能库</h2><button onClick={() => setShowSkills(false)}>关闭</button></div><SkillLibrary sessionId={project.sessionId} projectId={project.projectId} selected={selectedSkills} onSelected={setSelectedSkills} /></div></div>}
         <div className="sidebar-foot">本地个人工作台<br />结果以证据和复测为准</div>
       </aside>
@@ -1202,7 +1202,7 @@ export default function App() {
               <div><small>当前阶段</small><strong>{label(currentRun?.status)}</strong></div>
               <div><small>已确认发现</small><strong>{findings.filter((item) => item.status === "confirmed").length}</strong></div>
               <div><small>待验证线索</small><strong>{leads.filter((item) => !["closed", "resolved"].includes(item.status)).length}</strong></div>
-              <div><small>已登记检查</small><strong>{snapshot?.coverage.total ?? "—"}</strong></div>
+              <div><small>历史登记检查（维护已停用）</small><strong>{snapshot?.coverage.total ?? "—"}</strong></div>
               <div><small>模型请求</small><strong>{usage?.call_count ?? "—"}</strong></div>
             </div>}
             <div className="run-controls">
@@ -1249,7 +1249,7 @@ export default function App() {
               </section>}
               {tab === "plan" && <div className="stack">
                 <section className="panel"><div className="panel-head"><div><h2>当前计划</h2><p>版本 {plan?.revision ?? "—"} · 从图状态读取；步骤可以随探索修订。</p></div><button onClick={() => void api.plan(project.sessionId).then(setPlan).catch((cause) => setNotice(String(cause)))}>刷新</button></div>
-                  {plan?.steps.length ? plan.steps.map((step) => <article key={step.step_id} className="record"><div className="record-title"><strong>{step.step_id} · {step.description}</strong><span className={`pill status-${step.status}`}>{label(step.status)}</span></div><p>{step.rationale || "暂无说明"}</p><small>类型：{step.kind === "coverage" ? "覆盖检查" : step.kind === "followup" ? "链条推进" : "混合任务"} · 关联线索：{[...new Set([...(step.lead_ids ?? []), ...(step.lead_id ? [step.lead_id] : [])])].join("、") || "未记录"}</small></article>) : <p className="empty">尚无计划步骤</p>}
+                  {plan?.steps.length ? plan.steps.map((step) => <article key={step.step_id} className="record"><div className="record-title"><strong>{step.step_id} · {step.description}</strong><span className={`pill status-${step.status}`}>{label(step.status)}</span></div><p>{step.rationale || "暂无说明"}</p><small>可选工作记录 · 关联线索：{step.lead_id || "未记录"}</small></article>) : <p className="empty">尚无计划步骤，可直接执行工具</p>}
                 </section>
                 <section className="panel"><div className="panel-head"><div><h2>步骤与线索关系</h2><p>显示每个步骤服务的全部线索；位置和连线只表示任务关联。</p></div></div>{plan && <PlanGraph plan={plan} leads={leads} />}</section>
               </div>}
@@ -1302,7 +1302,7 @@ export default function App() {
                     {item.actionability_note && <p className="fineprint">{item.actionability_note}</p>}</article>) : <p className="empty">尚无线索</p>}
                 </section>
                 <section className="panel"><div className="panel-head"><h2>覆盖记录</h2></div>
-                  <div className="coverage-grid">{Object.entries(snapshot?.coverage.by_status ?? {}).map(([key, count]) => <div key={key}><strong>{count}</strong><span>{label(key)}</span></div>)}</div>
+                  <p className="fineprint">第一阶段已停止维护覆盖协议；以下仅为历史记录。</p><div className="coverage-grid">{Object.entries(snapshot?.coverage.by_status ?? {}).map(([key, count]) => <div key={key}><strong>{count}</strong><span>{label(key)}</span></div>)}</div>
                   <p className="fineprint">{snapshot?.coverage.ratio_definition || "尚未登记覆盖；不能据此推断目标没有漏洞。"}</p>
                 </section>
               </div>}

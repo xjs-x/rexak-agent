@@ -1178,21 +1178,6 @@ export interface components {
              */
             reason: string;
         };
-        /**
-         * CompletionPredicate
-         * @description 只检查持久化操作回执的结构化标量；不执行模型提供的代码。
-         */
-        CompletionPredicate: {
-            /**
-             * Operation Id
-             * Format: uuid
-             */
-            operation_id: string;
-            /** Path */
-            path: string[];
-            /** Equals */
-            equals: string | number | boolean | null;
-        };
         /** ConversationBody */
         ConversationBody: {
             /**
@@ -1251,7 +1236,10 @@ export interface components {
             lead_id?: string | null;
             /** Intent */
             intent: string;
-            /** Reason */
+            /**
+             * Reason
+             * @default
+             */
             reason: string;
             /** Return To Step Id */
             return_to_step_id?: string | null;
@@ -1578,48 +1566,6 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /** HttpCoverage */
-        HttpCoverage: {
-            /**
-             * Operation Id
-             * Format: uuid
-             */
-            operation_id: string;
-            /** Method */
-            method: string;
-            /** Url */
-            url: string;
-            /** Identity */
-            identity: string;
-            /**
-             * Authentication
-             * @enum {string}
-             */
-            authentication: "anonymous" | "identity_session" | "explicit_headers" | "unknown";
-            /** Status Code */
-            status_code: number;
-            /** Source Step Id */
-            source_step_id: string | null;
-            /**
-             * Operation Created At
-             * Format: date-time
-             */
-            operation_created_at: string;
-        };
-        /**
-         * HttpWorkItem
-         * @description 证明检查了哪些端点/方法；不是漏洞语义核验器。
-         */
-        HttpWorkItem: {
-            /** Method */
-            method: string;
-            /** Url */
-            url: string;
-            /** Identity */
-            identity?: string | null;
-            /** Authentication */
-            authentication?: ("anonymous" | "identity_session" | "explicit_headers") | null;
-        };
         /**
          * IdentityRef
          * @description 测试身份引用。**无明文密码列**；凭据通过 `secret_ref` 解析（§5.2 identities）。
@@ -1893,7 +1839,6 @@ export interface components {
             /** Steps */
             steps: components["schemas"]["PlanStepRead"][];
             current_focus?: components["schemas"]["CurrentFocusRead"] | null;
-            work_assessment?: components["schemas"]["WorkAssessmentRead"] | null;
             /** Last Plan Change */
             last_plan_change?: {
                 [key: string]: unknown;
@@ -1918,52 +1863,17 @@ export interface components {
              * @enum {string}
              */
             status: "pending" | "in_progress" | "done" | "dropped" | "blocked";
-            /**
-             * Kind
-             * @default mixed
-             * @enum {string}
-             */
-            kind: "coverage" | "followup" | "mixed";
             /** Rationale */
             rationale?: string | null;
             /** Lead Id */
             lead_id?: string | null;
-            /** Lead Ids */
-            lead_ids?: string[];
-            /** Done When */
-            done_when?: string | null;
-            /** Resume Note */
-            resume_note?: string | null;
-            /** Evidence Refs */
-            evidence_refs?: string[];
-            /** Completion Protocol */
-            completion_protocol?: 1 | null;
-            completion_spec?: components["schemas"]["StepCompletionSpec"] | null;
-            completion?: components["schemas"]["StepCompletionRecord"] | null;
             /**
-             * Legacy Completion
-             * @default false
+             * Legacy Metadata
+             * @description 旧计划附加信息，仅供历史读取，不参与执行或结束
              */
-            legacy_completion: boolean;
-        };
-        /** PlanningSource */
-        PlanningSource: {
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "artifact" | "operation" | "observation" | "verification";
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Relation
-             * @default direct
-             * @enum {string}
-             */
-            relation: "direct" | "supporting";
+            legacy_metadata?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * PolicySnapshot
@@ -2465,28 +2375,6 @@ export interface components {
             /** Default For Projects */
             default_for_projects?: string[] | null;
         };
-        /** SourceLink */
-        SourceLink: {
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "artifact" | "operation" | "observation" | "verification";
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Relation
-             * @enum {string}
-             */
-            relation: "direct" | "supporting";
-            /** Operation Ids */
-            operation_ids: string[];
-            /** Source Step Ids */
-            source_step_ids: string[];
-        };
         /** SpanPage */
         SpanPage: {
             /** Spans */
@@ -2518,84 +2406,6 @@ export interface components {
             decision: string | null;
             /** Status */
             status: string | null;
-        };
-        /** StepCompletionCheck */
-        StepCompletionCheck: {
-            /**
-             * Status
-             * @default accepted
-             * @constant
-             */
-            status: "accepted";
-            /**
-             * Method
-             * @enum {string}
-             */
-            method: "model" | "predicate" | "verification";
-            /** Scope */
-            scope: string;
-            /** Spec Digest */
-            spec_digest: string;
-            /** Source Signature */
-            source_signature: string;
-            /** Context Signature */
-            context_signature: string;
-            /** Run Id */
-            run_id: string;
-            /**
-             * Version
-             * @default 1
-             * @enum {integer}
-             */
-            version: 1 | 2;
-            /** Source Authenticity */
-            source_authenticity?: "checked" | null;
-            /** Source Applicability */
-            source_applicability?: ("checked" | "limited") | null;
-            /** Sufficiency */
-            sufficiency?: ("model_judgment" | "receipt_fields" | "verification_record") | null;
-            /** Http Coverage */
-            http_coverage?: components["schemas"]["HttpCoverage"][];
-            /** Source Links */
-            source_links?: components["schemas"]["SourceLink"][];
-            /** Limitations */
-            limitations?: string[];
-        };
-        /** StepCompletionRecord */
-        StepCompletionRecord: {
-            /**
-             * Outcome
-             * @enum {string}
-             */
-            outcome: "satisfied" | "not_satisfied" | "inconclusive";
-            /** Summary */
-            summary: string;
-            /** Source Refs */
-            source_refs: components["schemas"]["PlanningSource"][];
-            check: components["schemas"]["StepCompletionCheck"];
-        };
-        /** StepCompletionSpec */
-        StepCompletionSpec: {
-            /**
-             * Mode
-             * @enum {string}
-             */
-            mode: "investigate" | "achieve";
-            /** Done When */
-            done_when: string;
-            /**
-             * Check Type
-             * @default model
-             * @enum {string}
-             */
-            check_type: "model" | "predicate" | "verification";
-            predicate?: components["schemas"]["CompletionPredicate"] | null;
-            /** Verification Id */
-            verification_id?: string | null;
-            /** Http Checks */
-            http_checks?: components["schemas"]["HttpWorkItem"][];
-            /** Not Before */
-            not_before?: string | null;
         };
         /** TerminateAllResponse */
         TerminateAllResponse: {
@@ -2675,43 +2485,6 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
-        };
-        /**
-         * WorkAssessmentRead
-         * @description 最近一次明确判断的只读投影（解释，不是漏洞事实）。
-         */
-        WorkAssessmentRead: {
-            /** Step Id */
-            step_id?: string | null;
-            /** Lead Id */
-            lead_id?: string | null;
-            /** Changed */
-            changed: string;
-            /** Next Action */
-            next_action: string;
-            /** Evidence Refs */
-            evidence_refs?: string[];
-            /** Uncertainty */
-            uncertainty?: string | null;
-            /** Source Tool Call Id */
-            source_tool_call_id: string;
-            /** Revision */
-            revision: number;
-            /** Evaluated Step Ids */
-            evaluated_step_ids?: string[];
-            /** Evaluated Plan Revision */
-            evaluated_plan_revision?: number | null;
-            /** Decision */
-            decision?: string | null;
-            /** Trigger */
-            trigger?: string | null;
-            /** Basis Refs */
-            basis_refs?: components["schemas"]["PlanningSource"][];
-            /** Source Signature */
-            source_signature?: string | null;
-            next_focus?: components["schemas"]["CurrentFocusRead"] | null;
-            /** Resulting Plan Revision */
-            resulting_plan_revision?: number | null;
         };
     };
     responses: never;

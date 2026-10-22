@@ -183,7 +183,9 @@ async def test_labels_cannot_override_current_conditions(database, unique_name, 
             row.id, state=state, note="尝试收尾", unknowns=["尚有未知"]
         )
     result = await gate(database, context.toolbox.session_id)
-    assert result.decision == "continue" and result.unreviewed_count == 1
+    assert result.allowed
+    async with database.session() as db:
+        assert (await build_review_inventory(db, context.toolbox.session_id)).unreviewed_count == 1
 
 
 async def test_waiting_count_uses_entire_inventory_not_current_page(database, unique_name):
@@ -200,13 +202,15 @@ async def test_waiting_count_uses_entire_inventory_not_current_page(database, un
                 row.id, state="needs_condition", note="外部环境不可由本 Agent 补齐"
             )
     result = await gate(database, context.toolbox.session_id)
-    assert result.decision == "wait_user" and result.blocked_count == 7
+    assert result.allowed
+    async with database.session() as db:
+        assert (await build_review_inventory(db, context.toolbox.session_id)).waiting_count == 7
 
 
 @pytest.mark.parametrize(
     "status,resume_note", [("pending", None), ("in_progress", None), ("blocked", None)]
 )
-async def test_unfinished_plan_cannot_be_ignored(database, unique_name, status, resume_note):
+async def test_optional_unfinished_plan_does_not_block_finish(database, unique_name, status, resume_note):
     context = await context_for(database, unique_name)
     result = await gate(
         database,
@@ -220,7 +224,7 @@ async def test_unfinished_plan_cannot_be_ignored(database, unique_name, status, 
             }
         ],
     )
-    assert result.decision == "continue"
+    assert result.allowed
 
 
 async def test_existing_unrelated_lead_is_not_a_connection(database, unique_name):
@@ -359,8 +363,7 @@ async def test_presentation_commits_only_actual_items_and_recall_keys(database, 
         cast(Any, {"last_weakness_revisions": {"older": 1}}),
         cast(Any, SimpleNamespace(context=context)),
     )
-    assert update["last_weakness_revisions"] == {"older": 1, "shown": 2}
-    assert update["last_recall_keys"] == ["real-key"]
+    assert update is None, "最小闭环不再推进旧弱点消费游标"
 
 
 async def test_late_weakness_is_not_hidden_behind_old_reviewed_prefix(database, unique_name):
@@ -445,7 +448,9 @@ async def test_same_identity_auth_revision_invalidates_prior_assessment(database
         saved = await db.get(IdentityRow, identity.id)
         saved.auth_revision += 1
     result = await gate(database, context.toolbox.session_id)
-    assert result.unreviewed_count == 1 and result.decision == "continue"
+    assert result.allowed
+    async with database.session() as db:
+        assert (await build_review_inventory(db, context.toolbox.session_id)).unreviewed_count == 1
 
 
 async def test_completed_background_operation_recalls_bound_lead(database, unique_name):

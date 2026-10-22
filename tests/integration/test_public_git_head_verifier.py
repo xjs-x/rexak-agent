@@ -206,7 +206,7 @@ async def test_public_git_head_verifier_confirms_only_precise_claim(
     assert all(row is not None and row.protected for row in protected)
     report = await create_report_snapshot(database, store, session_id)
     assert report.confirmed_count == 1
-    assert "verify_public_git_head" in {tool.name for tool in build_tools()}
+    assert "verify_public_git_head" not in {tool.name for tool in build_tools()}
 
 
 @pytest.mark.parametrize(

@@ -6,7 +6,7 @@
   越界的 URL 连请求都不会发到执行岛；
 - 执行岛再对**每一个请求**逐跳检查（含 XHR / 图片 / iframe），
   并覆盖范围解析后的地址 —— 只检查导航挡不住页面脚本自己 fetch；
-- **最终 URL 判定**：JS 重定向后按 `page.url` 再判一次；越界时控制端写一条覆盖记录，
+- **最终 URL 判定**：JS 重定向后按 `page.url` 再判一次；越界时控制端保留失败操作，
   且**不**把该页内容当作可用证据；
 - 页面正文与截图落成**不可变工件**，模型上下文里只放摘要与 `artifact_id`；
 - 身份隔离：每个 `identity_id` 一个浏览器上下文，互不影响。
@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -98,7 +97,7 @@ async def run_browser_action(
                 finished_at=datetime.now(UTC),
             )
         except ScopeViolation as exc:
-            # 越界：**不派发**，写覆盖记录，返回确定失败
+            # 越界：**不派发**，错误和执行历史保留实际拒绝原因
             return ToolResult(
                 operation_id=UUID(int=0),
                 status=OperationStatus.FAILED,
@@ -172,18 +171,12 @@ async def run_browser_action(
             snapshot.error.message if snapshot.error else "浏览器动作未成功"
         )
         await record_result(
-            toolbox, operation_id=operation_id, job_id=receipt.job_id,
-            status=state, snapshot=snapshot,
+            toolbox,
+            operation_id=operation_id,
+            job_id=receipt.job_id,
+            status=str(OperationStatus.FAILED),
+            snapshot=snapshot,
         )
-        if code == "scope_violation":
-            await _record_scope_coverage(toolbox, str(fields.get("url") or ""), message)
-            await record_result(
-                toolbox,
-                operation_id=operation_id,
-                job_id=receipt.job_id,
-                status=str(OperationStatus.FAILED),
-                snapshot=snapshot,
-            )
         return ToolResult(
             operation_id=operation_id,
             job_id=receipt.job_id,
@@ -208,11 +201,6 @@ async def run_browser_action(
     result: dict[str, Any] = payload["result"]
     if result.get("final_url_out_of_scope"):
         # 发生范围外跳转：不下载正文/截图，也不挂任何可用证据引用。
-        await _record_scope_coverage(
-            toolbox,
-            str(result.get("final_url") or ""),
-            str(result.get("out_of_scope_reason") or "最终 URL 超出声明范围"),
-        )
         await record_result(
             toolbox,
             operation_id=operation_id,
@@ -363,26 +351,6 @@ async def _sync_artifacts(
     return refs
 
 
-async def _record_scope_coverage(toolbox: Toolbox, url: str, reason: str) -> None:
-    """把范围事件写成覆盖记录，让"确实发生了越界尝试"留下痕迹。
-
-    这是**覆盖记录**，不是漏洞结论：它说明"我们试过并被策略拦住"（§5.4）。
-    """
-    from agent_workbench.contracts.enums import CoverageStatus
-    from agent_workbench.domain.findings import CoverageService
-
-    with contextlib.suppress(Exception):
-        async with toolbox.db.transaction() as db:
-            await CoverageService(db).record(
-                session_id=toolbox.session_id,
-                check_category="browser_scope",
-                status=CoverageStatus.BLOCKED,
-                entry_label=url[:200],
-                identity_id=toolbox.identity_id,
-                reason=reason[:500],
-            )
-
-
 # --------------------------------------------------------------------------- #
 # 对外工具
 # --------------------------------------------------------------------------- #
@@ -401,10 +369,14 @@ async def list_test_identities(runtime: ToolRuntime[RunContext]) -> str:
             await db.execute(select(SessionRow).where(SessionRow.id == toolbox.session_id))
         ).scalar_one()
         identities = (
-            await db.execute(
-                select(IdentityRow).where(IdentityRow.project_id == session_row.project_id)
+            (
+                await db.execute(
+                    select(IdentityRow).where(IdentityRow.project_id == session_row.project_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     return json_text(
         ToolResult(
             operation_id=UUID(int=0),
@@ -472,8 +444,10 @@ async def browser_login(
         secret = json.loads(build_secret_store().resolve(identity.secret_ref))
     except (SecretNotFoundError, json.JSONDecodeError):
         return _identity_failure("测试账号 secret_ref 无法解析为凭据 JSON")
-    if not isinstance(secret, dict) or not isinstance(secret.get("username"), str) or not isinstance(
-        secret.get("password"), str
+    if (
+        not isinstance(secret, dict)
+        or not isinstance(secret.get("username"), str)
+        or not isinstance(secret.get("password"), str)
     ):
         return _identity_failure("测试账号凭据需要 username/password 字符串字段")
     result = await run_browser_action(

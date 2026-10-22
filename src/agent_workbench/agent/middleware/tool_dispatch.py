@@ -117,10 +117,22 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         if args is None:
             args = {}
 
+        if tool_name in {"update_plan", "propose_completion", "record_lead", "record_observation"}:
+            schema = getattr(getattr(request, "tool", None), "tool_call_schema", None)
+            if schema is not None:
+                unknown = set(args) - set(schema.model_fields)
+                if unknown:
+                    return _tool_message(
+                        request,
+                        "旧协议或未声明参数已停用："
+                        + ", ".join(sorted(unknown))
+                        + "。请按当前工具 Schema 重新决策；该调用未执行。",
+                    )
+
         batch = batch_tool_names(dict(request.state or {}))
-        if tool_name == "update_plan" and batch.count("update_plan") > 1:
+        if tool_name in {"update_plan", "propose_completion"} and batch.count(tool_name) > 1:
             return _tool_message(
-                request, "同批多个 update_plan 已在执行前全部拒绝；请合并为一次更新。"
+                request, f"同批多个 {tool_name} 已在执行前全部拒绝；请合并为一次更新。"
             )
         if (
             tool_name in {"load_skill", "unload_skill"}

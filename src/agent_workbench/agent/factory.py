@@ -17,7 +17,7 @@ import json
 import marshal
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from langchain.agents import create_agent
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -57,36 +57,23 @@ from agent_workbench.tools.registry import ToolSelection, build_tools, default_s
 
 def loaded_code_version() -> str:
     """已加载的规划入口/合同/提示指纹；磁盘源码树另外记录，不混称字节码。"""
-    from agent_workbench.contracts.planning import (
-        AssessmentInput,
-        StepCompletionRecord,
-        StepCompletionSpec,
-    )
-    from agent_workbench.domain.planning import check_step_completion, resolve_sources
-    from agent_workbench.domain.planning_applicability import check_applicability
-    from agent_workbench.domain.planning_context import planning_result_context
-    from agent_workbench.domain.planning_http import check_http_work
+    from agent_workbench.contracts.plan import PlanStepPatch
+    from agent_workbench.tools.completion import propose_completion
     from agent_workbench.tools.planning import apply_plan_update, normalize_steps
-    from agent_workbench.tools.planning_validation import validate_plan_steps
 
     digest = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8"))
     for function in (
         build_agent_middleware,
         open_agent_runtime,
         apply_plan_update,
-        resolve_sources,
-        check_step_completion,
-        check_applicability,
-        check_http_work,
-        planning_result_context,
         normalize_steps,
-        validate_plan_steps,
         ToolDispatchMiddleware._dispatch_tool_call,
+        FinishGateMiddleware.aafter_model,
+        cast(Any, propose_completion).coroutine,
     ):
         digest.update(marshal.dumps(inspect.unwrap(function).__code__))
-    for model in (AssessmentInput, StepCompletionRecord, StepCompletionSpec):
-        digest.update(json.dumps(model.model_json_schema(), sort_keys=True).encode("utf-8"))
-    return "loaded-planning:" + digest.hexdigest()[:40]
+    digest.update(json.dumps(PlanStepPatch.model_json_schema(), sort_keys=True).encode("utf-8"))
+    return "loaded-minimal-loop:" + digest.hexdigest()[:40]
 
 
 @dataclass(slots=True)
@@ -139,6 +126,7 @@ def build_agent_middleware(
     price_catalog: PriceCatalog,
     *,
     legacy_skill_checkpoint: bool = False,
+    legacy_protocol_checkpoint: bool = False,
 ) -> list[Any]:
     """纯装配函数，捕获请求测试验证 wrap 顺序与最终视图。
 
@@ -155,9 +143,9 @@ def build_agent_middleware(
             else []
         ),
         SegmentMiddleware(settings.segment_decision_rounds),
-        ProgressMiddleware(),
+        *([ProgressMiddleware(enabled=False)] if legacy_protocol_checkpoint else []),
         WorkingContextMiddleware(),
-        StageReportMiddleware(),
+        *([StageReportMiddleware(enabled=False)] if legacy_protocol_checkpoint else []),
         ResponseRecoveryMiddleware(
             max_recoveries=binding.profile.max_response_recoveries,
             recovery_output_limit=binding.profile.recovery_output_limit,
@@ -231,6 +219,14 @@ async def open_agent_runtime(
             price_catalog or default_price_catalog(),
             legacy_skill_checkpoint=bool(
                 saved and checkpoint_needs_skill_bridge(dict(saved.checkpoint))
+            ),
+            legacy_protocol_checkpoint=bool(
+                saved
+                and any(
+                    "ProgressMiddleware." in str(key) or "StageReportMiddleware." in str(key)
+                    for field in ("versions_seen", "channel_versions", "channel_values")
+                    for key in (saved.checkpoint.get(field) or {})
+                )
             ),
         )
 

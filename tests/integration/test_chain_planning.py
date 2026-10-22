@@ -17,7 +17,8 @@ from agent_workbench.domain.exploration_review import derive_actionability
 from agent_workbench.evidence.artifacts import ArtifactStore
 from agent_workbench.persistence.tables import FindingRow, LeadRow, LeadWeaknessLinkRow
 from agent_workbench.tools.history import search_history
-from agent_workbench.tools.task import record_lead, record_weakness, update_plan
+from agent_workbench.tools.task import legacy_record_lead as record_lead
+from agent_workbench.tools.task import record_weakness, update_plan
 from tests.integration.test_request_budget import context_for
 
 pytestmark = pytest.mark.integration
@@ -136,19 +137,18 @@ async def test_weakness_relation_plan_and_history_stay_one_chain(database, uniqu
         update_plan,
         context,
         {
-            "steps_json": [
+            "expected_plan_revision": 0,
+            "steps": [
                 {
                     "step_id": "s1",
                     "description": "沿错误页路径推进",
                     "status": "in_progress",
-                    "kind": "followup",
-                    "lead_ids": [lead_id],
+                    "lead_id": lead_id,
                 },
                 {
                     "step_id": "s2",
                     "description": "补检未覆盖入口",
                     "status": "pending",
-                    "kind": "coverage",
                 },
             ],
             "rationale": "建立链条",
@@ -158,9 +158,8 @@ async def test_weakness_relation_plan_and_history_stay_one_chain(database, uniqu
     assert isinstance(planned, Command)
     assert planned.update is not None
     plan = planned.update["plan"]
-    assert plan[0]["kind"] == "followup" and plan[0]["lead_ids"] == [lead_id]
     assert plan[0]["lead_id"] == lead_id, "旧 lead_id 兼容投影必须保留"
-    assert plan[1]["lead_ids"] == []
+    assert plan[1]["status"] == "pending"
     assert planned.update["current_focus"]["lead_id"] == lead_id
 
     # 用途判断：引用真实存在的关联才算完成。
@@ -274,7 +273,8 @@ async def test_record_lead_rejects_unsupported_actionability_and_plan_conflicts(
             update_plan,
             context,
             {
-                "steps_json": [
+                "expected_plan_revision": 0,
+            "steps": [
                     {
                         "step_id": "s1",
                         "description": "冲突步骤",
@@ -286,7 +286,7 @@ async def test_record_lead_rejects_unsupported_actionability_and_plan_conflicts(
             },
             "plan-conflict",
         )
-    assert "冲突" in str(conflict.value)
+    assert "Extra inputs" in str(conflict.value)
 
     async with database.session() as db:
         stored = (
@@ -362,8 +362,7 @@ async def test_weakness_scan_and_review_are_not_truncated_by_display_limits(
             },
         )
     assert view["weakness_consumption"]["pending_connection_review_count"] == 210
-    assert gate.unreviewed_count == 210, "复查集合不能按展示上限截断"
-    assert not gate.allowed
+    assert gate.allowed and gate.unreviewed_count == 0, "历史库存不参与最小结束门禁"
 
 
 async def test_explicit_ready_condition_resolution_keeps_deferred_lead_actionable(

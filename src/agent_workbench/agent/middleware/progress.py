@@ -241,7 +241,13 @@ def next_similarity_state(
 
 
 class ProgressMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
+    def __init__(self, *, enabled: bool = False) -> None:
+        super().__init__()
+        self.enabled = enabled
+
     async def abefore_model(self, state, runtime):  # type: ignore[no-untyped-def]
+        if not self.enabled:
+            return None
         context: RunContext | None = getattr(runtime, "context", None)
         if context is None:
             return None

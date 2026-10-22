@@ -14,12 +14,11 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
 from langchain_core.messages import AIMessage
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from openai import APIConnectionError
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
@@ -57,7 +56,6 @@ from agent_workbench.models.provider import ModelBinding
 from agent_workbench.observability.events import append_event
 from agent_workbench.observability.logging import get_logger
 from agent_workbench.observability.spans import SpanRecorder
-from agent_workbench.persistence.bootstrap import open_checkpointer_connection
 from agent_workbench.persistence.db import Database, get_database
 from agent_workbench.persistence.tables import RunRow, SessionRow
 from agent_workbench.tools.registry import default_selection
@@ -704,13 +702,8 @@ class AgentRunner:
 
         try:
             from agent_workbench.domain.prices import price_catalog_for_run
-            from agent_workbench.skills.service import SkillService
 
-            # 仅在装配边界发现外部扩展；空库存保持原工具与每轮中间件。
-            toolbox.skill_catalog = await SkillService(self._db, settings).catalog(run.id)
-            selection = replace(selection, skills=bool(toolbox.skill_catalog))
-            context.disabled_tools = selection.disabled_tools()
-
+            # 第一阶段不加载 Skills；安装记录和历史引用仍保留供后续读取。
             async with self._db.transaction() as db:
                 price_catalog = await price_catalog_for_run(db, run.id)
             binding = await self._capture_model_binding(run)
@@ -897,51 +890,6 @@ class AgentRunner:
                     run_id=str(run.id),
                     error=f"{type(exc).__name__}: {exc}",
                 )
-            try:
-                from datetime import UTC, datetime
-
-                from agent_workbench.agent.middleware.stage_report import stage_metadata
-                from agent_workbench.domain.reports import create_report_snapshot
-                from agent_workbench.evidence.artifacts import ArtifactStore
-
-                async with open_checkpointer_connection(settings) as connection:
-                    saved = await AsyncPostgresSaver(connection).aget_tuple(
-                        {"configurable": {"thread_id": session_row.thread_id}}
-                    )
-                values = saved.checkpoint.get("channel_values", {}) if saved is not None else {}
-                checkpoint_id = saved.checkpoint["id"] if saved is not None else "unavailable"
-                graph_read_at = datetime.now(UTC).isoformat()
-                assessment = values.get("work_assessment") or {}
-                metadata = stage_metadata(
-                    values,
-                    run_id=str(run.id),
-                    trigger=str(status),
-                    signature=str(checkpoint_id),
-                    covered_position={
-                        "checkpoint_id": checkpoint_id,
-                        "plan_revision": int(values.get("plan_revision") or 0),
-                        "completed_decision_rounds": int(
-                            values.get("completed_decision_rounds") or 0
-                        ),
-                        "work_assessment_revision": int(assessment.get("revision") or 0),
-                        "graph_read_at": graph_read_at,
-                        "domain_snapshot_at": None,
-                    },
-                )
-                metadata["checkpoint_id"] = checkpoint_id
-                if status is RunStatus.FAILED:
-                    # 故障报告不能冒充完成：明确标注这是故障快照。
-                    metadata["failed_snapshot"] = True
-                    metadata["not_a_completion"] = True
-                await create_report_snapshot(
-                    self._db, ArtifactStore(settings), run.session_id, stage_metadata=metadata
-                )
-            except Exception as exc:
-                log.warning(
-                    "terminal_stage_report_failed_retryable",
-                    run_id=str(run.id),
-                    error_type=type(exc).__name__,
-                )
         return RunOutcome(
             run_id=run.id,
             status=status,
@@ -1013,7 +961,7 @@ class AgentRunner:
             "prompt_version": runtime.prompt_version,
             "code_version": runtime.code_version,
             "system_prompt_sha256": hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest(),
-            "code_version_scope": "loaded_planning_entrypoints_contracts_and_prompt_not_entire_process",
+            "code_version_scope": "loaded_minimal_loop_entrypoints_and_prompt_not_entire_process",
             "owner_generation": generation,
             "captured_at": datetime.now(UTC).isoformat(),
         }
@@ -1259,9 +1207,6 @@ class AgentRunner:
                     "completion_proposal": None,
                     "finish_gate_feedback": [],
                     "finish_gate_attempts": 0,
-                    "no_progress_streak": 0,
-                    "last_progress_signature": "",
-                    "segment_work_units": 0,
                 }
             payload = next_input_state(
                 session_id=run.session_id,
@@ -1391,6 +1336,9 @@ class AgentRunner:
                     last_model_progress = progress
                     last_model_progress_at = time.monotonic()
                 text = _delta_text(chunk)
+                if getattr(chunk[0], "additional_kwargs", {}).get("workbench_completion_result"):
+                    # middleware 生成的结果在 checkpoint 提交后统一投影。
+                    text = ""
                 if text:
                     message_id = getattr(chunk[0], "id", None)
                     if message_id and message_id != response_id:
@@ -1503,8 +1451,6 @@ class AgentRunner:
                 decision = await FinishGate(session).evaluate(
                     session_id=run.session_id,
                     proposal=proposal,
-                    plan=list(values.get("plan") or []),
-                    review_cursor=values.get("weakness_review_cursor"),
                     run_id=run.id,
                 )
             span.finish()
@@ -1529,6 +1475,78 @@ class AgentRunner:
         if not decision.allowed:
             return None, None
 
+        # 显式结束工具生成的最终回答从已提交 checkpoint 投影一次，重启不重复。
+        result_message_id = f"completion-{run.id}-{proposal.get('proposed_at_turn', 0)}"
+        for message in values.get("messages") or []:
+            if (
+                isinstance(message, AIMessage)
+                and message.id == result_message_id
+                and message.additional_kwargs.get("workbench_completion_result")
+            ):
+                from uuid import NAMESPACE_URL, uuid5
+
+                from agent_workbench.evidence.artifacts import ArtifactStore
+                from agent_workbench.persistence.repositories import ArtifactRepository
+                from agent_workbench.persistence.tables import ArtifactRow, EventRow
+
+                event_id = uuid5(NAMESPACE_URL, f"rexak-final:{run.id}:{message.id}")
+                artifact_id = uuid5(NAMESPACE_URL, f"rexak-final-artifact:{run.id}:{message.id}")
+                stored = ArtifactStore(self._settings).write_bytes(
+                    str(message.content).encode("utf-8"), media_type="text/plain"
+                )
+                async with self._db.transaction() as db:
+                    await db.execute(
+                        select(SessionRow).where(SessionRow.id == run.session_id).with_for_update()
+                    )
+                    artifact = await db.get(ArtifactRow, artifact_id)
+                    if artifact is None:
+                        artifact = await ArtifactRepository(db).create(
+                            artifact_id=artifact_id,
+                            sha256=stored.sha256,
+                            byte_size=stored.byte_size,
+                            media_type=stored.media_type,
+                            relative_key=stored.relative_key,
+                            session_id=run.session_id,
+                            source_operation_id=None,
+                            sensitivity="internal",
+                            availability="available",
+                            captured_at=stored.captured_at,
+                            summary="已提交 checkpoint 的显式最终回答投影",
+                        )
+                        artifact.protected = True
+                    elif artifact.sha256 != stored.sha256:
+                        raise RuntimeError("同一最终回答的不可变工件内容冲突")
+                    saved_run = await db.get(RunRow, run.id, populate_existing=True)
+                    if saved_run is None:
+                        raise RuntimeError("最终回答投影找不到原运行")
+                    # 只保存可重建的读取指针；结果权威仍是已提交 checkpoint。
+                    saved_run.config_snapshot = {
+                        **saved_run.config_snapshot,
+                        "completion_result_artifact_id": str(artifact_id),
+                    }
+                    if (
+                        await db.execute(select(EventRow.id).where(EventRow.event_id == event_id))
+                    ).scalar_one_or_none() is None:
+                        event = await append_event(
+                            db,
+                            session_id=run.session_id,
+                            run_id=run.id,
+                            event_type=EventType.MESSAGE_DELTA,
+                            event_id=event_id,
+                            payload={
+                                "role": "assistant",
+                                "delta": str(message.content)[:1200],
+                                "artifact_id": str(artifact_id),
+                                "response_id": message.id,
+                                "redaction_version": 1,
+                            },
+                        )
+                        envelope = event.model_dump(mode="json")
+                    else:
+                        envelope = None
+                if envelope is not None and self._on_event is not None:
+                    with contextlib.suppress(Exception):
+                        self._on_event(envelope)
         reason_raw = str(proposal.get("reason") or "")
         reason = (
             CompletionReason.GOAL_ANSWERED

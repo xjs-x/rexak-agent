@@ -215,7 +215,7 @@ def create_app() -> FastAPI:
             "runtime_versions": {
                 "prompt_version": PROMPT_VERSION,
                 "code_version": loaded_code_version(),
-                "scope": "loaded_planning_entrypoints_contracts_and_prompt_not_entire_process",
+                "scope": "loaded_minimal_loop_entrypoints_and_prompt_not_entire_process",
             },
             "database": {"ok": db_ok, **info},
             "auth_configured": not LocalAuth()._is_default_secret(settings.session_secret),

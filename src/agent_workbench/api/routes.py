@@ -30,7 +30,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import Text, and_, cast, literal, or_, select, tuple_, union_all
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
-from agent_workbench.agent.state import plan_step_kind, plan_step_lead_ids
+from agent_workbench.agent.state import plan_step_lead_ids
 from agent_workbench.api.auth import LocalAuth
 from agent_workbench.api.redaction import redact_api_value as _redact_api_value
 from agent_workbench.api.redaction import redact_event_payload
@@ -59,7 +59,6 @@ from agent_workbench.contracts.plan import (
     CurrentFocusRead,
     PlanRead,
     PlanStepRead,
-    WorkAssessmentRead,
 )
 from agent_workbench.domain.findings import FindingService
 from agent_workbench.domain.instruction_scope import scope_from_instructions, sync_instruction_scope
@@ -275,14 +274,7 @@ async def create_session(
     preferences = read_preferences(settings)
     selected_provider = payload.provider_id or preferences.default_provider
     if payload.initial_skill_refs:
-        from agent_workbench.skills.service import SkillService
-
-        try:
-            await SkillService(get_database()).validate_references(
-                payload.initial_skill_refs, str(project_id)
-            )
-        except ValueError as exc:
-            raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from exc
+        raise ApiError(ErrorCode.VALIDATION_FAILED, "第一阶段暂不启用 Skills；请直接描述任务目标")
     selected_model = payload.model_name or (
         preferences.default_model
         if selected_provider == preferences.default_provider
@@ -541,32 +533,9 @@ async def post_message(
 
         active = await find_active_run(session, session_id)
         if skill_refs:
-            from agent_workbench.skills.service import SkillService
-
-            try:
-                service = SkillService(get_database())
-                await service.validate_references(skill_refs, str(row.project_id))
-                if active and (active.config_snapshot or {}).get("skill_catalog_artifact_id"):
-                    # 当前运行的目录已固定，刚安装的技能应在下一运行使用。
-                    from agent_workbench.persistence.tables import ArtifactRow
-
-                    artifact = await session.get(
-                        ArtifactRow, UUID(active.config_snapshot["skill_catalog_artifact_id"])
-                    )
-                    if artifact is None or not service.store.verify(
-                        artifact.relative_key, artifact.sha256
-                    ):
-                        raise ValueError("skill_version_missing: 目录快照不可用")
-                    visible = {
-                        item["skill_id"]
-                        for item in json.loads(service.store.read_bytes(artifact.relative_key))
-                    }
-                    if any(reference not in visible for reference in skill_refs):
-                        raise ValueError(
-                            "skill_not_found: 技能不在当前运行固定目录，请在下一运行使用"
-                        )
-            except ValueError as exc:
-                raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from exc
+            raise ApiError(
+                ErrorCode.VALIDATION_FAILED, "第一阶段暂不启用 Skills；请直接追加任务指令"
+            )
         preferences = read_preferences(settings)
         selected_provider = provider_id or (
             active.provider_id if active else preferences.default_provider
@@ -846,18 +815,18 @@ async def session_plan(session_id: UUID, request: Request) -> PlanRead:
                     **_redact_api_value(step),
                     # 旧步骤只有 lead_id：读取时映射为单元素 lead_ids（不回写历史）。
                     "lead_ids": plan_step_lead_ids(step),
-                    "kind": plan_step_kind(step),
+                    "legacy_metadata": {
+                        key: value
+                        for key, value in _redact_api_value(step).items()
+                        if key not in {"step_id", "description", "status", "rationale", "lead_id"}
+                    }
+                    or None,
                 }
             )
             for step in raw_steps
         ],
         current_focus=CurrentFocusRead.model_validate(_redact_api_value(values["current_focus"]))
         if values.get("current_focus")
-        else None,
-        work_assessment=WorkAssessmentRead.model_validate(
-            _redact_api_value(values["work_assessment"])
-        )
-        if values.get("work_assessment")
         else None,
     )
 
@@ -1117,6 +1086,25 @@ def _conversation_sources(session_id: UUID) -> Any:
             ModelCallRow.response_artifact_id.is_not(None),
             ModelCallRow.completed_at.is_not(None),
         ),
+        select(
+            ArtifactRow.id,
+            literal("result"),
+            literal(3),
+            ArtifactRow.captured_at,
+            RunRow.id,
+            empty_text,
+            ArtifactRow.id,
+        )
+        .select_from(RunRow)
+        .join(
+            ArtifactRow,
+            ArtifactRow.id
+            == cast(
+                RunRow.config_snapshot["completion_result_artifact_id"].astext,
+                PG_UUID(as_uuid=True),
+            ),
+        )
+        .where(RunRow.session_id == session_id, ArtifactRow.session_id == session_id),
     ).subquery("conversation")
 
 
@@ -1131,7 +1119,7 @@ def _parse_conversation_cursor(cursor: str) -> tuple[datetime, int, UUID]:
         when, rank_text, entry_id = raw.split("|", 2)
         timestamp = datetime.fromisoformat(when)
         rank = int(rank_text)
-        if timestamp.tzinfo is None or rank not in {0, 1, 2}:
+        if timestamp.tzinfo is None or rank not in {0, 1, 2, 3}:
             raise ValueError("无效游标")
         return timestamp, rank, UUID(entry_id)
     except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
@@ -1214,7 +1202,7 @@ async def page_conversation(
     entries: list[dict[str, Any]] = []
     for row in rows[:limit]:
         artifact = artifacts.get(row["artifact_id"])
-        available = row["source"] != "assistant"
+        available = row["source"] not in {"assistant", "result"}
         body = redact_text(row["body"] or "")
         if artifact is not None and artifact.availability == "available":
             try:
@@ -1227,7 +1215,7 @@ async def page_conversation(
         entries.append(
             {
                 "id": row["id"],
-                "role": "assistant" if row["source"] == "assistant" else "user",
+                "role": "assistant" if row["source"] in {"assistant", "result"} else "user",
                 "source": row["source"],
                 "run_id": row["run_id"],
                 "occurred_at": row["occurred_at"],
@@ -1261,7 +1249,7 @@ async def read_conversation_body(
     from agent_workbench.evidence.artifacts import build_artifact_store, redact_text
     from agent_workbench.persistence.db import get_database
 
-    if source not in {"objective", "message", "assistant"}:
+    if source not in {"objective", "message", "assistant", "result"}:
         raise ApiError(ErrorCode.NOT_FOUND, "对话记录不存在")
     union = _conversation_sources(session_id)
     async with get_database().session() as db:
@@ -1282,7 +1270,7 @@ async def read_conversation_body(
         )
     if row is None:
         raise ApiError(ErrorCode.NOT_FOUND, "对话记录不存在")
-    if source == "assistant":
+    if source in {"assistant", "result"}:
         if (
             artifact is None
             or artifact.session_id != session_id
@@ -1298,7 +1286,7 @@ async def read_conversation_body(
     end = offset + limit
     return {
         "id": entry_id,
-        "role": "assistant" if source == "assistant" else "user",
+        "role": "assistant" if source in {"assistant", "result"} else "user",
         "text": body[offset:end],
         "offset": offset,
         "next_offset": end if end < len(body) else None,

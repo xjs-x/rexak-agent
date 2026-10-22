@@ -1,27 +1,7 @@
-"""阶段结束的确定性检查（finish_gate）。
+"""最小结束一致性检查：控制指令、工件真实性和未决执行。
 
-V3（方案 §6）：复查集合由**程序**从业务表完整枚举，不再依赖模型在结束申请里主动列出的线索。
-
-决策顺序：
-```
-if pending_user_commands:                    -> continue
-if invalid_evidence_or_unverified_findings:  -> continue（带具体反馈）
-if unreviewed_or_stale_items:                -> continue（带回一页复查对象）
-if ready_leads_or_feasible_coverage_work:    -> continue
-if unresolved_tool_jobs:                     -> wait_tool
-if all_remaining_routes_need_external_conditions: -> wait_user
-if no_supported_next_action_remains:         -> complete
-```
-
-硬性语义：
-- `blocked` / `deferred` **不在**自动终态集合中；缺失可推进性判断时归为 `needs_review`；
-- `deferred/outside_goal/not_required + reason` 不再直接通过检查；
-- "非当前目标必需"不再是自主结束的豁免；
-- `no_new_action` 必须绑定本次依赖版本并说明未知，程序检查遗漏、版本与结构矛盾。
-- 程序**不能**证明自然语言理由一定正确，也不声称能证明模型想到所有方法。
-
-缺少外部条件（账号、可达目标）时进入 `wait_user`，但未决对象必须保留在复查与报告中，
-不能用"把线索改成 blocked/deferred"消除缺口。
+模型决定何时回答；计划、Lead、Coverage 不阻止结束。保留旧 confirmed
+记录的完整性检查，但本阶段不运行专用漏洞核验工具，也不自动升级候选。
 """
 
 from __future__ import annotations
@@ -35,8 +15,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_workbench.contracts.enums import CommandStatus, CoverageStatus
-from agent_workbench.contracts.exploration import REVIEW_PAGE_SIZE
-from agent_workbench.domain.exploration_review import build_review_inventory
 from agent_workbench.evidence.artifacts import ArtifactError, ArtifactStore, build_artifact_store
 from agent_workbench.persistence.tables import (
     ArtifactRow,
@@ -100,35 +78,15 @@ class FinishGate:
         review_cursor: str | None = None,
         run_id: UUID | None = None,
     ) -> CompletionDecision:
-        from agent_workbench.domain.exploration_lock import lock_exploration
-
-        await lock_exploration(self._s, session_id)
-        from agent_workbench.contracts.planning import planning_digest
-
-        if (
-            proposal
-            and proposal.get("plan_signature") is not None
-            and proposal["plan_signature"] != planning_digest(list(plan or []))
-        ):
-            return CompletionDecision(
-                decision="continue", reasons=["结束提议针对旧计划快照，请按已提交的新计划重新判断"]
-            )
+        # 计划、假设和覆盖记录是可选上下文，不参与结束决策。
+        _ = plan, review_cursor, run_id
         if proposal is None or proposal.get("reason") not in {
             "goal_answered",
             "exploration_converged",
         }:
-            return CompletionDecision(
-                decision="continue",
-                reasons=["缺少有效的结构化结束提议"],
-            )
-        if (
-            not str(proposal.get("goal_answer") or "").strip()
-            or not str(proposal.get("stop_rationale") or "").strip()
-        ):
-            return CompletionDecision(
-                decision="continue",
-                reasons=["结束提议必须包含目标回答和停止依据"],
-            )
+            return CompletionDecision(decision="continue", reasons=["缺少有效结束信号"])
+        if not str(proposal.get("goal_answer") or "").strip():
+            return CompletionDecision(decision="continue", reasons=["最终回答不能为空"])
 
         # 1) 未处理的高优先级用户指令
         pending_command_ids = await self._pending_high_priority_commands(session_id)
@@ -156,42 +114,6 @@ class FinishGate:
                 decision="continue", reasons=reasons, blocking_objects=blocking
             )
 
-        # 3) 程序枚举的**完整**复查集合（不按 priority 阈值裁剪，也不依赖 .limit(200)）
-        inventory = await build_review_inventory(
-            self._s,
-            session_id,
-            plan=plan or [],
-            cursor=review_cursor,
-            page_size=REVIEW_PAGE_SIZE,
-            focus_lead_id=proposal.get("focus_lead_id"),
-            run_id=run_id,
-        )
-        page_labels = [
-            f"{item.kind}:{item.object_id}:{item.label[:60]}" for item in inventory.items
-        ]
-        if inventory.unreviewed_count:
-            return CompletionDecision(
-                decision="continue",
-                reasons=[
-                    "还有尚未复查或依据已过期的对象（含待分析弱点、失效的条件判断）；"
-                    "请先按下面这一页给出判断或推进，再考虑结束。"
-                    "`deferred/outside_goal/not_required` 不再是放行理由。",
-                ],
-                blocking_objects={"review_page": page_labels},
-                unreviewed_count=inventory.unreviewed_count,
-                ready_count=inventory.actionable_count,
-                review_next_cursor=inventory.next_cursor,
-            )
-
-        # 4) 仍有可推进方向 -> 继续
-        if inventory.actionable_count:
-            return CompletionDecision(
-                decision="continue",
-                reasons=["仍有可推进的线索或覆盖缺口，默认继续而不是结束。"],
-                blocking_objects={"actionable_items": page_labels},
-                ready_count=inventory.actionable_count,
-            )
-
         # 5) 未交待结果的工具任务与未满足的明确等待条件
         unresolved_jobs = await self._unresolved_jobs(session_id)
         open_wait_sets = await self._open_wait_sets(session_id)
@@ -209,63 +131,7 @@ class FinishGate:
         #     也不允许把真正待办（上面的有限任务）改称"保留资源"来绕过检查。
         retained, duty_note = await self._retained_resources(session_id)
 
-        # 6) 所有有效方向都确实需要外部条件 -> 等待用户（保留全部未决项）
-        waiting = [item for item in inventory.items if item.actionability == "needs_condition"]
-        external = [str(item) for item in (proposal.get("missing_conditions") or [])]
-        if inventory.waiting_count:
-            details: list[str] = []
-            for item in waiting:
-                missing = (item.detail or {}).get("missing_conditions") or []
-                details.append(
-                    f"{item.object_id}:{item.label[:60]}"
-                    + (f"（缺：{'; '.join(str(v) for v in missing[:3])}）" if missing else "")
-                )
-            return CompletionDecision(
-                decision="wait_user",
-                reasons=[
-                    "剩余有效方向都需要外部条件：",
-                    *(f"缺少必要条件：{item}" for item in external),
-                ],
-                blocking_objects={
-                    "waiting_items": details,
-                    "missing_conditions": external,
-                },
-                blocked_count=inventory.waiting_count,
-                retained_resources=retained,
-                duty_note=duty_note,
-            )
-
-        # 7) 开放探索收尾：覆盖缺口复查（受阻项保留在报告里，不能靠改状态消除）
-        if proposal.get("reason") == "exploration_converged":
-            gap = await self._coverage_gap(session_id)
-            if gap["total_entries"] == 0:
-                return CompletionDecision(
-                    decision="continue",
-                    reasons=["尚未登记任何覆盖组合，不能声称开放探索已经收敛"],
-                    coverage_gap=gap,
-                    retained_resources=retained,
-                    duty_note=duty_note,
-                )
-            if gap.get("not_checked_entries"):
-                return CompletionDecision(
-                    decision="continue",
-                    reasons=[
-                        "请求以 exploration_converged 结束，但仍有未检查且未说明原因的覆盖缺口；"
-                        "请先补检或给出明确的搁置理由。"
-                    ],
-                    blocking_objects={"coverage_gaps": gap["not_checked_entries"]},
-                    coverage_gap=gap,
-                    retained_resources=retained,
-                    duty_note=duty_note,
-                )
-            return CompletionDecision(
-                decision="complete",
-                reasons=[],
-                coverage_gap=gap,
-                retained_resources=retained,
-                duty_note=duty_note,
-            )
-
+        # 缺少条件由模型在结果中说明，不从领域记录推导强制继续或等待。
         return CompletionDecision(
             decision="complete", reasons=[], retained_resources=retained, duty_note=duty_note
         )

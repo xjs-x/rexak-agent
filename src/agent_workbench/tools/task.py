@@ -1,24 +1,15 @@
-"""任务资料工具：`update_plan`、`record_lead`、`record_observation`、
-`record_weakness`（新）与 `propose_finding`（兼容入口）。
+"""最小循环的可选工作记录与候选发现工具。
 
-规则（§8.2）：
-- 输入校验 + 来源检查；
-- **模型不能直接标记 verified**；
-- 计划写入图状态（LangGraph checkpoint 为权威）；线索/观察/弱点/关系写入业务表；
-- 模型猜测只形成 `candidate`，`confirmed` 只能由验证服务写入。
-
-V3（方案 §4）：
-- `record_weakness` 是弱点的主写入口，`propose_finding` 保留为兼容别名，共用内部实现；
-  旧入口的**操作身份与请求摘要**保持不变，否则旧调用在重放时会变成新操作；
-- `record_lead` 扩展关系与条件参数；`update_plan` 扩展 `kind` / `lead_ids`；
-- 关系写入与实体变更在**同一事务**中完成，失败整体撤销。
+计划只写 checkpoint；假设、观察和候选写业务表。复杂关系入口仅保留历史
+兼容，未注册给生产模型。模型不能直接写 verified/confirmed；旧操作身份
+和请求摘要保持不变，防止恢复时产生新的逻辑副作用。
 """
 
 from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from langchain.tools import ToolRuntime
@@ -27,18 +18,18 @@ from langgraph.types import Command
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.contracts.enums import (
-    CoverageStatus,
     FindingCategory,
     LeadStatus,
     ToolEffectClass,
 )
 from agent_workbench.contracts.events import EventType
+from agent_workbench.contracts.plan import PlanStepPatch
 from agent_workbench.contracts.weaknesses import (
     ActionabilityAssessment,
     WeaknessRelationRef,
 )
 from agent_workbench.domain.assets import record_asset
-from agent_workbench.domain.findings import CoverageService, FindingService
+from agent_workbench.domain.findings import FindingService
 from agent_workbench.domain.leads import LeadService, lead_summary
 from agent_workbench.domain.observations import record_observation_ref
 from agent_workbench.domain.weakness_relations import refute_links, upsert_links
@@ -67,55 +58,32 @@ def _parse_json(raw: Any, field: str) -> Any:
 async def update_plan(
     runtime: ToolRuntime[RunContext],
     tool_call_id: Annotated[str, InjectedToolCallId],
-    steps_json: str | None = None,
+    expected_plan_revision: int,
+    steps: list[PlanStepPatch] | None = None,
+    focus: str | None = None,
     rationale: str | None = None,
-    focus_json: str | None = None,
-    assessment_json: str | None = None,
-    expected_plan_revision: int | None = None,
 ) -> Command:
-    """按旧计划快照提交计划、焦点和关键判断；不决定下一工具。
+    """可选地局部更新工作计划或当前调查方向，不是工具执行的前提。
 
     Args:
-        steps_json: 最多 20 步的完整步骤清单；未改步骤只写 step_id 即沿用全部字段。
-            省略整个参数保留计划，不能直接删除未完成步骤。仍为原子提交，不是 Patch 接口。
-            步骤沿用 step_id/description/status/kind/lead_ids。完成前声明
-            completion_spec={"mode":"investigate|achieve","done_when":"条件",
-            "check_type":"model|predicate|verification"}。model 只代表模型语义判断；
-            predicate 还需 {operation_id,path:["data","field"],equals:标量}；
-            verification 还需已有 verification_id。done 时提交 completion={
-            "outcome":"satisfied|not_satisfied|inconclusive","summary":"短结论",
-            "source_refs":[{"kind":"artifact|operation|observation|verification","id":"UUID"}]}。
-            跨任务来源由程序检查并自动规范化为 supporting，无需填写 relation，原归属不变。
-            HTTP 完成还需 completion_spec.http_checks=[{method,url,identity?,authentication?}]，
-            url 只填端点，不放查询载荷。程序核对引用操作的方法、端点、身份及状态回执；
-            OPTIONS 结果不能代替 PUT。此检查不证明漏洞，也不独立理解自然语言结论。
-            要求新鲜结果时显式填写 completion_spec.not_before（带时区），没有隐式有效期。
-            不得自行填写 check。调查取得明确阴性结果可以完成；达成任务必须 satisfied。
-            blocked/dropped 必须有 rationale；done_when 与完成条件不得冲突。
-        rationale: 本次修订的简短原因（最多 500 字）。
-        focus_json: 下一焦点 {step_id,lead_id,intent,reason,return_to_step_id}；可切换到新步骤。
-        assessment_json: 初始计划后新增步骤、主动换主线或改为 blocked/dropped 时需要简短 JSON：
-            {changed,next_action,decision,basis_refs}，普通工具调用和单纯完成登记不要求填写。
-            省略 evaluated_step_ids/evaluated_plan_revision 时程序绑定旧焦点和旧版本；
-            显式提供时必须指向更新前计划，不可使用新步骤冒充旧判断对象。
-            decision=continue|repair|expand|switch|defer|close，
-            trigger=new_evidence|condition_changed|tool_failure|no_progress|user_instruction|initial_plan|completion|plan_adjustment，
-            basis_refs 为带 kind/id 的真实来源；evidence_refs 仍只接受工件 ID。
-            无须每次新结果都改计划；原计划有效时继续即可。
-        expected_plan_revision: 必须使用本轮上下文提供的旧计划版本，过期更新将被拒绝。
+        expected_plan_revision: 上下文中的当前版本；过期写入被拒绝。
+        steps: 只提交要新增或修改的步骤。每项含 step_id，可选 description/status/rationale/lead_id。
+            新步骤必须有 description。status 为 pending/in_progress/done/dropped/blocked。
+            省略的步骤和字段保持原样；完成只表示工作记录，不代表漏洞验证。
+        focus: 可选的简短调查方向，不依赖步骤或线索；空字符串清除焦点。
+        rationale: 可选简短修订说明。
         tool_call_id: 框架注入的稳定调用 ID。
 
-    更新以 checkpoint 提交为准。同批只能一个计划写入，新焦点的执行放到下一批。
+    无需为普通反思、切换或完成步骤提交证明。同批只能一次计划更新。
     """
     from agent_workbench.tools.planning import apply_plan_update
 
     return await apply_plan_update(
         runtime,
         tool_call_id,
-        steps_json=steps_json,
+        steps=steps,
+        focus=focus,
         rationale=rationale,
-        focus_json=focus_json,
-        assessment_json=assessment_json,
         expected_plan_revision=expected_plan_revision,
     )
 
@@ -127,6 +95,49 @@ async def update_plan(
 
 @tool("record_lead")
 async def record_lead(
+    runtime: ToolRuntime[RunContext],
+    hypothesis: str,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    lead_id: str | None = None,
+    next_action: str | None = None,
+    status: str | None = None,
+    note: str | None = None,
+    evidence_refs: list[str] | None = None,
+    expected_revision: int | None = None,
+    url: str | None = None,
+    method: str | None = None,
+) -> str:
+    """可选地保存或更新调查假设，无需为每次工具调用登记线索。
+
+    Args:
+        hypothesis: 简短调查假设，不是已验证漏洞。
+        lead_id: 更新已有记录时填写。
+        next_action: 可选下一动作。
+        status: 可选 new/investigating/needs_verification/disproved/blocked/deferred，不接受 confirmed。
+        note: 可选受阻、放弃或反证说明。
+        evidence_refs: 可选真实工件 ID。
+        expected_revision: 更新已有记录的可选乐观锁。
+        url: 可选关联入口。
+        method: 无法从来源推导时的采集方法。
+        tool_call_id: 框架注入。
+    """
+    return await cast(Any, legacy_record_lead).coroutine(
+        runtime,
+        hypothesis=hypothesis,
+        tool_call_id=tool_call_id,
+        lead_id=lead_id,
+        next_action=next_action,
+        status=status,
+        blocked_reason=note,
+        evidence_refs_json=evidence_refs,
+        expected_revision=expected_revision,
+        url=url,
+        method=method,
+    )
+
+
+@tool("record_lead")
+async def legacy_record_lead(
     runtime: ToolRuntime[RunContext],
     hypothesis: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
@@ -447,12 +458,11 @@ async def record_observation(
     identity: str = "anonymous",
     url: str | None = None,
     category: str = "other",
-    coverage_status: str = "checked_negative",
     source_operation_id: str | None = None,
     method: str | None = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """记录一次**观察**：索引已有工件，并更新覆盖状态。
+    """可选记录关键观察和资产来源；无需重复登记每次工具结果。
 
     Args:
         summary: 观察到的现象（客观描述，不写结论）。
@@ -461,8 +471,6 @@ async def record_observation(
         url: 关联入口。
         category: 检查类别，例如 info_disclosure / auth_boundary / access_control /
             input_validation / configuration / transport / session_management / other。
-        coverage_status: not_checked / checked_negative / checked_positive / blocked /
-            not_applicable。
         source_operation_id: 可选；产生这些证据的真实操作 ID。系统据此读取真实
             方法/入口/身份，而不是默认成 GET。
         method: 可选；当无法从证据推导时显式声明采集方法。
@@ -479,11 +487,6 @@ async def record_observation(
     artifact_ids = coerce_str_list(artifact_ids_json, "artifact_ids_json")
     resolved = await _verify_artifacts_exist(toolbox, artifact_ids)
 
-    try:
-        coverage = CoverageStatus(coverage_status)
-    except ValueError as exc:
-        raise ValueError(f"coverage_status 非法：{coverage_status}") from exc
-
     async with toolbox.db.transaction() as db:
         receipt = await _prepare_domain_receipt(
             db,
@@ -497,20 +500,18 @@ async def record_observation(
                 "identity": identity,
                 "url": url,
                 "category": category,
-                "coverage_status": coverage_status,
                 "source_operation_id": source_operation_id,
                 "method": method,
             },
         )
         if receipt.row.result_snapshot is not None:
             return json.dumps(receipt.row.result_snapshot, ensure_ascii=False, sort_keys=True)
-        asset_id: UUID | None = None
         asset_note: str | None = None
         evidence_context = await _evidence_operation_context(
             db, toolbox, resolved, source_operation_id=source_operation_id
         )
         if url:
-            asset_id, asset_note = await _link_asset(
+            _, asset_note = await _link_asset(
                 db,
                 toolbox,
                 url=url,
@@ -530,19 +531,9 @@ async def record_observation(
             url=url,
             source_operation_id=receipt.operation_id,
         )
-        await CoverageService(db).record(
-            session_id=toolbox.session_id,
-            check_category=category,
-            status=coverage,
-            asset_id=asset_id,
-            entry_label=url or "",
-            reason=summary[:500],
-            evidence_refs=resolved,
-        )
         payload = {
             "observation_id": str(ref),
             "artifacts": resolved,
-            "coverage_status": coverage_status,
             "category": category,
             "evidence_source_operation_ids": evidence_context["source_operation_ids"],
             "evidence_source_ambiguous": evidence_context["ambiguous"],
@@ -662,9 +653,8 @@ async def propose_finding(
 ) -> str:
     """提出一条**候选发现**（candidate）。
 
-    兼容入口：内部实现与 `record_weakness` 共用；**操作身份与请求摘要保持不变**，
-    因此旧 checkpoint 的重放不会被当成新操作。新工作请优先使用 `record_weakness`
-    （可写适用范围、条件与后续用途判断）。
+    保存可选候选记录并保留实际来源；无需维护条件关系或后续用途判断。
+    操作身份与旧请求摘要保持不变，重放不被当成新操作。
 
     Args:
         title: 一句话标题。
@@ -1199,6 +1189,5 @@ TASK_TOOLS = [
     update_plan,
     record_lead,
     record_observation,
-    record_weakness,
     propose_finding,
 ]
