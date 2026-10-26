@@ -152,12 +152,14 @@ async def _run_runner(
         runner = AgentRunner(
             settings=settings, owner=owner, database=db, production_scan=target is None
         )
-        from agent_workbench.agent.factory import loaded_code_version
         from agent_workbench.agent.prompts import PROMPT_VERSION
 
         log.info("runner_runtime_versions", prompt_version=PROMPT_VERSION,
-                 code_version=loaded_code_version(),
-                 scope="loaded_minimal_loop_entrypoints_and_prompt_not_entire_process")
+                 code_version=runner.startup_runtime_versions["code_version"],
+                 runtime_versions=runner.startup_runtime_versions,
+                 history_assistance_mode=settings.history_assistance_mode,
+                 history_assistance_force_off=settings.history_assistance_force_off,
+                 scope=runner.startup_runtime_versions["scope"])
         if once:
             outcome = await runner.step(only_run_id=target)
             if outcome is None:
@@ -222,8 +224,9 @@ def _run_alembic_upgrade(database_url: str) -> None:  # noqa: ARG001
     repo_root = Path(__file__).resolve().parents[2]
     cfg = Config(str(repo_root / "alembic.ini"))
     cfg.set_main_option("script_location", str(repo_root / "migrations"))
-    command.upgrade(cfg, "head")
-    _echo("业务表迁移：已升级到 head")
+    # 保留已应用的合法历史分支；不 stamp、不降级、不重跑另一分支的数据迁移。
+    command.upgrade(cfg, "heads")
+    _echo("业务表迁移：已升级到全部既有 heads")
 
 
 def _redact_dsn(dsn: str) -> str:

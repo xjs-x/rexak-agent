@@ -386,3 +386,12 @@ Earth 自然目标测试尚未完成：10 次成功 HTTP 操作和 25 个哈希�
 ## 2026-10-17 新成员部署整理
 
 增加个人配置生成及首次安装入口，移除共享模板中的维护者 IP/固定目录，支持按 SSH 用户解析远端路径、选择兼容 Python/公开包源和创建首次 venv。日常启动入口保留，个人凭据不覆盖。SSH 恢复后，在 Kali 全新独立目录完成首次及重复安装、23 个安装源码哈希和启动器检查，原配置与日常服务启动身份保持，fixture 和测试库已清理。操作见[新成员指南](team-setup.md)，证据与系统前置条件见[本轮记录](acceptance-results/2026-10-17/team-setup/README.md)；不包含虚拟机/系统软件自动安装或真实模型/靶场实验。
+
+
+## 2026-10-23：Session 双图与周期同步
+
+依据用户第三阶段方案及 decision 0016，实现 Session 信息图/攻击图、get_graph/update_graph、五轮完整工具决策同步、Session事件游标、原子图确认/重放与控制检查。默认移除旧领域记忆工具，盲测默认隔离跨任务经验；旧表/显式历史读取保留。原create_agent和自然结束路径保持。
+
+工程验证：全量765 passed、2 skipped、1 deselected；最后事件保留保护补丁及报告路径定向25 passed（与全量重叠，不相加）。真实 PostgreSQL、官方图、Saver重连、摘要中间件及脚本模型验证协议；不代表真实模型图维护质量。详见 [第三阶段交付报告](../reports/session-dual-graph-implementation-2026-10-23.md)。真实模型和靶场效果 NOT_RUN，由用户验收。
+
+本日后续有限核对修复：默认 B，每五个工作工具决策轮次提供最多两次额外核对请求；持久计数、结构错误修正、分页过滤及 page_id 连续确认、State→State 反馈和首次配置间隔已实现。定向 73 passed，覆盖官方 create_agent、PostgreSQL/Segment 重连、自然结束和暂停取消优先；不作为真实模型效果证明。原桌面仅核对入口链及 API-only 新进程，未启动 Runner；Kali 23 文件哈希一致，保留原实例。见[本轮实施与限制](../reports/dual-graph-bounded-sync-implementation-2026-10-23.md)。

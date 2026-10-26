@@ -221,7 +221,7 @@ async def test_runner_first_input_and_default_factory_do_not_restore_builtin_met
         await runner._stream_once(runtime, context, context.toolbox, session, run, initial)
         saved = (await graph.aget_state(cast(Any, config))).values
     assert model.requests
-    assert "search_methods" in model.tool_names
+    assert "search_methods" not in model.tool_names  # 盲测默认不注入跨 Session 方法检索
     assert not {"load_skill", "search_skills", "read_skill_resource", "run_skill_script"} & set(model.tool_names)
     assert all(marker not in request for request in model.requests
                for marker in ("可用技能目录", "用户接入的外部 Skill", "search_skills", "load_skill"))

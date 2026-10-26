@@ -37,9 +37,17 @@ log = get_logger("agent_workbench.api")
 
 
 @contextlib.asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging()
+    import os
+    from datetime import UTC, datetime
+
+    from agent_workbench.agent.factory import loaded_runtime_versions
+
+    app.state.startup_runtime_versions = {**loaded_runtime_versions(),
+        "capture_stage": "api_lifespan_start", "pid": os.getpid(),
+        "captured_at": datetime.now(UTC).isoformat()}
     # 快速失败：Windows 上若事件循环是 Proactor，psycopg 异步会在第一次查询时报
     # `InterfaceError`，表现为 500 而不是可操作的错误信息。这里提前给出明确指引。
     assert_supported_event_loop()
@@ -199,7 +207,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["ops"])
     async def health() -> dict[str, Any]:
-        from agent_workbench.agent.factory import loaded_code_version
+        from agent_workbench.agent.factory import loaded_runtime_versions
         from agent_workbench.agent.prompts import PROMPT_VERSION
 
         db = get_database()
@@ -214,8 +222,9 @@ def create_app() -> FastAPI:
             "version": __version__,
             "runtime_versions": {
                 "prompt_version": PROMPT_VERSION,
-                "code_version": loaded_code_version(),
-                "scope": "loaded_minimal_loop_entrypoints_and_prompt_not_entire_process",
+                **loaded_runtime_versions(),
+                "process_start": getattr(app.state, "startup_runtime_versions", None),
+                "measurement": "loaded_objects_at_health_request",
             },
             "database": {"ok": db_ok, **info},
             "auth_configured": not LocalAuth()._is_default_secret(settings.session_secret),

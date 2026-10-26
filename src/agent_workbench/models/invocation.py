@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -27,6 +28,9 @@ from agent_workbench.persistence.tables import ModelCallRow
 
 class ModelRequestTimeout(TimeoutError):
     """单次模型请求超时，远端用量可能未知。"""
+
+
+graph_review_scope: ContextVar[str | None] = ContextVar("graph_review_scope", default=None)
 
 
 @dataclass(slots=True)
@@ -55,6 +59,10 @@ async def invoke_attempt(
 ) -> Any:
     """唯一网络尝试所有者；不透明重试，已交付流片段不拼接新输出。"""
     toolbox = scope.toolbox
+    review_window = graph_review_scope.get()
+    if review_window:
+        phase = "graph_review"
+        require_recorded = True
     control_check = getattr(toolbox, "assert_control_current", None)
     if control_check is not None:
         await control_check()
@@ -68,6 +76,10 @@ async def invoke_attempt(
     # 先落一行 pending，保证"发出请求"这件事被记录；失败也不能阻止模型调用
     try:
         async with toolbox.db.transaction() as db:
+            if review_window:
+                from agent_workbench.domain.graph_sync import reserve_review
+
+                await reserve_review(db, toolbox, review_window, str(model_call_id))
             retry_index = (
                 int(
                     (
@@ -140,13 +152,17 @@ async def invoke_attempt(
     try:
         try:
             async with total_timeout, idle_timeout:
-                with scope.model_stream.track_call(str(model_call_id), note_activity):
+                with scope.model_stream.track_call(
+                    str(model_call_id), note_activity, purpose=phase
+                ):
                     response = await call()
                     for message in response_messages(response) or []:
                         if isinstance(message, AIMessage):
                             message.response_metadata["workbench_model_call_id"] = str(
                                 model_call_id
                             )
+                            if review_window and message.id:
+                                scope.model_stream.mark_auxiliary(message)
                     if total_timeout.expired() or idle_timeout.expired():
                         raise TimeoutError("调用在取消后迟到")
                     current_task = asyncio.current_task()
@@ -500,6 +516,8 @@ async def persist_manifest(
     record = _safe(
         {
             **manifest,
+            "runtime_versions": getattr(toolbox, "loaded_runtime_versions", None)
+                or {"state": "not_bound_by_runner"},
             "model_call_id": str(model_call_id),
             "logical_call_id": str(logical_id),
             "phase": phase,

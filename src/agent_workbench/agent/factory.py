@@ -14,9 +14,10 @@ import contextlib
 import hashlib
 import inspect
 import json
-import marshal
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from types import CodeType
 from typing import Any
 
 from langchain.agents import create_agent
@@ -32,6 +33,7 @@ from agent_workbench.agent.middleware import (
     build_compaction_middleware,
 )
 from agent_workbench.agent.middleware.command_guard import CommandGuardMiddleware
+from agent_workbench.agent.middleware.history_assistance import HistoryAssistanceMiddleware
 from agent_workbench.agent.middleware.progress import ProgressMiddleware
 from agent_workbench.agent.middleware.response_recovery import ResponseRecoveryMiddleware
 from agent_workbench.agent.middleware.segment import SegmentMiddleware
@@ -54,23 +56,80 @@ from agent_workbench.persistence.bootstrap import (
 )
 from agent_workbench.tools.registry import ToolSelection, build_tools, default_selection
 
+LOADED_CODE_SCOPE = "loaded_entrypoints_and_history_assistance_v2_not_entire_process"
 
-def loaded_code_version() -> str:
-    """已加载的规划入口/合同/提示指纹；磁盘源码树另外记录，不混称字节码。"""
+
+def _code_constant(value: Any) -> Any:
+    """规范化已加载对象；不含marshal引用标志、对象地址、文件路径或磁盘读取。"""
+    if isinstance(value, CodeType):
+        return {key: _code_constant(getattr(value, key)) for key in (
+            "co_code", "co_consts", "co_names", "co_varnames", "co_freevars", "co_cellvars",
+            "co_argcount", "co_posonlyargcount", "co_kwonlyargcount", "co_flags", "co_exceptiontable",
+        )}
+    if value is None or isinstance(value, str | int | bool):
+        return [type(value).__name__, value]
+    if isinstance(value, bytes):
+        return ["bytes", value.hex()]
+    if isinstance(value, float | complex):
+        return [type(value).__name__, repr(value)]
+    if isinstance(value, tuple | list):
+        return [type(value).__name__, [_code_constant(v) for v in value]]
+    if isinstance(value, frozenset):
+        return ["frozenset", sorted((_code_constant(v) for v in value), key=lambda v: json.dumps(v, sort_keys=True))]
+    if isinstance(value, dict):
+        return {k: _code_constant(v) for k, v in sorted(value.items())}
+    if value is Ellipsis:
+        return ["ellipsis"]
+    raise TypeError(f"不支持的代码常量类型：{type(value).__name__}")
+
+
+def loaded_runtime_versions() -> dict[str, Any]:
+    """由内存中实际函数生成稳定指纹；范围有界，不冒充整个进程或源码树。"""
+    from agent_workbench.agent import history_assistance
+    from agent_workbench.agent.decision_memory import build_blackboard
+    from agent_workbench.agent.middleware import history_assistance as history_middleware
     from agent_workbench.contracts.plan import PlanStepPatch
+    from agent_workbench.domain.decision_memory import read_snapshot, select_memory
+    from agent_workbench.domain.graph_sync import graph_context
+    from agent_workbench.domain.session_graph import apply_operations, update_graph
     from agent_workbench.tools.planning import apply_plan_update, normalize_steps
 
-    digest = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8"))
-    for function in (
+    functions = [
         build_agent_middleware,
         open_agent_runtime,
         apply_plan_update,
         normalize_steps,
+        apply_operations, update_graph, graph_context,
         ToolDispatchMiddleware._dispatch_tool_call,
-    ):
-        digest.update(marshal.dumps(inspect.unwrap(function).__code__))
-    digest.update(json.dumps(PlanStepPatch.model_json_schema(), sort_keys=True).encode("utf-8"))
-    return "loaded-minimal-loop:" + digest.hexdigest()[:40]
+        ContextBuilderMiddleware.awrap_model_call,
+        WorkingContextMiddleware.abefore_model,
+        build_blackboard, read_snapshot, select_memory,
+    ]
+    for module in (history_assistance, history_middleware):
+        functions.extend(v for v in vars(module).values()
+            if inspect.isfunction(v) and v.__module__ == module.__name__)
+    functions.extend(v for v in vars(HistoryAssistanceMiddleware).values() if inspect.isfunction(v))
+    components = {}
+    for function in functions:
+        raw = inspect.unwrap(function)
+        value = {"code": _code_constant(raw.__code__), "defaults": _code_constant(raw.__defaults__),
+                 "kwdefaults": _code_constant(raw.__kwdefaults__)}
+        components[function.__module__ + "." + function.__qualname__] = hashlib.sha256(
+            json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    # 请求中实际调用的导入绑定也单独记录，避免模块重载后别名与定义不是同一对象。
+    for name in ("memory_view", "build_blackboard"):
+        function = inspect.unwrap(getattr(history_middleware, name))
+        components["history_request_binding." + name] = hashlib.sha256(json.dumps(
+            _code_constant(function.__code__), sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    payload = {"components": components, "system_prompt": SYSTEM_PROMPT,
+               "plan_schema": PlanStepPatch.model_json_schema(), "algorithm": "canonical_code_v2"}
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+    return {"code_version": "loaded-runtime-v2:" + digest.hexdigest()[:40],
+            "scope": LOADED_CODE_SCOPE, "algorithm": "canonical_code_v2", "components": components}
+
+
+def loaded_code_version() -> str:
+    return loaded_runtime_versions()["code_version"]
 
 
 @dataclass(slots=True)
@@ -84,6 +143,7 @@ class AgentRuntime:
     prompt_version: str
     code_version: str
     tool_manifest: dict[str, Any]
+    loaded_versions: dict[str, Any] | None = None
 
     def config(self, *, thread_id: str, run_id: str, recursion_limit: int) -> dict[str, Any]:
         """RunnableConfig。
@@ -149,6 +209,7 @@ def build_agent_middleware(
             recovery_output_limit=binding.profile.recovery_output_limit,
         ),
         ContextBuilderMiddleware(binding.profile),
+        *([HistoryAssistanceMiddleware(binding.profile)] if settings.history_assistance_mode != "off" else []),
         ModelObserverMiddleware(
             price_catalog,
             request_timeout_seconds=settings.model_request_max_seconds,
@@ -247,12 +308,15 @@ async def open_agent_runtime(
             store=store,
             name="agent_workbench",
         )
+        versions = {**loaded_runtime_versions(), "capture_stage": "agent_assembly",
+                    "captured_at": datetime.now(UTC).isoformat()}
         yield AgentRuntime(
             graph=graph,
             checkpointer=checkpointer,
             store=store,
             binding=binding,
             prompt_version=PROMPT_VERSION,
-            code_version=loaded_code_version(),
+            code_version=versions["code_version"],
             tool_manifest=build_tool_manifest(chosen),
+            loaded_versions=versions,
         )

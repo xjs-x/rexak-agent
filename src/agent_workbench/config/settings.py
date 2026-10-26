@@ -8,11 +8,34 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def settings_for_run(settings: Settings, snapshot: dict) -> Settings:
+    """实验呈现模式只取新建 Run 的快照；不将环境开关热应用到旧 Run。"""
+    mode = snapshot.get("decision_memory_mode", "current")
+    if mode not in {"current", "blackboard_v1"}:
+        raise ValueError("Run 的 decision_memory_mode 无效")
+    assistance = snapshot.get("history_assistance_mode", "off")
+    if assistance not in {"off", "memory", "passive"}:
+        raise ValueError("Run 的 history_assistance_mode 无效")
+    updates: dict[str, object] = {"decision_memory_mode": mode, "history_assistance_mode": assistance}
+    if assistance != "off":
+        updates["decision_memory_mode"] = "current"
+    if "history_assistance_mode" in snapshot:
+        # 新 Run 的统一模式优先于旧研究旁路开关；旧 Run 不热启用新功能。
+        updates["decision_memory_mode"] = "current"
+        updates["history_action_shadow_enabled"] = assistance == "passive"
+    if settings.history_assistance_force_off:
+        # 运维回退可覆盖已固定的 Run；不改 checkpoint、证据或原请求身份。
+        updates.update(history_assistance_mode="off", decision_memory_mode="current",
+                       history_action_shadow_enabled=False)
+    return settings.model_copy(update=updates)
 
 
 class Settings(BaseSettings):
@@ -25,6 +48,38 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
+
+    # Session 记忆开关用于公平对照；盲测默认不读取跨任务经验。
+    session_graph_enabled: bool = True
+    graph_attack_enabled: bool = True
+    graph_sync_interval: int = Field(default=5, ge=1)
+    graph_bounded_review: bool = True
+    graph_inject_every_round: bool = False
+    graph_context_chars: int = Field(default=24000, ge=1000)
+    # 仅新 Run 快照采用；缺少快照的旧 Run 固定走 current。
+    decision_memory_mode: Literal["current", "blackboard_v1"] = "current"
+    # 新建 Run 固定保存；不改变工具集合或执行授权。旧研究开关只兼容旧 Run。
+    history_assistance_mode: Literal["off", "memory", "passive"] = "off"
+    history_assistance_force_off: bool = False
+    history_assistance_memory_limit: int = Field(default=3, ge=1, le=8)
+    history_assistance_input_bytes: int = Field(default=16 * 1024, ge=2048, le=128 * 1024)
+    history_assistance_retrieval_seconds: float = Field(default=0.5, gt=0, le=5)
+    # 配方入口单独显式开放；开启 passive 本身不改变工具或执行权限。
+    history_action_test_profiles_enabled: bool = False
+    # 纯观察默认关闭；许可文件只能由控制端配置，不能由模型工具参数指定。
+    history_action_shadow_enabled: bool = False
+    history_action_shadow_grants_path: Path | None = None
+    history_action_shadow_timeout_seconds: float = Field(default=0.25, gt=0, le=10)
+    # 有界观察资源；超过时弃判，不截取历史后伪装完整匹配。
+    history_action_shadow_history_limit: int = Field(default=64, ge=1, le=128)
+    history_action_shadow_context_path: Path | None = None
+    history_action_shadow_queue_limit: int = Field(default=8, ge=1, le=64)
+    history_action_shadow_record_bytes: int = Field(default=65536, ge=1024, le=262144)
+    history_action_shadow_storage_files: int = Field(default=512, ge=8, le=4096)
+    history_action_shadow_storage_bytes: int = Field(default=8 * 1024 * 1024, ge=4096)
+    history_action_shadow_input_bytes: int = Field(default=262144, ge=1024)
+    history_action_shadow_close_seconds: float = Field(default=0.5, gt=0, le=10)
+    blind_test: bool = True
 
     # ---------- 数据库 ----------
     database_url: str = "postgresql+psycopg://workbench:workbench@127.0.0.1:55432/workbench"

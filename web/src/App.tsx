@@ -487,6 +487,8 @@ export default function App() {
   const [targetUrl, setTargetUrl] = useState("");
 
   const currentRun = latestRun(snapshot);
+  const modelFinishedPending = currentRun?.status === "waiting_tool"
+    && currentRun.model_response_saved;
   const modelLocked = !!project.sessionId && !!currentRun && !["completed", "cancelled", "failed"].includes(currentRun.status);
   const selectedModelKey = modelLocked ? `${currentRun.provider_id}/${currentRun.model_name}` : selectedModel || (modelSettings ? `${modelSettings.default_provider}/${modelSettings.default_model}` : "");
   const chosenModel = modelSettings?.profiles.find((item) => `${item.provider_id}/${item.model_name}` === selectedModelKey);
@@ -1213,6 +1215,10 @@ export default function App() {
                 <button className="danger" disabled={busy || ["completed", "cancelled", "failed"].includes(currentRun.status)} onClick={() => void runAction(() => api.control(currentRun.id, "cancel"), "取消指令已提交，仍需等待执行状态确认")}>取消</button>
               </div>}
             </div>
+            {modelFinishedPending && <div className="chat-progress" role="status">
+              模型已结束并保存最终回复，但仍有未决操作；执行是否完成尚未确认，不会自动重发。
+              <button onClick={() => { setShowDetails(true); setTab("jobs"); }}>查看未决操作</button>
+            </div>}
             {showDetails && <nav className="tabs" aria-label="任务内容">
               {([["activity", "实时活动"], ["conversation", "对话"], ["plan", "当前计划"], ["findings", "弱点与覆盖"], ["jobs", "后台任务"], ["resources", "执行资源"], ["cost", "费用"], ["diagnostics", "耗时诊断"], ["reports", "报告"], ["settings", "设置"]] as const).map(([key, title]) =>
                 <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>{title}</button>
@@ -1242,7 +1248,7 @@ export default function App() {
                   : <ToolActivityGroup key={`${item.entries[0].run_id}:${item.entries[0].tool_call_id}`} sessionId={project.sessionId} items={item.entries} />)}
                 {!!assistantText && ["running", "cancelling", "pausing", "paused"].includes(currentRun?.status ?? "") && !conversation.some((entry) => entry.role === "assistant" && entry.run_id === currentRun?.id && assistantStartedAt && Date.parse(entry.occurred_at) >= Date.parse(assistantStartedAt)) && <article className="chat-message assistant" data-role="assistant"><div className="message-body"><div className="markdown-text">{assistantText}</div></div></article>}
                 {currentRun?.status === "paused" && <div className="chat-progress" role="status">已暂停。发送新指令即可继续，也可以新建聊天。</div>}
-                {currentRun && !["completed", "cancelled", "failed", "waiting_user", "paused", "recovering"].includes(currentRun.status) && <div className="chat-progress" role="status"><span className="progress-dot" />{currentRun.status === "running" && modelProgressLabel ? modelProgressLabel : label(currentRun.status)}{currentRun.status === "queued" ? " · 等待运行器接手" : " · 可继续补充要求"}</div>}
+                {currentRun && !modelFinishedPending && !["completed", "cancelled", "failed", "waiting_user", "paused", "recovering"].includes(currentRun.status) && <div className="chat-progress" role="status"><span className="progress-dot" />{currentRun.status === "running" && modelProgressLabel ? modelProgressLabel : label(currentRun.status)}{currentRun.status === "queued" ? " · 等待运行器接手" : " · 可继续补充要求"}</div>}
                 {currentRun?.status === "recovering" && <div className="chat-progress" role="status">运行已中断，等待恢复。点击“继续”可恢复已保存的任务。</div>}
                 {["failed", "recovering"].includes(currentRun?.status ?? "") && <div className="chat-progress error">{currentRun?.stop_reason || "运行中断，请查看任务详情中的活动记录。"}</div>}
                 <div ref={chatEndRef} />

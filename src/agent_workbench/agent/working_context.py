@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, false, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_workbench.agent.state import plan_step_lead_ids
@@ -626,13 +626,15 @@ def _focus_step(state: dict[str, Any], focus: dict[str, Any]) -> dict[str, Any] 
 
 
 async def assemble_basic_context(
-    db: AsyncSession, session_id: UUID, state: dict[str, Any]
+    db: AsyncSession, session_id: UUID, state: dict[str, Any], *, legacy_memory: bool = True
 ) -> dict[str, Any]:
     """最小循环的已有记录目录；可选记录不产生额外登记或结束义务。"""
     focus = state.get("current_focus") or {}
     lead_query = select(LeadRow).where(
         LeadRow.session_id == session_id, LeadRow.merged_into_id.is_(None)
     )
+    if not legacy_memory:
+        lead_query = lead_query.where(false())
     if focus.get("lead_id"):
         lead_query = lead_query.order_by((LeadRow.id == UUID(focus["lead_id"])).desc())
     leads = list(
@@ -644,7 +646,7 @@ async def assemble_basic_context(
         (
             await db.execute(
                 select(FindingRow)
-                .where(FindingRow.session_id == session_id)
+                .where(FindingRow.session_id == session_id, true() if legacy_memory else false())
                 .order_by(FindingRow.updated_at.desc(), FindingRow.id)
                 .limit(4)
             )
@@ -685,5 +687,5 @@ async def assemble_basic_context(
             for row in findings
         ],
         "pending_job_ids": list(dict.fromkeys(str(row.job_id) for row in jobs)),
-        "note": "可选记录目录；完整历史用 search_history 查询。候选未经独立验证；无需逐次登记或关闭这些记录。",
+        "note": ("Session 双图用于长期工作记忆；旧领域记录仅在显式历史查询中可读。" if not legacy_memory else "可选记录目录；完整历史用 search_history 查询。候选未经独立验证；无需逐次登记或关闭这些记录。"),
     }

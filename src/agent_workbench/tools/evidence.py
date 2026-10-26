@@ -18,6 +18,7 @@ from sqlalchemy import select
 from agent_workbench.agent.context import RunContext
 from agent_workbench.contracts.enums import ArtifactAvailability, ErrorCode, OperationStatus
 from agent_workbench.contracts.tool import ArtifactRef, ToolError, ToolResult
+from agent_workbench.evidence.redaction import redact_api_value
 from agent_workbench.persistence.tables import ArtifactRow
 from agent_workbench.tools.runtime import Toolbox
 
@@ -93,7 +94,7 @@ async def read_artifact(
         return _fail(
             ErrorCode.NOT_FOUND,
             f"工件当前状态为 {row.availability}，不能作为可用证据引用",
-            hint="原始工件可能仍在远端或已损坏；请重新执行采集操作生成新工件。",
+            hint="先核对原 Operation、get_job 结果及已有工件；执行结果不确定时不要重复采集。",
         )
 
     if not toolbox.artifacts.exists(row.relative_key):
@@ -109,7 +110,8 @@ async def read_artifact(
     total = int(row.byte_size)
     truncated = bounded_offset + len(raw) < total
 
-    if row.media_type.startswith("text/") or row.media_type in {
+    mime = row.media_type.partition(";")[0].strip().lower()
+    if mime.startswith("text/") or mime.endswith(("+json", "+xml")) or mime in {
         "application/json",
         "application/xml",
         "application/javascript",
@@ -125,10 +127,11 @@ async def read_artifact(
             )
     else:
         text = ""
-        encoding_note = f"二进制内容（media_type={row.media_type}），未转换为文本。"
+        encoding_note = (f"二进制内容（media_type={row.media_type}），未转换为文本。"
+                         "已有执行结果可能在 Operation 元数据中，可用 search_history(kind=operation, query=source_operation_id) 读取；无需重新请求目标。")
 
     return _ok(
-        {
+        redact_api_value({
             "artifact_id": str(row.id),
             "media_type": row.media_type,
             "byte_size": total,
@@ -150,7 +153,7 @@ async def read_artifact(
                 "本视图已按字段脱敏；哈希只证明内容一致性，不证明任何漏洞结论。"
                 "如需原始字节，请明确说明用途。"
             ),
-        },
+        }),
         f"读取工件 {row.id} 的脱敏视图（{len(raw)}/{total} 字节）",
     )
 

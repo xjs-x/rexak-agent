@@ -2164,6 +2164,11 @@ export interface components {
             owner_generation: number;
             /** Created At */
             created_at: string;
+            /**
+             * Model Response Saved
+             * @default false
+             */
+            model_response_saved: boolean;
         };
         /**
          * ScopeRule

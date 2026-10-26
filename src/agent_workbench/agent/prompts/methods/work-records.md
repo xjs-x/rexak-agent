@@ -7,7 +7,7 @@
 focus 是可选调查方向，不需要步骤或线索。完成只表示工作记录，不代表漏洞验证。
 
 普通反思在正常模型—工具循环中完成，不存在 Assessment 表单、CompletionSpec 或完成证明。
-关键假设可选择 record_lead，关键现象可选择 record_observation，候选问题用 propose_finding。
+Session 工作记忆使用 get_graph/update_graph；重要实体与关系放入信息图，实际成功、阴性、受阻和不确定尝试放入攻击图。同步允许空更新，记忆维护不阻止自然结束。
 
 并行工具继承派发时的原状态，不能假设同批 update_plan 已生效；依赖结果的动作放下一轮。
 同批最多一次 update_plan。已有 operation_id 与工件原归属不会因计划变化而重写。

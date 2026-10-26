@@ -130,6 +130,7 @@ async def test_context_exposes_actual_mapping_and_connection_origin() -> None:
         runtime=SimpleNamespace(context=SimpleNamespace(toolbox=toolbox)),
         system_message=SystemMessage(content="base"),
         messages=[],
+        tools=[],
         override=lambda **values: SimpleNamespace(**values),
     )
     handler = AsyncMock()

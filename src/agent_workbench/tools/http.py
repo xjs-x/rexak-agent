@@ -294,7 +294,7 @@ def _failed(
 
 
 async def run_http_request(
-    args: HttpRequestArgs, toolbox: Toolbox, tool_call_id: str
+    args: HttpRequestArgs, toolbox: Toolbox, tool_call_id: str, *, shadow_context: Any = None
 ) -> ToolResult:
     started_at = datetime.now(UTC)
 
@@ -435,6 +435,24 @@ async def run_http_request(
                 "csrf_target_name": args.csrf_target_name,
             },
         }
+
+        if getattr(toolbox.settings, "history_action_shadow_enabled", False):
+            try:
+                from agent_workbench.tools.history_action_shadow import enqueue_http
+
+                enqueue_http(
+                    toolbox,
+                    args.model_dump(exclude={"note"}),
+                    operation,
+                    tool_call_id,
+                    shadow_context,
+                )
+            except Exception as exc:
+                import structlog
+
+                structlog.get_logger(__name__).warning(
+                    "history_action_shadow_hook_failed", error_type=type(exc).__name__
+                )
 
         # 4) 提交到执行岛（幂等：同 operation_id 同 digest 返回原 job）
         try:
@@ -735,7 +753,22 @@ async def http_request(
         csrf_destination=csrf_destination,
         csrf_target_name=csrf_target_name,
     )
-    result = await run_http_request(args, toolbox, runtime.tool_call_id or "")
+    shadow_context = None
+    if (getattr(toolbox.settings, "history_action_shadow_enabled", False)
+        and getattr(toolbox.settings, "history_assistance_mode", "off") != "passive"):
+        try:
+            from agent_workbench.tools.history_action_shadow import dispatch_context
+
+            shadow_context = dispatch_context(runtime)
+        except Exception as exc:
+            import structlog
+
+            structlog.get_logger(__name__).warning(
+                "history_action_shadow_context_failed", error_type=type(exc).__name__
+            )
+    result = await run_http_request(
+        args, toolbox, runtime.tool_call_id or "", shadow_context=shadow_context
+    )
     return json_text(result)
 
 

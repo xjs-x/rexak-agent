@@ -102,6 +102,16 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         tool_call = request.tool_call or {}
         tool_name = str(tool_call.get("name") or "unknown")
         args = tool_call.get("args")
+        for message in reversed((request.state or {}).get("messages", [])):
+            if any(c["id"] == tool_call.get("id") for c in getattr(message, "tool_calls", [])):
+                window = message.additional_kwargs.get("workbench_graph_review_window")
+                if window:
+                    toolbox.graph_review_window_id = window
+                    if tool_name not in {"get_graph", "update_graph"}:
+                        return _tool_message(
+                            request, "有限图核对阶段只允许图工具；外部操作未派发。"
+                        )
+                break
 
         # 1) 参数完整性：分片未拼完的 tool_call 参数不得执行（§11.2）
         if isinstance(args, str):
@@ -130,7 +140,7 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     )
 
         batch = batch_tool_names(dict(request.state or {}))
-        if tool_name in {"update_plan"} and batch.count(tool_name) > 1:
+        if tool_name in {"update_plan", "update_graph"} and batch.count(tool_name) > 1:
             return _tool_message(
                 request, f"同批多个 {tool_name} 已在执行前全部拒绝；请合并为一次更新。"
             )

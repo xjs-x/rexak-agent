@@ -75,6 +75,7 @@ async def context_for(database, unique_name):
             config_snapshot={},
         )
     toolbox = SimpleNamespace(
+        settings=database.settings.model_copy(update={"session_graph_enabled": False}),
         db=database,
         run_id=run.id,
         session_id=task.id,

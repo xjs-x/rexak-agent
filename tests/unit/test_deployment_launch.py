@@ -104,6 +104,50 @@ def test_ipv6_api_url() -> None:
     assert start_workbench.base_url(Settings(api_host="::1", api_port=8770)) == "http://[::1]:8770"
 
 
+@pytest.mark.parametrize("status", [401, 403, 503, 302])
+def test_executor_preflight_error_identifies_status_without_exposing_secret(status):
+    secret = "private-fixture-value"
+    response = httpx.Response(
+        status,
+        text=secret,
+        request=httpx.Request(
+            "GET",
+            "http://fixture.invalid/?token=" + secret,
+            headers={"Authorization": "Bearer " + secret},
+        ),
+    )
+    with pytest.raises(RuntimeError) as error:
+        start_workbench.check_executor_capabilities(response, "fixture")
+    message = str(error.value)
+    assert f"HTTP {status}" in message and secret not in message
+    if status in {401, 403}:
+        assert "WORKBENCH_EXECUTOR_TOKEN" in message
+
+
+def test_executor_preflight_checks_json_and_identity():
+    start_workbench.check_executor_capabilities(
+        httpx.Response(200, json={"executor_id": "fixture"}), "fixture"
+    )
+    for response in (
+        httpx.Response(200, json={"executor_id": "other"}),
+        httpx.Response(200, json=[]),
+        httpx.Response(200, text="invalid"),
+    ):
+        with pytest.raises(RuntimeError):
+            start_workbench.check_executor_capabilities(response, "fixture")
+
+
+def test_database_upgrade_preserves_all_existing_branch_heads(monkeypatch):
+    from alembic import command
+
+    from agent_workbench.cli import _run_alembic_upgrade
+
+    targets = []
+    monkeypatch.setattr(command, "upgrade", lambda _cfg, target: targets.append(target))
+    _run_alembic_upgrade("unused-no-database-access")
+    assert targets == ["heads"]
+
+
 def executor_control():
     path = Path(__file__).resolve().parents[2] / "deploy/executor_control.py"
     spec = importlib.util.spec_from_file_location("executor_control", path)

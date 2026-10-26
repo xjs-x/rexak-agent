@@ -294,6 +294,10 @@ async def query_history(
 
     async with toolbox.db.session() as db:
         for label in sorted(allowed):
+            if (kind is None and label in {"lead", "weakness", "relation", "observation"}
+                and getattr(getattr(toolbox, "settings", None), "session_graph_enabled", False)):
+                continue  # historical kinds remain available through an explicit kind
+
             if kind is not None and label != kind:
                 continue
             if label in tables:
@@ -382,8 +386,14 @@ async def query_history(
                         elif label == "operation":
                             body = json.dumps(
                                 {
+                                    "operation_id": str(row.operation_id),
                                     "tool": row.tool_name,
                                     "status": row.status,
+                                    "result": {
+                                        "summary": (row.result_snapshot or {}).get("summary"),
+                                        "data": {k: v for k, v in ((row.result_snapshot or {}).get("data") or {}).items()
+                                                 if k in {"status_code", "content_type", "headers", "response_headers", "elapsed_ms", "exit_code", "delivery_state", "error_category", "process_state"}},
+                                    },
                                     "execution_context": row.execution_context,
                                 },
                                 ensure_ascii=False,

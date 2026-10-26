@@ -149,6 +149,14 @@ class AgentRunner:
         self._settings = settings or get_settings()
         self._owner = owner or f"runner-{self._settings.owner_id}"
         self._db = database or get_database()
+        import os
+        from datetime import UTC, datetime
+
+        from agent_workbench.agent.factory import loaded_runtime_versions
+
+        self.startup_runtime_versions = {**loaded_runtime_versions(),
+            "capture_stage": "runner_initialization", "pid": os.getpid(),
+            "captured_at": datetime.now(UTC).isoformat()}
         self._on_event = on_event
         self._stopping = False
         self._production_scan = production_scan
@@ -620,7 +628,9 @@ class AgentRunner:
     async def _run_segments(
         self, run: RunRow, session_row: SessionRow, generation: int
     ) -> RunOutcome:
-        settings = self._settings
+        from agent_workbench.config.settings import settings_for_run
+
+        settings = settings_for_run(self._settings, run.config_snapshot or {})
         from agent_workbench.domain.instruction_scope import sync_instruction_scope
 
         async with self._db.transaction() as db:
@@ -716,6 +726,12 @@ class AgentRunner:
             runtime = await runtime_ctx.__aenter__()
             try:
                 await self._capture_loaded_versions(run, runtime, generation)
+                toolbox.loaded_runtime_versions = {
+                    "process_start": self.startup_runtime_versions,
+                    "run_assembly": getattr(runtime, "loaded_versions", None)
+                        or {"code_version": runtime.code_version, "scope": "legacy_runtime_scope"},
+                    "disk_source_at_activation": (run.config_snapshot or {}).get("runtime_source_fingerprint"),
+                }
             except BaseException:
                 await runtime_ctx.__aexit__(None, None, None)
                 raise
@@ -866,6 +882,11 @@ class AgentRunner:
         finally:
             # checkpointer / store 连接成对关闭（生命周期由本函数持有）
             try:
+                if getattr(settings, "history_action_shadow_enabled", False) and toolbox.history_action_shadow is not None:
+                    try:
+                        await toolbox.history_action_shadow.aclose()
+                    except Exception as exc:
+                        log.warning("history_action_shadow_close_failed", error_type=type(exc).__name__)
                 with contextlib.suppress(Exception):
                     await runtime_ctx.__aexit__(None, None, None)
             finally:
@@ -972,7 +993,10 @@ class AgentRunner:
             "prompt_version": runtime.prompt_version,
             "code_version": runtime.code_version,
             "system_prompt_sha256": hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest(),
-            "code_version_scope": "loaded_minimal_loop_entrypoints_and_prompt_not_entire_process",
+            "code_version_scope": (getattr(runtime, "loaded_versions", None) or {}).get(
+                "scope", "legacy_runtime_scope"),
+            "loaded_implementation": getattr(runtime, "loaded_versions", None),
+            "process_start": self.startup_runtime_versions,
             "owner_generation": generation,
             "captured_at": datetime.now(UTC).isoformat(),
         }
@@ -986,7 +1010,7 @@ class AgentRunner:
             history = list(config.get("loaded_runtime_activations") or [])
             if not history or any(
                 history[-1].get(k) != captured[k]
-                for k in ("prompt_version", "code_version", "owner_generation")
+                for k in ("prompt_version", "code_version", "owner_generation", "process_start")
             ):
                 history.append(captured)
             config["loaded_runtime_activations"] = history
@@ -1344,6 +1368,8 @@ class AgentRunner:
                     last_model_progress = progress
                     last_model_progress_at = time.monotonic()
                 text = _delta_text(chunk)
+                if context.model_stream.is_auxiliary(chunk[0]):
+                    text = ""
                 if getattr(chunk[0], "additional_kwargs", {}).get("workbench_completion_result"):
                     # middleware 生成的结果在 checkpoint 提交后统一投影。
                     text = ""
@@ -1447,6 +1473,8 @@ class AgentRunner:
         )
         if await self._segment_should_continue(run):
             return None, None
+        # Project committed END before waiting on execution certainty; recovery reuses it.
+        await self._archive_final_response(run, message)
         pending, wait_sets = await run_has_pending_work(self._db, run.id)
         async with self._db.session() as db:
             unsettled = (
@@ -1474,10 +1502,17 @@ class AgentRunner:
                 )
             ).first()
         if pending or wait_sets:
+            await self._emit(
+                run, EventType.RUN_STATUS,
+                {"status": str(RunStatus.WAITING_TOOL),
+                 "pending_jobs": [{"job_id": str(job.job_id), "state": job.state}
+                                  for job in pending],
+                 "open_wait_sets": [str(item.id) for item in wait_sets],
+                 "note": "最终回复已保存；未决执行仍需核对，unknown 不自动重放或判失败。"},
+            )
             return RunStatus.WAITING_TOOL, None
         if unsettled or finite:
             return RunStatus.RECOVERING, None
-        await self._archive_final_response(run, message)
         return RunStatus.COMPLETED, CompletionReason.MODEL_FINISHED
 
     async def _archive_final_response(self, run: RunRow, message: AIMessage) -> None:

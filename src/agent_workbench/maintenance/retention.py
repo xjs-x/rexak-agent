@@ -13,7 +13,7 @@ from sqlalchemy import delete, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_workbench.contracts.enums import ACTIVE_RUN_STATUSES
-from agent_workbench.persistence.tables import EventRow, RunRow, SessionRow
+from agent_workbench.persistence.tables import EventRow, RunRow, SessionGraphRow, SessionRow
 
 
 async def retention_candidates(
@@ -37,6 +37,7 @@ async def retention_candidates(
             EventRow.created_at < before,
             EventRow.session_seq < SessionRow.event_seq,
             ~active_run,
+            ~unreviewed_graph_event(),
         )
         .order_by(EventRow.created_at, EventRow.id)
         .limit(limit)
@@ -73,8 +74,16 @@ async def prune_old_events(
         )
         deleted = await session.execute(
             delete(EventRow)
-            .where(EventRow.id.in_(ids), EventRow.created_at < cutoff, ~active_run)
+            .where(EventRow.id.in_(ids), EventRow.created_at < cutoff, ~active_run, ~unreviewed_graph_event())
             .returning(EventRow.id)
         )
         return len(deleted.scalars().all())
     return len(ids)
+
+
+def unreviewed_graph_event():
+    """Session 记忆尚未核对的事件不是可清理的纯 UI 投影。"""
+    return exists(select(SessionGraphRow.session_id).where(
+        SessionGraphRow.session_id == EventRow.session_id,
+        SessionGraphRow.reviewed_seq < EventRow.session_seq,
+    ))

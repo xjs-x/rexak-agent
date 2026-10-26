@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +21,36 @@ from agent_workbench.tools.operation import OperationRegistry
 from tests.integration.test_instruction_scope import create_task
 
 pytestmark = pytest.mark.integration
+
+
+async def test_snapshot_exposes_saved_final_response_without_config_or_stale_resume(database, unique_name):
+    from agent_workbench.persistence.tables import ModelCallRow
+
+    call_id = uuid4()
+    with TestClient(create_app()) as client:
+        sid, rid, headers = create_task(client, unique_name)
+        async with database.transaction() as db:
+            run = await db.get(RunRow, rid)
+            run.status = "waiting_tool"
+            run.config_snapshot = {**run.config_snapshot,
+                "completion_result_artifact_id": str(uuid4()),
+                "completion_result_model_call_id": str(call_id)}
+            db.add(ModelCallRow(model_call_id=call_id, logical_call_id=uuid4(),
+                run_id=rid, session_id=sid, phase="agent", provider_id="fixture",
+                model_name="fixture", submitted_at=datetime.now(UTC)))
+        before = client.get(f"/api/sessions/{sid}/snapshot", headers=headers)
+        assert before.status_code == 200
+        view = before.json()["runs"][0]
+        assert view["status"] == "waiting_tool" and view["model_response_saved"]
+        assert "config_snapshot" not in view
+        # 同 Run 新决策尚未结束，旧报告指针不能继续冒充本次模型已经结束。
+        async with database.transaction() as db:
+            db.add(ModelCallRow(model_call_id=uuid4(), logical_call_id=uuid4(),
+                run_id=rid, session_id=sid, phase="agent", provider_id="fixture",
+                model_name="fixture", submitted_at=datetime.now(UTC) + timedelta(seconds=1)))
+        after = client.get(f"/api/sessions/{sid}/snapshot", headers=headers)
+        assert after.status_code == 200
+        assert not after.json()["runs"][0]["model_response_saved"]
 
 
 async def setup_run(database, unique_name):
@@ -140,10 +170,36 @@ async def test_final_reply_does_not_discard_unsettled_jobs(database, unique_name
         await ToolJobRepository(db).upsert(
             job_id=job_id, operation_id=op.operation_id, executor_id="fixture", state=state
         )
-    result = await AgentRunner(database=database, owner="natural")._resolve_after_segment(
-        runtime_for(run), run, task, SpanRecorder()
-    )
-    assert result == (RunStatus.WAITING_TOOL, None)
+    runner = AgentRunner(database=database, owner="natural")
+    runtime = runtime_for(run)
+    # Reconstruct the runner as on recovery; only inspect committed END, never invoke a model.
+    for _ in range(2):
+        result = await runner._resolve_after_segment(runtime, run, task, SpanRecorder())
+        assert result == (RunStatus.WAITING_TOOL, None)
+        runner = AgentRunner(database=database, owner="natural")
+    from agent_workbench.evidence.artifacts import ArtifactStore
+    from agent_workbench.persistence.tables import ArtifactRow, ToolJobRow
+
+    async with database.session() as db:
+        saved = await db.get(RunRow, run.id)
+        artifact = await db.get(
+            ArtifactRow, UUID(saved.config_snapshot["completion_result_artifact_id"])
+        )
+        assert (
+            ArtifactStore(database.settings).read_bytes(artifact.relative_key).decode()
+            == (await runtime.graph.aget_state({})).values["messages"][-1].text
+        )
+        assert (await db.get(ToolJobRow, job_id)).state == state
+    async with database.transaction() as db:
+        job = await db.get(ToolJobRow, job_id)
+        job.state = "succeeded"
+        job.sync_status = "in_sync"
+        from agent_workbench.persistence.tables import ToolOperationRow
+
+        (await db.get(ToolOperationRow, op.operation_id)).status = "succeeded"
+    assert (await runner._resolve_after_segment(runtime, run, task, SpanRecorder()))[
+        0
+    ] == RunStatus.COMPLETED
 
 
 async def test_finite_untracked_execution_requires_recovery(database, unique_name):
@@ -192,3 +248,94 @@ async def test_intermediate_tool_call_and_yield_are_not_final(database, unique_n
         assert await runner._resolve_after_segment(
             runtime_for(run, **values), run, task, SpanRecorder()
         ) == (None, None)
+
+
+async def test_unknown_final_checkpoint_reconnect_and_conversation_read(database, unique_name):
+    """真实 checkpoint 重连后投影同一回复；不重新调模型，不改变未知执行。"""
+    from langchain.agents import create_agent
+    from langchain_core.messages import HumanMessage
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    from agent_workbench.agent.state import AgentGraphState
+    from agent_workbench.persistence.bootstrap import open_checkpointer_connection
+    from agent_workbench.persistence.tables import ToolJobRow, ToolOperationRow
+    from tests.support.scripted_model import ScriptedChatModel, final_text
+
+    run, task, _ = await setup_run(database, unique_name)
+    async with database.transaction() as db:
+        operation = await OperationRegistry(db).prepare(
+            run_id=run.id,
+            session_id=task.id,
+            tool_call_id="unknown-final",
+            tool_name="fixture",
+            arguments={},
+            effect_class=ToolEffectClass.READ_ONLY,
+            policy_revision=1,
+            scope_revision=1,
+        )
+        operation.row.status = "unknown"
+        job_id = uuid4()
+        operation.row.job_id = job_id
+        await ToolJobRepository(db).upsert(
+            job_id=job_id,
+            operation_id=operation.operation_id,
+            executor_id="fixture",
+            state="unknown",
+            sync_status="uncertain",
+        )
+
+    answer = "本地验收报告：执行结果仍不确定，未重复执行。"
+    model = ScriptedChatModel(responses=[final_text(answer)])
+    config = cast(Any, {"configurable": {"thread_id": task.thread_id}})
+    async with open_checkpointer_connection(database.settings) as connection:
+        graph = create_agent(
+            model, state_schema=AgentGraphState, checkpointer=AsyncPostgresSaver(connection)
+        )
+        await graph.ainvoke(
+            cast(
+                Any,
+                {
+                    "messages": [HumanMessage(content="仅使用本地脚本结果")],
+                    "active_run_id": str(run.id),
+                    "dispatch_control_version": run.control_version,
+                },
+            ),
+            config,
+        )
+        committed_id = (await graph.aget_state(config)).config.get("configurable", {})[
+            "checkpoint_id"
+        ]
+    assert len(model.seen_message_counts) == 1
+
+    for _ in range(2):
+        # Empty script fails if a model is unexpectedly invoked after reconnect.
+        restored_model = ScriptedChatModel(responses=[])
+        async with open_checkpointer_connection(database.settings) as connection:
+            graph = create_agent(
+                restored_model,
+                state_schema=AgentGraphState,
+                checkpointer=AsyncPostgresSaver(connection),
+            )
+            runtime = cast(Any, SimpleNamespace(graph=graph))
+            result = await AgentRunner(database=database, owner="natural")._resolve_after_segment(
+                runtime, run, task, SpanRecorder()
+            )
+            assert result == (RunStatus.WAITING_TOOL, None)
+            assert (await graph.aget_state(config)).config.get("configurable", {})[
+                "checkpoint_id"
+            ] == committed_id
+        assert restored_model.seen_message_counts == []
+        async with database.session() as db:
+            assert (await db.get(ToolJobRow, job_id)).state == "unknown"
+            assert (await db.get(ToolOperationRow, operation.operation_id)).status == "unknown"
+        with TestClient(create_app()) as client:
+            assert client.post("/api/session").status_code == 200
+            page = client.get(f"/api/sessions/{task.id}/conversation")
+            assert page.status_code == 200, page.text
+            reports = [item for item in page.json()["entries"] if item["source"] == "result"]
+            assert len(reports) == 1 and reports[0]["available"]
+            report = client.get(
+                f"/api/sessions/{task.id}/conversation/result/{reports[0]['id']}/text"
+            )
+            assert report.status_code == 200, report.text
+            assert answer in report.text

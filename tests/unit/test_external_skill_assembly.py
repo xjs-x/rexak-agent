@@ -17,7 +17,8 @@ def test_default_tools_and_middleware_do_not_enable_external_extension():
     selection = ToolSelection()
     tools = build_tools(selection)
     names = {item.name for item in tools}
-    assert "search_methods" in names
+    assert "search_methods" not in names  # 盲测默认关闭未分类的跨任务方法库
+    assert "search_methods" in {item.name for item in build_tools(ToolSelection(knowledge=True))}
     assert not {"load_skill", "search_skills", "read_skill_resource", "run_skill_script", "unload_skill"} & names
     assert "skills" not in selection.to_manifest()
     assert not any("skill" in name for name in selection.disabled_tools())

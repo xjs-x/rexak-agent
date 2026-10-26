@@ -55,6 +55,7 @@ class RunSummaryRead(BaseModel):
     stop_reason: str | None = None
     owner_generation: int
     created_at: str
+    model_response_saved: bool = False
 
 
 class SessionSnapshotRead(BaseModel):

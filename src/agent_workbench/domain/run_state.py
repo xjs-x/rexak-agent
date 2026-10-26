@@ -304,7 +304,9 @@ async def create_run(
         status=str(RunStatus.QUEUED),
         code_version="unbound",
         prompt_version="unbound",
-        config_snapshot=dict(config_snapshot),
+        config_snapshot={**config_snapshot, "runtime_at_creation": {
+            "state": "unbound_at_creation", "authority": "runner_activation_only",
+        }},
         resumed_from_run_id=resumed_from_run_id,
     )
     session.add(row)

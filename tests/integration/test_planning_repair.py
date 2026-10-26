@@ -357,7 +357,7 @@ async def test_loaded_runtime_versions_are_captured_without_changing_history(dat
     async with database.session() as db:
         saved = await db.get(RunRow, run.id)
         assert saved.prompt_version == PROMPT_VERSION and saved.code_version.startswith(
-            "loaded-minimal-loop:"
+            "loaded-runtime-v2:"
         )
         assert len(saved.config_snapshot["loaded_runtime_activations"]) == 1
 
@@ -372,3 +372,28 @@ async def test_health_reports_loaded_versions_without_model_call(database):
         assert versions["prompt_version"] == PROMPT_VERSION
         assert versions["code_version"] == loaded_code_version()
         assert "not_entire_process" in versions["scope"]
+        assert versions["process_start"]["code_version"] == versions["code_version"]
+        assert versions["algorithm"] == "canonical_code_v2"
+
+
+async def test_v2_activation_appends_without_rewriting_legacy_fingerprint(database, unique_name):
+    from agent_workbench.agent.factory import loaded_runtime_versions
+
+    ctx = await _build_context(database, unique_name)
+    legacy = {"code_version": "loaded-minimal-loop:historical", "prompt_version": "16",
+              "owner_generation": -1, "captured_at": "2026-10-01T00:00:00Z"}
+    async with database.transaction() as db:
+        row = await db.get(RunRow, ctx.toolbox.run_id)
+        row.config_snapshot = {**row.config_snapshot, "loaded_runtime_activations": [legacy]}
+    async with database.session() as db:
+        run = await db.get(RunRow, ctx.toolbox.run_id)
+    runner = AgentRunner(settings=database.settings, database=database, owner=ctx.toolbox.owner)
+    version = loaded_runtime_versions()
+    runtime = SimpleNamespace(prompt_version=PROMPT_VERSION, code_version=version["code_version"], loaded_versions=version)
+    await runner._capture_loaded_versions(run, cast(Any, runtime), ctx.toolbox.owner_generation)
+    async with database.session() as db:
+        saved = await db.get(RunRow, run.id)
+        history = saved.config_snapshot["loaded_runtime_activations"]
+        assert history[0] == legacy and len(history) == 2
+        assert history[1]["loaded_implementation"]["code_version"] == version["code_version"]
+        assert history[1]["process_start"]["capture_stage"] == "runner_initialization"

@@ -19,19 +19,25 @@ class ModelStreamTracker:
         self._first: dict[str, datetime] = {}
         self.active_call_id: str | None = None
         self.activity_phase = "waiting"
+        self.active_purpose = "agent"
+        self._auxiliary_messages: dict[str, None] = {}
         self._on_activity: Callable[[], None] | None = None
 
     @contextmanager
-    def track_call(self, call_id: str, on_activity: Callable[[], None]) -> Iterator[None]:
+    def track_call(
+        self, call_id: str, on_activity: Callable[[], None], *, purpose: str = "agent"
+    ) -> Iterator[None]:
         if self.active_call_id is not None:
             raise RuntimeError("同一运行上下文不能同时观测两个模型调用")
         self.active_call_id = call_id
+        self.active_purpose = purpose
         self.activity_phase = "waiting"
         self._on_activity = on_activity
         try:
             yield
         finally:
             self.active_call_id = None
+            self.active_purpose = "agent"
             self._on_activity = None
 
     def observe(self, chunk: Any, *, observed_at: datetime | None = None) -> None:
@@ -46,6 +52,8 @@ class ModelStreamTracker:
         ):
             return
         visible = _has_visible_output(message)
+        if self.active_purpose == "graph_review":
+            self.mark_auxiliary(message)
         reasoning = message.additional_kwargs.get("reasoning_content")
         thinking = isinstance(reasoning, str) and bool(reasoning)
         # 空分片、心跳和其它图节点不能延长模型等待；正文首 token 仍不含思考。
@@ -57,6 +65,18 @@ class ModelStreamTracker:
         self._first.setdefault(message.id, observed_at or datetime.now(UTC))
         if len(self._first) > _MAX_PENDING:
             self._first.pop(next(iter(self._first)))
+
+    def mark_auxiliary(self, message: Any) -> None:
+        if message.id:
+            self._auxiliary_messages[str(message.id)] = None
+            if len(self._auxiliary_messages) > _MAX_PENDING:
+                self._auxiliary_messages.pop(next(iter(self._auxiliary_messages)))
+
+    def is_auxiliary(self, message: Any) -> bool:
+        return (
+            self.active_purpose == "graph_review"
+            or str(getattr(message, "id", "")) in self._auxiliary_messages
+        )
 
     def take_for_response(
         self,

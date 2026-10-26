@@ -33,6 +33,8 @@ from agent_workbench.tools.history import search_history
 from agent_workbench.tools.http import HTTP_TOOLS
 from agent_workbench.tools.jobs import JOB_TOOLS
 from agent_workbench.tools.knowledge import KNOWLEDGE_TOOLS
+from agent_workbench.tools.session_graph import GRAPH_TOOLS
+from agent_workbench.tools.shadow_test_profile import run_http_test_profile
 from agent_workbench.tools.skills import SKILL_TOOLS
 from agent_workbench.tools.task import TASK_TOOLS
 from agent_workbench.tools.terminals import TERMINAL_TOOLS
@@ -44,6 +46,7 @@ class ToolSelection:
     """一次 run 的工具选择。reason 用于把"为什么关掉某组"写进诊断。"""
 
     http: bool = True
+    http_test_profiles: bool = False
     #: 浏览器工具。真实可用性由 Executor 的能力预检决定；不可用时执行岛会返回
     #: `browser_unavailable`，控制端据此给出确定失败，而不是假装成功。
     browser: bool = True
@@ -53,7 +56,9 @@ class ToolSelection:
     evidence: bool = True
     jobs: bool = True
     task: bool = True
-    knowledge: bool = True
+    knowledge: bool = False
+    graph: bool = True
+    legacy_memory: bool = False
     #: 用户显式发布的外部扩展，与宿主 knowledge/methods 独立。
     skills: bool = False
     #: 旧配置兼容字段；即使为 True 也不再注册退役结束工具。
@@ -72,12 +77,15 @@ class ToolSelection:
     def to_manifest(self) -> dict[str, Any]:
         return {
             "http": self.http,
+            "http_test_profiles": self.http_test_profiles,
             "browser": self.browser,
             "files": self.files,
             "evidence": self.evidence,
             "jobs": self.jobs,
             "task": self.task,
             "knowledge": self.knowledge,
+            "graph": self.graph,
+            "legacy_memory": self.legacy_memory,
             **({"skills": True} if self.skills else {}),
             "completion": False,
             "verification": self.verification,
@@ -136,6 +144,9 @@ def default_selection(
     由工具内的能力核对给出确定失败；运行时（Runner 预检之后）必须传入真实能力。
     """
     cfg = settings or get_settings()
+    profiles_enabled = (cfg.history_action_test_profiles_enabled
+                        and cfg.history_action_shadow_context_path is not None
+                        and capabilities is not None and capabilities.http_available)
     _ = cfg
     reasons: dict[str, str] = {
         "browser": "浏览器工具已实现；若执行岛没有可用浏览器，动作会返回 browser_unavailable。",
@@ -144,7 +155,7 @@ def default_selection(
         "coverage": "第一阶段停止维护 Coverage 协议，仅保留历史读取。",
     }
     if capabilities is None:
-        return ToolSelection(disabled_reasons=reasons)
+        return ToolSelection(knowledge=not cfg.blind_test, graph=cfg.session_graph_enabled, legacy_memory=not cfg.session_graph_enabled, disabled_reasons=reasons)
 
     execution_declared = bool(capabilities.execution)
     trusted = capabilities.execution_mode == "trusted" and execution_declared
@@ -176,6 +187,8 @@ def default_selection(
             reasons["terminals"] = capabilities.execution_reason("pty") or "PTY 能力不可用"
 
     return ToolSelection(
+        http_test_profiles=profiles_enabled,
+        knowledge=not cfg.blind_test, graph=cfg.session_graph_enabled, legacy_memory=not cfg.session_graph_enabled,
         command=command_ok,
         terminals=pty_ok,
         environment=execution_declared,
@@ -190,6 +203,8 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
     tools: list[Any] = []
     if chosen.http:
         tools.extend(HTTP_TOOLS)
+        if chosen.http_test_profiles:
+            tools.append(run_http_test_profile)
     if chosen.files:
         tools.extend(FILE_TOOLS)
     if chosen.browser:
@@ -209,7 +224,9 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
     if chosen.templates:
         tools.extend(EXECUTION_TEMPLATE_TOOLS)
     if chosen.task:
-        tools.extend(TASK_TOOLS)
+        tools.extend(TASK_TOOLS if chosen.legacy_memory else [TASK_TOOLS[0]])
+    if chosen.graph:
+        tools.extend(GRAPH_TOOLS)
     if chosen.knowledge:
         tools.extend(KNOWLEDGE_TOOLS)
     if chosen.skills:

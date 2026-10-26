@@ -29,6 +29,7 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Text, and_, cast, literal, or_, select, tuple_, union_all
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import distinct_on
 
 from agent_workbench.agent.state import plan_step_lead_ids
 from agent_workbench.api.auth import LocalAuth
@@ -346,6 +347,8 @@ async def create_session(
                     profile=profile, request_timeout_seconds=settings.model_request_timeout_seconds
                 ).to_snapshot(),
                 "scope_mode_explicit": mode_explicit,
+                "decision_memory_mode": settings.decision_memory_mode,
+                "history_assistance_mode": settings.history_assistance_mode,
             },
         )
 
@@ -556,7 +559,10 @@ async def post_message(
             raise ApiError(
                 ErrorCode.CONFLICT, "当前阶段固定模型；请继续当前模型，或新建聊天选择其他模型"
             )
-        config: dict[str, object] = {"created_from": "message"}
+        config: dict[str, object] = {
+            "created_from": "message", "decision_memory_mode": settings.decision_memory_mode,
+            "history_assistance_mode": settings.history_assistance_mode,
+        }
         if active is None:
             try:
                 profile = resolve_provider_profile(selected_provider, selected_model, settings)
@@ -880,6 +886,15 @@ async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]
             .scalars()
             .all()
         )
+        latest_calls = {str(run_id): str(call_id) for run_id, call_id in (
+            await session.execute(
+                select(ModelCallRow.run_id, ModelCallRow.model_call_id)
+                .where(ModelCallRow.run_id.in_([r.id for r in runs]), ModelCallRow.phase == "agent")
+                .ext(distinct_on(ModelCallRow.run_id))
+                .order_by(ModelCallRow.run_id, ModelCallRow.submitted_at.desc(),
+                          ModelCallRow.model_call_id.desc())
+            )
+        ).all()}
 
     return {
         "session": {
@@ -903,6 +918,12 @@ async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]
                 "stop_reason": _redact_api_value(row.stop_reason),
                 "owner_generation": row.owner_generation,
                 "created_at": row.created_at.isoformat(),
+                "model_response_saved": bool(
+                    row.config_snapshot.get("completion_result_artifact_id")
+                    and row.config_snapshot.get("completion_result_model_call_id")
+                    and latest_calls.get(str(row.id))
+                    == row.config_snapshot.get("completion_result_model_call_id")
+                ),
             }
             for row in runs
         ],
@@ -1083,6 +1104,7 @@ def _conversation_sources(session_id: UUID) -> Any:
             ModelCallRow.response_artifact_id,
         ).where(
             ModelCallRow.session_id == session_id,
+            ModelCallRow.phase == "agent",
             ModelCallRow.response_artifact_id.is_not(None),
             ModelCallRow.completed_at.is_not(None),
             ~select(RunRow.id).where(

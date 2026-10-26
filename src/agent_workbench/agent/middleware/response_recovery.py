@@ -16,17 +16,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from contextvars import ContextVar
 from dataclasses import dataclass
 from uuid import UUID
 
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
+from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.contracts.events import EventType
+from agent_workbench.models.invocation import graph_review_scope
 from agent_workbench.models.response_quality import (
     ResponseQuality,
     batch_rejection,
@@ -39,6 +42,44 @@ from agent_workbench.observability.logging import get_logger
 from agent_workbench.persistence.tables import ModelCallRow
 
 log = get_logger("agent_workbench.response_recovery")
+
+
+def _review_response(response, tools):
+    """分类适配器解析后的调用；不检查正文含义或输出工具参数。"""
+    message = last_ai_message(response)
+    quality = classify_response(response)
+    calls = [*message.tool_calls, *message.invalid_tool_calls] if message else []
+    details = {
+        "response_id": message.id if message else None,
+        "finish_reason": quality.finish_reason,
+        "tool_names": [str(c.get("name") or "")[:80] for c in calls][:8],
+        "tool_call_ids": [str(c.get("id") or "")[:128] for c in calls][:8],
+    }
+    if quality.outcome == "refused":
+        return "provider_error", {**details, "error_category": "refused"}
+    if quality.outcome == "truncated":
+        return "invalid_arguments", {**details, "error_category": "truncated"}
+    if message and message.invalid_tool_calls:
+        return "invalid_arguments", {**details, "error_category": "invalid_tool_call"}
+    if not message or not message.tool_calls:
+        return "no_tool_call", details
+    names = {c["name"] for c in message.tool_calls}
+    if names - {"get_graph", "update_graph"}:
+        return "disallowed_tool", details
+    if sum(c["name"] == "update_graph" for c in message.tool_calls) > 1:
+        return "invalid_arguments", {**details, "error_category": "multiple_updates"}
+    schemas = {t.name: t.tool_call_schema for t in tools if not isinstance(t, dict)}
+    for call in message.tool_calls:
+        if not isinstance(call["args"], dict):
+            return "invalid_arguments", {**details, "error_category": "non_object_arguments"}
+        if call["name"] == "update_graph" and not call["args"].get("page_id"):
+            return "invalid_arguments", {**details, "error_category": "missing_page_id"}
+        try:
+            if call["name"] in schemas:
+                schemas[call["name"]].model_validate(call["args"])
+        except ValidationError:
+            return "invalid_arguments", {**details, "error_category": "schema_validation"}
+    return "submitted_update" if "update_graph" in names else "read_graph", details
 
 
 class ModelResponseUnavailable(RuntimeError):
@@ -156,6 +197,112 @@ class ResponseRecoveryMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         if context is None or recovery_scope.get() is not None:
             # 没有运行上下文（诊断/装配）或已被外层恢复接管：不嵌套恢复。
             return await handler(request)
+
+        from agent_workbench.domain.graph_sync import (
+            GraphReviewExhausted,
+            finish_review,
+            record_review_outcome,
+            review_ready,
+        )
+
+        box = context.toolbox
+        automatic_review = getattr(getattr(box, "settings", None), "decision_memory_mode", "current") == "current"
+        previous = next((m for m in reversed(request.messages) if isinstance(m, AIMessage)), None)
+        previous_window = (getattr(previous, "additional_kwargs", {}) or {}).get(
+            "workbench_graph_review_window"
+        )
+        failures = []
+        if previous_window and previous is not None:
+            call_ids = {c["id"] for c in previous.tool_calls if c["name"] == "update_graph"}
+            for message in request.messages:
+                if getattr(message, "tool_call_id", None) in call_ids:
+                    try:
+                        result = json.loads(str(message.content))
+                    except ValueError:
+                        continue
+                    error = result.get("error") if isinstance(result, dict) else None
+                    failures.append(
+                        isinstance(error, dict) and error.get("code") == "validation_failed"
+                    )
+        if automatic_review and any(failures):
+            async with box.db.transaction() as db:
+                await record_review_outcome(
+                    db, box, "validation_failed", error_category="tool_validation"
+                )
+        if automatic_review and await review_ready(box, previous_window, any(failures)):
+            window_id = box.graph_review_window_id
+            token = graph_review_scope.set(window_id)
+            try:
+                graph_tools = [
+                    t
+                    for t in request.tools
+                    if (
+                        t.get("name", (t.get("function") or {}).get("name"))
+                        if isinstance(t, dict)
+                        else t.name
+                    )
+                    in {"get_graph", "update_graph"}
+                ]
+                if not graph_tools:
+                    raise GraphReviewExhausted("没有可用图工具")
+                current = request.override(
+                    tools=graph_tools, tool_choice="required",
+                    system_message=SystemMessage(content="【宿主图维护】仅核对已有来源并提交会话图；"
+                        "本请求不是普通安全测试决策，不执行新的测试。"),
+                )
+                # Only response format is repaired here; all tools still run in official Tools.
+                # reserve_review guards each physical handler request, including restored attempts.
+                for _ in range(2):
+                    try:
+                        response = await handler(current)
+                    except GraphReviewExhausted:
+                        raise
+                    except Exception as exc:
+                        from agent_workbench.agent.signals import (
+                            GraphRunAborted,
+                            LeaseLostError,
+                            StaleResponseError,
+                        )
+
+                        if isinstance(exc, GraphRunAborted | LeaseLostError | StaleResponseError):
+                            raise
+                        async with box.db.transaction() as db:
+                            await record_review_outcome(
+                                db, box, "provider_error", error_category=type(exc).__name__
+                            )
+                            await finish_review(db, box, "provider_error")
+                        raise
+                    outcome, details = _review_response(response, graph_tools)
+                    async with box.db.transaction() as db:
+                        used = await record_review_outcome(db, box, outcome, **details)
+                    if outcome in {"submitted_update", "read_graph"}:
+                        message = last_ai_message(response)
+                        assert message is not None
+                        message.additional_kwargs["workbench_graph_review_window"] = window_id
+                        return response
+                    # 非许可工具说明当前维护协议未被遵守；同上下文立即再问没有新信息。
+                    if outcome in {"provider_error", "disallowed_tool"} or used >= 2:
+                        async with box.db.transaction() as db:
+                            await finish_review(
+                                db, box, outcome if outcome in {"provider_error", "disallowed_tool"}
+                                else "exhausted"
+                            )
+                        break
+                    system = str(getattr(current.system_message, "content", "") or "")
+                    current = current.override(
+                        system_message=SystemMessage(
+                            content=system
+                            + f"\n【宿主：仅剩一次图核对格式修正】上次分类={outcome}。"
+                            "请实际调用update_graph，并携带当前page_id；无变化也提交operations=[]。"
+                            "不用正文模拟工具调用，不使用外部测试工具；暂停取消优先，正常最终答复不受补图限制。"
+                        )
+                    )
+                # Restore the normal main request; its no-tool answer retains official END.
+            except GraphReviewExhausted:
+                async with box.db.transaction() as db:
+                    await finish_review(db, box, "request_budget_exhausted")
+            finally:
+                graph_review_scope.reset(token)
 
         logical_id = logical_decision_id(request, context)
         used = await _attempts_used(context, logical_id)

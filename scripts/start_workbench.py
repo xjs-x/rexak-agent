@@ -101,6 +101,24 @@ def check_existing_runner() -> None:
         raise RuntimeError("已有 Runner 在运行，请先停止原 Runner，避免重复启动")
 
 
+def check_executor_capabilities(response: httpx.Response, executor_id: str) -> None:
+    """仅输出安全诊断，不回显请求头、令牌、URL 或远端错误正文。"""
+    status = response.status_code
+    if status in {401, 403}:
+        raise RuntimeError(
+            f"Kali Executor 鉴权失败（HTTP {status}）：请核对本机 .env 的 "
+            "WORKBENCH_EXECUTOR_TOKEN 与 Kali 执行端令牌是否一致。"
+        )
+    if status != 200:
+        raise RuntimeError(f"Kali Executor 能力检查失败（HTTP {status}），请检查远端服务日志。")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Kali Executor 能力检查返回的内容不是有效 JSON。") from exc
+    if not isinstance(payload, dict) or payload.get("executor_id") != executor_id:
+        raise RuntimeError("执行端身份与本机配置不一致")
+
+
 async def ensure_executor(settings: Settings) -> None:
     validate_executor_connection(settings)
     async with asyncssh.connect(
@@ -131,9 +149,7 @@ async def ensure_executor(settings: Settings) -> None:
                 response = await client.get(
                     "/capabilities", headers={"Authorization": "Bearer " + settings.executor_token}
                 )
-                response.raise_for_status()
-                if response.json().get("executor_id") != settings.executor_id:
-                    raise RuntimeError("执行端身份与本机配置不一致")
+                check_executor_capabilities(response, settings.executor_id)
         finally:
             listener.close()
 

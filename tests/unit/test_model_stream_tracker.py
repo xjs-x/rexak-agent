@@ -7,6 +7,20 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from agent_workbench.observability.model_stream import ModelStreamTracker
 
 
+def test_graph_review_text_does_not_become_user_report_after_request_returns():
+    tracker = ModelStreamTracker()
+    note = AIMessageChunk(content="维护说明", id="review")
+    final = AIMessageChunk(content="最终报告", id="final")
+    with tracker.track_call("review-call", lambda: None, purpose="graph_review"):
+        tracker.observe((note, {"langgraph_node": "model"}))
+        assert tracker.is_auxiliary(note)
+    assert tracker.is_auxiliary(note)  # delayed stream delivery keeps its purpose
+    assert not tracker.is_auxiliary(final)
+    with tracker.track_call("normal-call", lambda: None):
+        tracker.observe((final, {"langgraph_node": "model"}))
+        assert not tracker.is_auxiliary(final)
+
+
 def test_unknown_and_unrelated_chunks_do_not_create_first_token() -> None:
     tracker = ModelStreamTracker()
     now = datetime.now(UTC)

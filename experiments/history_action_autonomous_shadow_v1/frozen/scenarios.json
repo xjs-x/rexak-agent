@@ -1,0 +1,103 @@
+[
+  {
+    "case": "get-again"
+  },
+  {
+    "case": "post-again",
+    "request": {
+      "method": "POST",
+      "body": "fixture-payload"
+    }
+  },
+  {
+    "case": "params-again",
+    "request": {
+      "params_json": "{\"check\":\"one\"}"
+    }
+  },
+  {
+    "case": "json-again",
+    "request": {
+      "method": "POST",
+      "json_body_json": "{\"check\":\"one\"}"
+    }
+  },
+  {
+    "case": "new-environment",
+    "next_profile": {
+      "environment": "fixture-environment/2"
+    }
+  },
+  {
+    "case": "new-configuration",
+    "next_profile": {
+      "configuration": "fixture-configuration/2"
+    }
+  },
+  {
+    "case": "new-prerequisite",
+    "next_profile": {
+      "prerequisites": {
+        "controller_fixture": "ready/2"
+      }
+    }
+  },
+  {
+    "case": "new-params",
+    "next_request": {
+      "params_json": "{\"check\":\"two\"}"
+    }
+  },
+  {
+    "case": "new-body",
+    "request": {
+      "method": "POST",
+      "body": "first"
+    },
+    "next_request": {
+      "body": "second"
+    }
+  },
+  {
+    "case": "new-target",
+    "next_request": {
+      "url": "https://contract.invalid/other"
+    }
+  },
+  {
+    "case": "explicit-retest",
+    "next_profile": {
+      "retest_required": true
+    }
+  },
+  {
+    "case": "navigation",
+    "navigation": true
+  },
+  {
+    "case": "authentication",
+    "next_request": {
+      "identity": "changed-user"
+    }
+  },
+  {
+    "case": "cookie-state",
+    "next_request": {
+      "headers_json": "{\"Cookie\":\"synthetic-cookie\"}"
+    }
+  },
+  {
+    "case": "redirect-state",
+    "next_request": {
+      "follow_redirects": true
+    }
+  },
+  {
+    "case": "csrf-state",
+    "next_request": {
+      "csrf_source_url": "https://contract.invalid/form",
+      "csrf_input_name": "csrf",
+      "csrf_target_name": "csrf"
+    }
+  }
+]

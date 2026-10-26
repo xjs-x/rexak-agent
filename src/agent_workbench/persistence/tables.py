@@ -1081,3 +1081,33 @@ ALL_TABLES = [
     ExecutionTemplateRow,
     ExecutionTemplateVersionRow,
 ]
+
+
+class SessionGraphRow(TimestampMixin, Base):
+    """Session 双图唯一权威；与 LangGraph 执行 checkpoint 分属不同领域。"""
+
+    __tablename__ = "session_graphs"
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    document: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    reviewed_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    completed_rounds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    reviewed_rounds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    next_sync_round: Mapped[int] = mapped_column(BigInteger, nullable=False, default=5)
+    missed_syncs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class SessionGraphReceiptRow(TimestampMixin, Base):
+    """稳定调用/完整轮次身份；修订快照保留修改前后来源历史。"""
+
+    __tablename__ = "session_graph_receipts"
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    request_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
