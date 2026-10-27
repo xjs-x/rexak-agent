@@ -222,7 +222,8 @@ class CommandGuardMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     HumanMessage(
                         content=text,
                         id=f"command-{pending.id}",
-                        additional_kwargs={"skill_refs": pending.payload.get("skill_refs") or []},
+                        additional_kwargs={"skill_refs": pending.payload.get("skill_refs") or [],
+                                           "attachment_ids": pending.payload.get("attachment_ids") or []},
                     )
                 ],
                 "execution_delegation_id": None,

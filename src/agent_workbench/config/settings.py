@@ -49,6 +49,16 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    attachment_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1, le=100 * 1024 * 1024)
+    attachment_max_per_message: int = Field(default=5, ge=1, le=20)
+    attachment_max_per_session: int = Field(default=100, ge=1, le=1000)
+    attachment_ttl_hours: int = Field(default=24, ge=1)
+    attachment_parse_seconds: float = Field(default=15, ge=1, le=60)
+    attachment_parse_memory_mb: int = Field(default=256, ge=128, le=1024)
+    attachment_parse_chars: int = Field(default=2_000_000, ge=1000, le=8_000_000)
+    attachment_max_pages: int = Field(default=200, ge=1, le=1000)
+    attachment_read_chars: int = Field(default=12000, ge=256, le=32000)
+
     # Session 记忆开关用于公平对照；盲测默认不读取跨任务经验。
     session_graph_enabled: bool = True
     graph_attack_enabled: bool = True

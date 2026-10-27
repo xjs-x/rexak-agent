@@ -116,6 +116,34 @@ class TimestampMixin:
     )
 
 
+class AttachmentRow(Base):
+    """用户输入资料；共用 CAS，但不创建 Artifact / Finding / 执行授权。"""
+
+    __tablename__ = "attachments"
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    session_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.sessions.id"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_message_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.commands.id"))
+    upload_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    relative_key: Mapped[str] = mapped_column(Text, nullable=False)
+    parsed_key: Mapped[str | None] = mapped_column(Text)
+    parse_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="temporary")
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="user_upload")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("session_id", "upload_key", name="uq_attachments_session_upload"),
+        Index("ix_attachments_session_message", "session_id", "source_message_id"),
+        Index("ix_attachments_expiry", "status", "expires_at"),
+    )
+
+
 class PriceCatalogVersionRow(Base):
     """不可变价格版本；模型调用按版本引用，旧费用不会被新配置改写。"""
 

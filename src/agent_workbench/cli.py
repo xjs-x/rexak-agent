@@ -29,6 +29,7 @@ from agent_workbench.platform_compat import (
     configure_stdio_utf8,
 )
 from agent_workbench.skills.cli import app as skills_app
+from agent_workbench.tsecbench.cli import tsec_app
 
 app = typer.Typer(
     name="workbench",
@@ -37,6 +38,7 @@ app = typer.Typer(
     add_completion=False,
 )
 app.add_typer(skills_app, name="skills")
+app.add_typer(tsec_app, name="tsec")
 
 
 def _echo(message: str) -> None:
@@ -102,17 +104,41 @@ def serve_runner(
             help="只推进指定的 run（演练/调试用）。不传则按常规候选扫描。",
         ),
     ] = None,
+    skip_execution_cycle: Annotated[
+        bool,
+        typer.Option(
+            "--skip-execution-cycle",
+            help="只推进 --only-run-id 指定的 run，不做全局执行事件巡检（评测隔离用）",
+        ),
+    ] = False,
 ) -> None:
     """启动 Agent Runner。需要有效 run lease 才会推进任务。
 
     `--only-run-id` 用于**定向驱动**：当数据库里还堆着其它 queued run 时，
     调试/演练需要确定性地只处理目标 run，而不是被前面的 run 拖住。
+    `--skip-execution-cycle` 进一步关闭全局执行事件巡检，只保留本题的作业唤醒，
+    供评测适配器按需拉起专用 Runner 使用；默认关闭，不影响常规运行。
     """
-    asyncio.run(_run_runner(once=once, owner=owner, recover=recover, only_run_id=only_run_id))
+    if skip_execution_cycle and not only_run_id:
+        raise typer.BadParameter("--skip-execution-cycle 只能与 --only-run-id 一起使用")
+    asyncio.run(
+        _run_runner(
+            once=once,
+            owner=owner,
+            recover=recover,
+            only_run_id=only_run_id,
+            execution_cycle_enabled=not skip_execution_cycle,
+        )
+    )
 
 
 async def _run_runner(
-    *, once: bool, owner: str | None, recover: bool, only_run_id: str | None = None
+    *,
+    once: bool,
+    owner: str | None,
+    recover: bool,
+    only_run_id: str | None = None,
+    execution_cycle_enabled: bool = True,
 ) -> None:
     from agent_workbench.observability.logging import configure_logging, get_logger
     from agent_workbench.persistence.bootstrap import assert_business_schema_current
@@ -171,7 +197,7 @@ async def _run_runner(
                 )
             return
         _echo(f"Runner 已启动（owner={runner.owner}）。关闭网页不影响任务。")
-        await runner.serve(only_run_id=target)
+        await runner.serve(only_run_id=target, execution_cycle_enabled=execution_cycle_enabled)
     finally:
         await db.close()
 

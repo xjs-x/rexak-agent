@@ -5,10 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from agent_workbench.contracts.attachments import AttachmentRead
 
 
 class ConversationEntry(BaseModel):
+    attachments: list[AttachmentRead] = Field(default_factory=list)
     id: UUID
     role: str
     source: str

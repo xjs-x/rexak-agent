@@ -767,5 +767,12 @@ async def cancel_duty(
 async def environment(session_id: UUID, request: Request) -> ExecutionEnvironmentReport:
     await _guard(request, session_id, write=False)
     async with _ExecutorSession() as client:
-        payload = await client.execution_environment()
+        try:
+            payload = await client.execution_environment()
+        except (TunnelUnavailable, ExecutorConnectionError, ExecutorProtocolError) as exc:
+            # 执行端不可达是可解释的服务状态，不是未处理异常；返回 503 让 UI 明确显示“不可达”。
+            raise ApiError(
+                ErrorCode.EXECUTOR_UNAVAILABLE,
+                f"执行端不可达：{exc}",
+            ) from None
     return ExecutionEnvironmentReport.model_validate(payload)

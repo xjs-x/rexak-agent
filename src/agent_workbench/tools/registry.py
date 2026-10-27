@@ -20,6 +20,7 @@ from typing import Any
 
 from agent_workbench.config.settings import Settings, get_settings
 from agent_workbench.contracts.tool import ExecutorCapabilities
+from agent_workbench.tools.attachments import ATTACHMENT_TOOLS
 from agent_workbench.tools.browser import BROWSER_TOOLS
 from agent_workbench.tools.commands import COMMAND_TOOLS
 from agent_workbench.tools.evidence import EVIDENCE_TOOLS
@@ -201,6 +202,7 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
     """按选择装配工具列表。"""
     chosen = selection or default_selection()
     tools: list[Any] = []
+    tools.extend(ATTACHMENT_TOOLS)
     if chosen.http:
         tools.extend(HTTP_TOOLS)
         if chosen.http_test_profiles:

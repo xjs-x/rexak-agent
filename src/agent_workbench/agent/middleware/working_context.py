@@ -19,6 +19,14 @@ class WorkingContextMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         async with context.toolbox.db.session() as db:
             view = await assemble_basic_context(db, context.toolbox.session_id, dict(state),
                                                 legacy_memory=not context.toolbox.settings.session_graph_enabled)
+            from agent_workbench.domain.attachments import TRUST_NOTE, list_metadata
+            from agent_workbench.evidence.artifacts import ArtifactStore
+
+            attachments = await list_metadata(db, context.toolbox.session_id,
+                context.toolbox.settings, ArtifactStore(context.toolbox.db.settings), limit=5)
+            if attachments["attachments"]:
+                view["user_attachments"] = {**attachments, "note": TRUST_NOTE,
+                    "read_hint": "需要正文时主动调用 list_attachments/read_attachment/search_attachment；目录只含元数据。"}
         if (context.toolbox.settings.session_graph_enabled
             and getattr(context.toolbox.settings, "decision_memory_mode", "current") == "current"):
             view["session_memory"] = await graph_context(context.toolbox, completed_model_message(state))

@@ -176,6 +176,9 @@ def create_app() -> FastAPI:
     from agent_workbench.api.routes import router
 
     app.include_router(router)
+    from agent_workbench.api.attachments import router as attachments_router
+
+    app.include_router(attachments_router)
     # 执行底座：会话资源 / 输出 / 值班 / 环境（不驱动 Agent，不把 stdout 塞 SSE）
     app.include_router(execution_router)
     from agent_workbench.api.skills import router as skills_router
@@ -228,6 +231,7 @@ def create_app() -> FastAPI:
             },
             "database": {"ok": db_ok, **info},
             "auth_configured": not LocalAuth()._is_default_secret(settings.session_secret),
+            "attachments_enabled": True,
             "note": ("本服务只应监听回环地址；健康检查不需要鉴权，因此不返回任何配置细节。"),
         }
 

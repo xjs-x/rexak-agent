@@ -228,6 +228,20 @@ async def list_project_sessions(
             .scalars()
             .all()
         )
+        # 只读投影：列表需要表示"这个会话最近一次运行到哪了"，但不必为每行再读快照。
+        # 取每个 session 最新 run 的状态；没有 run 时为 None，不伪造状态。
+        listed_ids = [row.id for row in rows[:limit]]
+        latest_run_status: dict[UUID, str] = {}
+        if listed_ids:
+            run_rows = (
+                await db.execute(
+                    select(RunRow.session_id, RunRow.status)
+                    .where(RunRow.session_id.in_(listed_ids))
+                    .order_by(RunRow.session_id, RunRow.created_at.desc())
+                )
+            ).all()
+            for session_id, run_status in run_rows:
+                latest_run_status.setdefault(session_id, run_status)
     return {
         "sessions": [
             {
@@ -237,6 +251,7 @@ async def list_project_sessions(
                 "status": row.status,
                 "provider_id": row.provider_id,
                 "model_name": row.model_name,
+                "latest_run_status": latest_run_status.get(row.id),
                 "created_at": row.created_at.isoformat(),
             }
             for row in rows[:limit]
@@ -330,6 +345,15 @@ async def create_session(
                     "active_identity_name 必须引用本次创建的测试身份",
                 )
             session_row.active_identity_id = selected.id
+
+        if payload.draft:
+            return {
+                "session": {"id": str(session_row.id), "project_id": str(project_id),
+                    "title": session_row.title, "status": session_row.status,
+                    "provider_id": session_row.provider_id, "model_name": session_row.model_name,
+                    "created_at": session_row.created_at.isoformat()},
+                "run": None, "note": "附件草稿会话；发送真实消息前不会启动 Agent。",
+            }
 
         run = await create_run(
             session,
@@ -508,6 +532,7 @@ async def post_message(
     provider_id: Annotated[str | None, Body()] = None,
     model_name: Annotated[str | None, Body()] = None,
     skill_refs: Annotated[list[str] | None, Body(max_length=20)] = None,
+    attachment_ids: Annotated[list[UUID] | None, Body(max_length=20)] = None,
 ) -> dict[str, Any]:
     """**只写入指令并返回 202**，不在请求处理函数里驱动 Agent。"""
     auth = get_auth()
@@ -584,11 +609,16 @@ async def post_message(
                     "provider_id": provider_id,
                     "model_name": model_name,
                     **({"skill_refs": skill_refs} if skill_refs else {}),
+                    **({"attachment_ids": [str(item) for item in attachment_ids]} if attachment_ids else {}),
                 }
-                if provider_id or model_name or skill_refs
+                if provider_id or model_name or skill_refs or attachment_ids
                 else None
             ),
         )
+        if attachment_ids:
+            from agent_workbench.domain.attachments import bind_attachments
+
+            await bind_attachments(session, session_id, receipt.command_id, attachment_ids, settings)
         if receipt.created and receipt.run_id:
             run = await session.get(RunRow, receipt.run_id)
             if (
@@ -1210,6 +1240,20 @@ async def page_conversation(
         )
 
         model_ids = [str(row["id"]) for row in rows[:limit] if row["source"] == "assistant"]
+        from agent_workbench.domain.attachments import metadata as attachment_metadata
+        from agent_workbench.persistence.tables import AttachmentRow
+
+        attachment_map: dict[UUID, list[dict[str, Any]]] = {}
+        message_ids = [row["id"] for row in rows[:limit] if row["source"] == "message"]
+        if message_ids:
+            for attachment in (await db.execute(select(AttachmentRow).where(
+                AttachmentRow.session_id == session_id, AttachmentRow.status == "bound",
+                AttachmentRow.source_message_id.in_(message_ids),
+                AttachmentRow.owner_id == get_settings().owner_id,
+            ))).scalars():
+                assert attachment.source_message_id is not None
+                attachment_map.setdefault(attachment.source_message_id, []).append(
+                    attachment_metadata(attachment, build_artifact_store()).model_dump(mode="json"))
         qualities = {}
         if model_ids:
             for event in (
@@ -1250,6 +1294,7 @@ async def page_conversation(
                 "has_more": len(body) > 1200 if available else False,
                 "available": available,
                 "response_outcome": qualities.get(str(row["id"])),
+                "attachments": attachment_map.get(row["id"], []),
             }
         )
     return {

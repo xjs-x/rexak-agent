@@ -26,12 +26,22 @@ dependencies = [
     "typer>=0.15.0",
     "python-dotenv>=1.0.1",
     "pyyaml>=6.0,<7",
+    "pypdf>=6,<7",
+    "python-docx>=1.2,<2",
+    "pillow>=12,<13",
+    "psutil>=7,<8",
 ]
 
 [project.scripts]
 workbench = "agent_workbench.cli:main"
 
+# TSecBench 评测接入是**独立、按需启动**的外部入口：
+# 不装这个 extra 时，API / Runner / 前端 / 执行岛完全不依赖它。
+# 使用：uv run --extra benchmark workbench tsec ...
 [project.optional-dependencies]
+benchmark = [
+    "tsec-benchmark>=0.1.2,<0.2",
+]
 
 [dependency-groups]
 dev = [

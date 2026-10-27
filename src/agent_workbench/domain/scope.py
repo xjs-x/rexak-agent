@@ -203,3 +203,42 @@ def validate_scope(snapshot: ScopeSnapshot) -> None:
             )
     if any(rule.host in METADATA_HOSTS for rule in snapshot.rules):
         raise ValueError("范围规则不得包含云元数据地址")
+
+
+def executor_scope_payload(snapshot: ScopeSnapshot) -> dict[str, object]:
+    """转换为执行岛 `ScopePayload` 的字段集合。
+
+    执行岛对未知字段 `extra="forbid"`，因此**只发送协议声明过的字段**；
+    控制端内部的 `notes` 等展示字段不进载荷。执行岛字段名是 `mappings`，
+    与控制端快照的 `target_mappings` 不同，必须显式映射。
+    """
+    return {
+        "revision": snapshot.revision,
+        "rules": [
+            {
+                "scheme": rule.scheme,
+                "host": rule.host,
+                "port": rule.port,
+                "include_subdomains": rule.include_subdomains,
+                "allow_private": rule.allow_private,
+            }
+            for rule in snapshot.rules
+        ],
+        "mappings": [
+            {
+                key: value
+                for key, value in {
+                    "from_host": item.get("from_host"),
+                    "from_port": item.get("from_port"),
+                    "to_host": item.get("to_host"),
+                    "to_port": item.get("to_port"),
+                    "host_header": item.get("host_header"),
+                    "sni": item.get("sni"),
+                    "scheme": item.get("scheme"),
+                }.items()
+                if value is not None
+            }
+            for item in snapshot.target_mappings
+        ],
+        "denied_metadata_hosts": list(snapshot.denied_metadata_hosts),
+    }

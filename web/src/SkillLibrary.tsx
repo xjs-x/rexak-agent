@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type SkillItem, type SkillPage, type SkillResource } from "./api/client";
 
-export function SkillLibrary({sessionId, projectId, selected, onSelected}: {
+export function SkillLibrary({sessionId, projectId, selected, onSelected, note}: {
   sessionId: string; projectId: string; selected: string[]; onSelected: (ids: string[]) => void;
+  /** 当前阶段后端不允许把技能随消息注入时，用真实说明替换“将随下一条消息加载”。 */
+  note?: string;
 }) {
   const [page, setPage] = useState<SkillPage | null>(null);
   const [query, setQuery] = useState("");
@@ -48,7 +50,7 @@ export function SkillLibrary({sessionId, projectId, selected, onSelected}: {
       <button disabled={busy || !directory.trim()} onClick={() => void action(() => api.importSkill({directory}))}>导入目录</button></div>
     {notice && <p role="status">{notice}</p>}
     {page?.total === 0 && <p>尚未接入外部 Skill。当前任务继续使用原有工作流程。</p>}
-    <p>已选 {selected.length} 项，将随下一条消息明确加载。正在运行的任务保留原目录和活跃版本。</p>
+    <p>{note ?? `已选 ${selected.length} 项，将随下一条消息明确加载。正在运行的任务保留原目录和活跃版本。`}</p>
     {page?.skills.map(item => <article className="panel" key={item.skill_id}>
       <div className="panel-head"><label><input type="checkbox" checked={selected.includes(item.skill_id)} disabled={!item.enabled && !selected.includes(item.skill_id)}
         onChange={e => onSelected(e.target.checked ? [...selected, item.skill_id] : selected.filter(id => id !== item.skill_id))} /> {item.name}</label>

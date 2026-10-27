@@ -1,0 +1,161 @@
+"""模型供应商档案与价格目录。
+
+对未知能力一律使用 `unknown`，**不从模型名字推断**（BUILD_PLAN §11.1）。
+价格使用 `Decimal`，每个模型调用保存价格快照或版本号（§11.3）。
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+PRICE_CATALOG_VERSION = "2026-10-08.1"
+
+Capability = Literal["supported", "unsupported", "unknown"]
+
+TokenEstimationMethod = Literal[
+    "provider_tokenizer",
+    "tiktoken_compatible",
+    "chars_div_4",
+    "unknown",
+]
+
+
+class ProviderProfile(BaseModel):
+    """一个供应商/模型的静态能力与配置快照。"""
+
+    model_config = {"frozen": True}
+
+    provider_id: str
+    model_name: str
+    base_url: str
+    secret_ref: str
+    context_limit: int = Field(gt=0)
+    output_reserve: int = Field(default=8192, gt=0)
+    #: 每次请求实际生效的输出额度。未配置时沿用 `output_reserve`（向后兼容）。
+    #: 语义明确为"请求输出额度"，不再兼任输入预留的口径猜测。
+    request_output_limit: int | None = Field(default=None, gt=0)
+    #: 恢复尝试时可用的更大输出额度。**未配置不擅自提高**（§3.3）。
+    recovery_output_limit: int | None = Field(default=None, gt=0)
+    #: 单次逻辑模型决策允许的自动恢复次数（初次请求之外）。
+    max_response_recoveries: int = Field(default=2, ge=0, le=8)
+    #: 模型若另有独立最大输入限制，取它与预算的较小值（§3.3）。
+    max_input_tokens: int | None = Field(default=None, gt=0)
+    budget_safety_margin_ratio: float = Field(default=0.1, ge=0, lt=1)
+    supports_tools: Capability = "unknown"
+    supports_streaming: Capability = "unknown"
+    supports_images: Capability = "unknown"
+    supports_usage: Capability = "unknown"
+    token_estimation_method: TokenEstimationMethod = "unknown"
+    provider_extra: dict[str, object] = Field(default_factory=dict)
+    profile_version: str = "1"
+    max_output_tokens: int | None = Field(default=None, gt=0)
+    documentation_url: str | None = None
+
+    @property
+    def effective_output_limit(self) -> int:
+        """本次请求实际生效的输出额度。"""
+        if self.request_output_limit:
+            return self.request_output_limit
+        return self.output_reserve
+
+    @property
+    def input_budget_tokens(self) -> int:
+        return max(0, self.context_limit - self.effective_output_limit)
+
+
+class ModelPrice(BaseModel):
+    """一个计费单元的单价。`unit` 之外一律按每 1M token 计价。"""
+
+    model_config = {"frozen": True}
+
+    provider_id: str
+    model_name: str
+    currency: str
+    effective_at: str
+    unit: Literal["per_1m_tokens", "per_request"] = "per_1m_tokens"
+    input_per_unit: Decimal = Decimal("0")
+    output_per_unit: Decimal = Decimal("0")
+    cache_read_per_unit: Decimal | None = None
+    cache_write_per_unit: Decimal | None = None
+    #: 该供应商是否把缓存 token 计入 input_tokens（决定是否需要扣除，§11.3 规则 1）
+    cache_tokens_included_in_input: bool = False
+    #: 该供应商是否把推理 token 计入 output_tokens（§11.3 规则 1）
+    reasoning_tokens_included_in_output: bool = False
+
+
+class PriceCatalog(BaseModel):
+    """不可变的价格目录快照。"""
+
+    model_config = {"frozen": True}
+
+    version: str
+    prices: tuple[ModelPrice, ...] = ()
+
+    def find(self, provider_id: str, model_name: str) -> ModelPrice | None:
+        for price in self.prices:
+            if price.provider_id == provider_id and price.model_name == model_name:
+                return price
+        return None
+
+
+def default_provider_profiles() -> dict[tuple[str, str], ProviderProfile]:
+    """版本化默认供应商档案。
+
+    小米与百炼走 OpenAI 兼容协议适配。**能力字段全部为 `unknown`**，
+    必须由 `agent_workbench.models.probe` 用真实请求探明后再写入决策记录，
+    不允许按模型名字声称支持工具调用或流式。
+    """
+
+    profiles = {
+        ("xiaomi", name): ProviderProfile(
+            provider_id="xiaomi",
+            model_name=name,
+            base_url="https://api.xiaomimimo.com/v1",
+            secret_ref="model:xiaomi",
+            context_limit=1_048_576,
+            max_input_tokens=1_048_576,
+            output_reserve=131_072,
+            request_output_limit=131_072,
+            recovery_output_limit=131_072,
+            max_output_tokens=131_072,
+            profile_version="official-2026-10-15",
+            documentation_url="https://mimo.mi.com/docs/en-US/api/chat",
+            token_estimation_method="chars_div_4",
+            provider_extra={"protocol": "openai-compatible"},
+        )
+        for name in ("mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed")
+    }
+    profiles[("bailian", "deepseek-v4.1-flash")] = ProviderProfile(
+        provider_id="bailian",
+        model_name="deepseek-v4.1-flash",
+        base_url="",
+        secret_ref="model:bailian",
+        context_limit=1_000_000,
+        max_input_tokens=1_000_000,
+        output_reserve=393_216,
+        request_output_limit=393_216,
+        recovery_output_limit=393_216,
+        max_output_tokens=393_216,
+        profile_version="official-2026-10-15",
+        documentation_url="https://help.aliyun.com/zh/model-studio/deepseek-v4-1-flash",
+        token_estimation_method="chars_div_4",
+        provider_extra={
+            "protocol": "openai-compatible",
+            "context_limit_source": "provider_documentation",
+        },
+    )
+    return profiles
+
+
+def default_price_catalog() -> PriceCatalog:
+    """版本化默认价格目录。
+
+    首版**不臆造**小米单价：目录为空时模型调用以 `unpriced` 状态记录 tokens
+    而不显示费用为 0（ACCEPTANCE A28）。用户可在设置中写入真实价格后，
+    新 run 使用新价格版本。
+    """
+
+    return PriceCatalog(version=PRICE_CATALOG_VERSION)

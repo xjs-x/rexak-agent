@@ -1,5 +1,8 @@
 import type { components } from "./generated/schema";
 
+export type Attachment = components["schemas"]["AttachmentRead"];
+export type AttachmentSlice = components["schemas"]["AttachmentSlice"];
+
 export type ProjectCreate = components["schemas"]["ProjectCreate"];
 export type SessionCreate = components["schemas"]["SessionCreate"];
 export type AgentEvent = components["schemas"]["EventEnvelope"];
@@ -21,6 +24,8 @@ export interface SessionItem {
   status: string;
   provider_id: string | null;
   model_name: string | null;
+  /** 只读投影：该会话最近一次 run 的状态；没有 run 时为 null。 */
+  latest_run_status?: string | null;
   created_at: string;
 }
 
@@ -155,6 +160,14 @@ export interface ReportItem {
   created_at: string;
 }
 
+export interface ReportRead extends ReportItem {
+  run_id: string | null;
+  markdown_artifact_id: string | null;
+  html_artifact_id: string | null;
+  artifact_refs: string[];
+  input_data_revision: number | null;
+}
+
 export type ModelSettings = components["schemas"]["ModelSettingsRead"];
 
 export type ModelCallItem = components["schemas"]["ModelCallSummary"];
@@ -243,10 +256,11 @@ export class ApiClient {
   }
   private csrf = "";
 
-  async health(): Promise<void> {
+  async health(): Promise<boolean> {
     const response = await fetch("/health", { cache: "no-store", signal: AbortSignal.timeout(4000) });
-    const body = await response.json() as { service?: string; database?: { ok: boolean } };
+    const body = await response.json() as { service?: string; database?: { ok: boolean }; attachments_enabled?: boolean };
     if (!response.ok || body.service !== "agent-workbench-api" || !body.database?.ok) throw new Error("本机服务暂不可用");
+    return body.attachments_enabled === true;
   }
 
   async signIn(): Promise<void> {
@@ -295,8 +309,57 @@ export class ApiClient {
     return request(`/projects/${projectId}/sessions?limit=100&offset=${offset}`);
   }
 
-  createSession(projectId: string, body: SessionCreate): Promise<{ session: SessionItem; run: RunItem }> {
+  createSession(projectId: string, body: SessionCreate): Promise<{ session: SessionItem; run: RunItem | null }> {
     return this.write(`/projects/${projectId}/sessions`, body);
+  }
+
+  async uploadAttachment(sessionId: string, file: File, key: string, signal: AbortSignal,
+    progress: (value: number) => void): Promise<Attachment> {
+    await this.signIn();
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const abort = () => xhr.abort();
+      signal.addEventListener("abort", abort, { once: true });
+      xhr.open("POST", `/api/sessions/${sessionId}/attachments?filename=${encodeURIComponent(file.name)}`);
+      xhr.withCredentials = true;
+      xhr.setRequestHeader("X-Workbench-CSRF", this.csrf);
+      xhr.setRequestHeader("Idempotency-Key", key);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) progress(Math.round(event.loaded / event.total * 100));
+      };
+      xhr.onloadend = () => signal.removeEventListener("abort", abort);
+      xhr.onerror = () => reject(new Error("上传连接中断，请重试"));
+      xhr.onabort = () => reject(new Error("上传已取消；未绑定资料按临时附件管理"));
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+          else reject(new Error(data.message ?? `上传失败 (${xhr.status})`));
+        } catch { reject(new Error("上传响应无效")); }
+      };
+      if (signal.aborted) { reject(new Error("上传已取消")); return; }
+      xhr.send(file);
+    });
+  }
+
+  attachments(sessionId: string): Promise<components["schemas"]["AttachmentPage"]> {
+    return request(`/sessions/${sessionId}/attachments`);
+  }
+
+  temporaryAttachments(sessionId: string): Promise<components["schemas"]["AttachmentPage"]> {
+    return request(`/sessions/${sessionId}/attachments?include_temporary=true&limit=50`);
+  }
+
+  attachmentText(sessionId: string, id: string, cursor: Record<string, number> = {}): Promise<AttachmentSlice> {
+    const params = new URLSearchParams(Object.entries(cursor).map(([key, value]) => [key, String(value)]));
+    return request(`/sessions/${sessionId}/attachments/${id}/text?${params}`);
+  }
+
+  removeAttachment(sessionId: string, id: string): Promise<unknown> {
+    return this.withSessionRetry(() => request(`/sessions/${sessionId}/attachments/${id}`, {
+      method: "DELETE", headers: { "X-Workbench-CSRF": this.csrf },
+    }));
   }
 
   deleteSession(
@@ -497,8 +560,16 @@ export class ApiClient {
     return request(`/sessions/${sessionId}/reports`);
   }
 
-  message(sessionId: string, content: string, model?: { provider_id: string; model_name: string }, skillRefs?: string[]): Promise<{ run_id: string | null }> {
-    return this.write(`/sessions/${sessionId}/messages`, { content, ...model, ...(skillRefs?.length ? {skill_refs: skillRefs} : {}) }, crypto.randomUUID());
+  report(sessionId: string, version: number): Promise<ReportRead> {
+    return request(`/sessions/${sessionId}/reports/${version}`);
+  }
+
+  reportExportUrl(sessionId: string, version: number, format: "markdown" | "html" = "markdown"): string {
+    return `/api/sessions/${sessionId}/reports/${version}/export?format=${format}`;
+  }
+
+  message(sessionId: string, content: string, model?: { provider_id: string; model_name: string }, skillRefs?: string[], attachmentIds?: string[], key: string = crypto.randomUUID()): Promise<{ run_id: string | null }> {
+    return this.write(`/sessions/${sessionId}/messages`, { content, ...model, ...(skillRefs?.length ? {skill_refs: skillRefs} : {}), ...(attachmentIds?.length ? {attachment_ids: attachmentIds} : {}) }, key);
   }
 
   control(runId: string, action: "pause" | "resume" | "cancel", acknowledgeUnknown = false): Promise<unknown> {

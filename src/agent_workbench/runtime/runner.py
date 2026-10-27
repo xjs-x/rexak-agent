@@ -397,13 +397,22 @@ class AgentRunner:
                 return outcome
         return None
 
-    async def serve(self, *, poll_interval: float = 1.0, only_run_id: UUID | None = None) -> None:
+    async def serve(
+        self,
+        *,
+        poll_interval: float = 1.0,
+        only_run_id: UUID | None = None,
+        execution_cycle_enabled: bool = True,
+    ) -> None:
         """常驻循环。SSE/浏览器断开不影响它。
 
         每一轮先做一次**后台任务唤醒巡检**，再找一个 run 推进。
         巡检在"没有等待中的 run"时只是一次廉价查询，不会触碰执行岛；
         有等待中的 run 时按 `job_wakeup_interval_seconds` 节流。
         **等待期间不调用模型**（§8.3 "等待工具期间模型空转"）。
+
+        `execution_cycle_enabled=False` 只允许与 `only_run_id` 同用：
+        评测适配器需要"只推进本题"，不能让全局执行事件巡检触碰库里的其它任务。
         """
         if only_run_id is None:
             self._production_scan = True
@@ -423,7 +432,8 @@ class AgentRunner:
                     if now - last_probe >= self._settings.job_wakeup_interval_seconds:
                         last_probe = now
                         # 先评估执行事件与等待条件，再决定是否唤醒等待中的 run。
-                        await execution_cycle(self._db, settings=self._settings)
+                        if execution_cycle_enabled:
+                            await execution_cycle(self._db, settings=self._settings)
                         wake = await probe_and_wake(
                             self._db,
                             settings=self._settings,

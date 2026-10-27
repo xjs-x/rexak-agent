@@ -766,6 +766,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Attachments */
+        get: operations["list_attachments_api_sessions__session_id__attachments_get"];
+        put?: never;
+        /** Upload Attachment */
+        post: operations["upload_attachment_api_sessions__session_id__attachments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/attachments/{attachment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Attachment */
+        get: operations["get_attachment_api_sessions__session_id__attachments__attachment_id__get"];
+        put?: never;
+        post?: never;
+        /** Remove Attachment */
+        delete: operations["remove_attachment_api_sessions__session_id__attachments__attachment_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/attachments/{attachment_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Attachment */
+        get: operations["download_attachment_api_sessions__session_id__attachments__attachment_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/attachments/{attachment_id}/text": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Attachment Text */
+        get: operations["attachment_text_api_sessions__session_id__attachments__attachment_id__text_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/attachments/cleanup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cleanup Temporary */
+        post: operations["cleanup_temporary_api_sessions__session_id__attachments_cleanup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/execution/resources": {
         parameters: {
             query?: never;
@@ -1129,6 +1216,113 @@ export interface components {
             /** @default available */
             availability: components["schemas"]["OutputAvailability"];
         };
+        /** AttachmentPage */
+        AttachmentPage: {
+            /** Attachments */
+            attachments: components["schemas"]["AttachmentRead"][];
+            /** Next Offset */
+            next_offset?: number | null;
+        };
+        /** AttachmentRead */
+        AttachmentRead: {
+            /**
+             * Attachment Id
+             * Format: uuid
+             */
+            attachment_id: string;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Source Message Id */
+            source_message_id: string | null;
+            /** Filename */
+            filename: string;
+            /** Content Type */
+            content_type: string;
+            /** Size */
+            size: number;
+            /** Sha256 */
+            sha256: string;
+            /** Status */
+            status: string;
+            /** Parse Status */
+            parse_status: string;
+            /** Readable */
+            readable: boolean;
+            /** Line Count */
+            line_count?: number | null;
+            /** Page Count */
+            page_count?: number | null;
+            /**
+             * Source
+             * @default user_upload
+             */
+            source: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+        };
+        /** AttachmentSlice */
+        AttachmentSlice: {
+            /**
+             * Attachment Id
+             * Format: uuid
+             */
+            attachment_id: string;
+            /**
+             * Source
+             * @default user_upload_untrusted
+             */
+            source: string;
+            /** Reference */
+            reference: string;
+            /** Status */
+            status: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Page
+             * @default 1
+             */
+            page: number;
+            /**
+             * Start Line
+             * @default 1
+             */
+            start_line: number;
+            /**
+             * End Line
+             * @default 1
+             */
+            end_line: number;
+            /**
+             * Char Offset
+             * @default 0
+             */
+            char_offset: number;
+            /** Next Cursor */
+            next_cursor?: {
+                [key: string]: number;
+            } | null;
+            /** Note */
+            note: string;
+        };
         /** Body_cancel_duty_api_sessions__session_id__execution_duties__delegation_id__cancel_post */
         Body_cancel_duty_api_sessions__session_id__execution_duties__delegation_id__cancel_post: {
             /**
@@ -1152,6 +1346,8 @@ export interface components {
             model_name?: string | null;
             /** Skill Refs */
             skill_refs?: string[] | null;
+            /** Attachment Ids */
+            attachment_ids?: string[] | null;
         };
         /** Body_resume_run_api_runs__run_id__resume_post */
         Body_resume_run_api_runs__run_id__resume_post: {
@@ -1196,6 +1392,8 @@ export interface components {
         };
         /** ConversationEntry */
         ConversationEntry: {
+            /** Attachments */
+            attachments?: components["schemas"]["AttachmentRead"][];
             /**
              * Id
              * Format: uuid
@@ -2239,6 +2437,11 @@ export interface components {
         };
         /** SessionCreate */
         SessionCreate: {
+            /**
+             * Draft
+             * @default false
+             */
+            draft: boolean;
             /** Initial Skill Refs */
             initial_skill_refs?: string[];
             /**
@@ -3962,6 +4165,247 @@ export interface operations {
                 "application/json": components["schemas"]["ScopeUpdate"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_attachments_api_sessions__session_id__attachments_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+                include_temporary?: boolean;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_attachment_api_sessions__session_id__attachments_post: {
+        parameters: {
+            query: {
+                filename: string;
+            };
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_attachment_api_sessions__session_id__attachments__attachment_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_attachment_api_sessions__session_id__attachments__attachment_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_attachment_api_sessions__session_id__attachments__attachment_id__content_get: {
+        parameters: {
+            query?: {
+                preview?: boolean;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attachment_text_api_sessions__session_id__attachments__attachment_id__text_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                start_line?: number;
+                end_line?: number | null;
+                char_offset?: number;
+                max_chars?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentSlice"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cleanup_temporary_api_sessions__session_id__attachments_cleanup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
