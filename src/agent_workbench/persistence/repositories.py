@@ -120,17 +120,22 @@ class SessionRepository:
     async def create(
         self,
         *,
-        project_id: UUID,
+        project_id: UUID | None,
         title: str,
+        owner_id: str | None = None,
         scope_snapshot: dict[str, Any],
         policy_snapshot: dict[str, Any],
         provider_id: str | None = None,
         model_name: str | None = None,
         thread_id: str | None = None,
     ) -> SessionRow:
+        if owner_id is None and project_id is not None:
+            project = await ProjectRepository(self._s).get(project_id)
+            owner_id = project.owner_id if project else None
         row = SessionRow(
             id=uuid4(),
             project_id=project_id,
+            owner_id=owner_id or get_settings().owner_id,
             # 稳定映射：thread_id 由 session 推导，确保长期续用同一 thread
             thread_id=thread_id or f"session-{uuid4().hex}",
             title=title,

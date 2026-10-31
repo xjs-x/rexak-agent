@@ -1,4 +1,4 @@
-"""正式请求边界的历史辅助：最终 ContextBuilder 后、ModelObserver 前，默认不装配。"""
+"""正式请求边界的历史辅助：最终 ContextBuilder 后、ModelObserver 前，仅为普通请求投影 Decision Memory。"""
 
 from __future__ import annotations
 
@@ -14,14 +14,12 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.decision_memory import build_blackboard
-from agent_workbench.agent.history_assistance import all_tools_paired, memory_view
+from agent_workbench.agent.history_assistance import all_tools_paired, encoded, memory_view
 from agent_workbench.agent.signals import GraphRunAborted, LeaseLostError, StaleResponseError
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.config.catalog import ProviderProfile
-from agent_workbench.domain.passive_reflection import encoded
 from agent_workbench.models.context_budget import estimate_request, message_inventory
 from agent_workbench.models.invocation import graph_review_scope
-from agent_workbench.tools.history_feedback import claim_reference, pending_reference
 
 log = structlog.get_logger(__name__)
 CONTROL_SIGNALS = (GraphRunAborted, LeaseLostError, StaleResponseError, asyncio.CancelledError)
@@ -67,8 +65,6 @@ class HistoryAssistanceMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         manifest = box.context_manifest if box.context_manifest is not None else {}
         manifest.pop("history_assistance", None)
         box.history_assistance_manifest = None
-        if mode == "passive":
-            box.history_assistance_visible_context = None
         if mode == "off" or graph_review_scope.get() or not all_tools_paired(request.messages):
             return await handler(request)
         info: dict[str, Any] = {
@@ -89,20 +85,6 @@ class HistoryAssistanceMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             "origin": "controller_generated_reference_not_user_instruction",
             "authority": "untrusted_reference_data_only",
         }
-        pending = None
-        if mode == "passive":
-            try:
-                async with asyncio.timeout(settings.history_assistance_retrieval_seconds):
-                    pending = await pending_reference(
-                        box, context.thread_id, list(request.messages)
-                    )
-                if pending:
-                    bundle["reflection"] = pending[0]
-            except CONTROL_SIGNALS:
-                raise
-            except Exception as exc:
-                info["reflection"] = "unavailable:" + type(exc).__name__
-                log.warning("history_feedback_unavailable", error_type=type(exc).__name__)
         started = time.perf_counter()
         retrieved = False
         try:
@@ -128,7 +110,7 @@ class HistoryAssistanceMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 str(box.run_id),
                 settings.history_assistance_memory_limit,
                 byte_limit,
-                set(bundle.get("reflection", {}).get("historical_operations", [])),
+                set(),
                 messages=list(request.messages), trace=selection,
             )
             info["selection"] = selection
@@ -152,14 +134,14 @@ class HistoryAssistanceMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 info["retrieval_ms"] = round((time.perf_counter() - started) * 1000, 3)
                 log.warning("history_memory_unavailable", error_type=type(exc).__name__)
         # 回退只作用于可选投影；模型 handler 不在 try 内，不会因为解析/供应商错误重调。
-        if "memory" in bundle or "reflection" in bundle:
+        if "memory" in bundle:
             try:
                 if len(encoded(bundle).encode("utf-8")) > settings.history_assistance_input_bytes:
                     bundle.pop("memory", None)
                     info["memory"] = "omitted_by_budget"
                 if len(encoded(bundle).encode("utf-8")) > settings.history_assistance_input_bytes:
                     raise ValueError("optional_history_input_limit")
-                if "memory" not in bundle and "reflection" not in bundle:
+                if "memory" not in bundle:
                     raise ValueError("optional_history_empty")
                 messages, index = reference_messages(list(request.messages), bundle)
                 budget = None
@@ -183,7 +165,7 @@ class HistoryAssistanceMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                         if not memory["execution_evidence"]:
                             bundle.pop("memory")
                             info["memory"] = "omitted_by_budget"
-                        if "memory" not in bundle and "reflection" not in bundle:
+                        if "memory" not in bundle:
                             raise ValueError("optional_history_exceeds_request_budget")
                         messages, index = reference_messages(list(request.messages), bundle)
                         budget = estimate_request(
@@ -192,8 +174,6 @@ class HistoryAssistanceMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                             tool_choice=request.tool_choice,
                         )
                 await box.assert_control_current()
-                if pending and not claim_reference(box, context.thread_id, pending[0], pending[1]):
-                    raise ValueError("history_feedback_already_claimed")
                 outgoing = request.override(messages=messages)
                 info.update(
                     message_index=index,
@@ -202,7 +182,7 @@ class HistoryAssistanceMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     memory_bytes=len(encoded(bundle["memory"]).encode("utf-8")) if "memory" in bundle else 0,
                     reflection_bytes=len(encoded(bundle["reflection"]).encode("utf-8")) if "reflection" in bundle else 0,
                     reference_sha256=hashlib.sha256(encoded(bundle).encode()).hexdigest(),
-                    reflection="claimed_for_normal_request" if pending else info["reflection"],
+                    reflection="not_available",
                     delivery="request_view_only_requires_model_observation",
                     original_tool_messages_unchanged=True,
                     selected_refs=[v["record_ref"] for v in
@@ -237,17 +217,4 @@ class HistoryAssistanceMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         box.history_assistance_manifest = info
         manifest["history_assistance"] = info
         box.context_manifest = manifest
-        result = await handler(outgoing)
-        if mode == "passive":
-            from agent_workbench.tools.history_action_shadow import visible_context
-
-            try:
-                box.history_assistance_visible_context = visible_context(
-                    list(outgoing.messages),
-                    context.thread_id,
-                    settings.history_action_shadow_input_bytes,
-                )
-            except Exception as exc:
-                # 没有可见性来源时只弃判观察；不改变已经成功返回的模型结果。
-                log.warning("history_decision_view_unavailable", error_type=type(exc).__name__)
-        return result
+        return await handler(outgoing)

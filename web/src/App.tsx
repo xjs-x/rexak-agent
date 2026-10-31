@@ -13,12 +13,14 @@ import {
   ModelDialog,
   NewProjectDialog,
   RecoveryDialog,
+  RenameDialog,
   ReportDialog,
   SkillsDialog,
   ToolDialog,
   WeaknessDialog,
 } from "./console/Dialogs";
 import { Icon, IconSprite } from "./console/Icon";
+import { SessionGraph } from "./console/SessionGraph";
 import { Sidebar } from "./console/Sidebar";
 import { TaskDrawer, type DrawerTab } from "./console/TaskDrawer";
 import { Workbench } from "./console/Workbench";
@@ -27,6 +29,7 @@ import { useWorkbench } from "./console/useWorkbench";
 
 type Modal =
   | { kind: "project" }
+  | { kind: "rename"; entity: "sessions" | "projects"; id: string; name: string }
   | { kind: "delete"; session: SessionItem }
   | { kind: "recovery" }
   | { kind: "artifact"; id: string }
@@ -41,7 +44,7 @@ const TEMPLATE = "目标：\n范围：仅限我提供的地址\n要求：先给�
 
 export default function App() {
   const wb = useWorkbench();
-  const [view, setView] = useState<"chat" | "work">("chat");
+  const [view, setView] = useState<"chat" | "work" | "graph">("chat");
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 760);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState<DrawerTab>("activity");
@@ -104,10 +107,8 @@ export default function App() {
     };
   }, [showToast]);
 
-  const currentProject =
-    wb.projects.find((project) => project.id === wb.session?.project_id) ??
-    wb.projects.find((project) => project.id === wb.selectedProjectId);
-  const projectName = currentProject?.name ?? "未归属项目";
+  const currentProject = wb.projects.find((project) => project.id === (wb.session ? wb.session.project_id : wb.pendingProjectId));
+  const projectName = currentProject?.name ?? "独立聊天";
   const pendingProject = wb.projects.find((project) => project.id === wb.pendingProjectId);
   const recentSession = wb.recent.find((session) => {
     const project = wb.projects.find((item) => item.id === session.project_id);
@@ -156,9 +157,9 @@ export default function App() {
 
   const searchResults = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const pool = wb.projects.flatMap((project) =>
+    const pool = [...wb.standalone.map((session) => ({ session, project: "独立聊天" })), ...wb.projects.flatMap((project) =>
       project.sessions.map((session) => ({ session, project: project.name })),
-    );
+    )];
     const filtered = needle
       ? pool.filter(
           (item) =>
@@ -167,7 +168,7 @@ export default function App() {
         )
       : pool.sort((left, right) => Date.parse(right.session.created_at) - Date.parse(left.session.created_at));
     return filtered.slice(0, 24);
-  }, [query, wb.projects]);
+  }, [query, wb.projects, wb.standalone]);
 
   const matchingProjects = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -196,7 +197,7 @@ export default function App() {
       <div className={`app${sidebarOpen ? "" : " rail"}`}>
         <Sidebar
           projects={wb.projects}
-          recent={wb.recent}
+          standalone={wb.standalone}
           sessionId={wb.sessionId}
           skillCount={wb.skillCount}
           executorState={wb.executorState}
@@ -214,6 +215,8 @@ export default function App() {
           onCollapse={() => setSidebarOpen(false)}
           onOpenSkills={() => setModal({ kind: "skills" })}
           onOpenSettings={() => setModal({ kind: "model" })}
+          onRenameSession={(session) => setModal({ kind: "rename", entity: "sessions", id: session.id, name: session.title })}
+          onRenameProject={(project) => setModal({ kind: "rename", entity: "projects", id: project.id, name: project.name })}
           onDeleteSession={(session) => setModal({ kind: "delete", session })}
           onRefreshProject={(projectId) => {
             void wb
@@ -238,6 +241,7 @@ export default function App() {
             <div className="seg" role="tablist" aria-label="视图">
               <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}>对话</button>
               <button className={view === "work" ? "active" : ""} onClick={() => setView("work")}>运行台</button>
+              <button className={view === "graph" ? "active" : ""} onClick={() => setView("graph")}>图谱</button>
             </div>
             <div className="topbar-right">
               {wb.run && (
@@ -305,7 +309,6 @@ export default function App() {
                       onModelChange={wb.setSelectedModelKey}
                       onConfigureModel={() => setModal({ kind: "model" })}
                       onScope={() => showToast("新任务默认按指令运行；目标从首条指令解析，创建后可在任务详情查看范围。")}
-                      onSkills={() => setModal({ kind: "skills" })}
                       onSend={handleSend}
                       onStop={() => undefined}
                       stopper={false}
@@ -348,6 +351,8 @@ export default function App() {
                   </div>
                 </div>
               </section>
+            ) : view === "graph" ? (
+              <SessionGraph sessionId={wb.sessionId} />
             ) : view === "work" ? (
               <Workbench
                 projectName={projectName}
@@ -398,7 +403,6 @@ export default function App() {
                 onLoadOlderMessages={() => void wb.loadOlderMessages()}
                 onLoadMoreTools={() => void wb.loadMoreTools()}
                 onToast={showToast}
-                onSkills={() => setModal({ kind: "skills" })}
                 onCreateReport={() => void createReport()}
                 onCreateReportBusy={reportBusy}
               />
@@ -511,6 +515,17 @@ export default function App() {
           }}
         />
       )}
+      {modal?.kind === "rename" && <RenameDialog title={modal.entity === "sessions" ? "重命名对话" : "重命名项目"}
+        initialName={modal.name} onClose={() => setModal(null)} onSave={async (name) => {
+          await api.rename(modal.entity, modal.id, { name });
+          await wb.refreshProjects();
+          if (modal.entity === "sessions") {
+            const project = wb.projects.find((p) => p.sessions.some((s) => s.id === modal.id));
+            await wb.refreshProject(project?.id ?? null);
+            if (wb.sessionId === modal.id) await wb.refresh();
+          }
+          showToast("名称已更新");
+        }} />}
       {modal?.kind === "delete" && (
         <DeleteSessionDialog
           target={modal.session}
@@ -518,7 +533,7 @@ export default function App() {
           onConfirm={async (terminate) => {
             const result = await wb.deleteSession(modal.session, terminate);
             if (result.ok) {
-              showToast(result.pending ? "任务已移除；取消仍在确认中。" : "任务已删除。");
+              showToast("对话及其数据库记录已删除。");
             }
             return result;
           }}

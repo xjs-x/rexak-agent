@@ -22,19 +22,16 @@ def settings_for_run(settings: Settings, snapshot: dict) -> Settings:
     if mode not in {"current", "blackboard_v1"}:
         raise ValueError("Run 的 decision_memory_mode 无效")
     assistance = snapshot.get("history_assistance_mode", "off")
-    if assistance not in {"off", "memory", "passive"}:
+    if assistance == "passive":
+        assistance = "memory"  # historical snapshot: retain memory, retire detector
+    if assistance not in {"off", "memory"}:
         raise ValueError("Run 的 history_assistance_mode 无效")
     updates: dict[str, object] = {"decision_memory_mode": mode, "history_assistance_mode": assistance}
     if assistance != "off":
         updates["decision_memory_mode"] = "current"
-    if "history_assistance_mode" in snapshot:
-        # 新 Run 的统一模式优先于旧研究旁路开关；旧 Run 不热启用新功能。
-        updates["decision_memory_mode"] = "current"
-        updates["history_action_shadow_enabled"] = assistance == "passive"
     if settings.history_assistance_force_off:
         # 运维回退可覆盖已固定的 Run；不改 checkpoint、证据或原请求身份。
-        updates.update(history_assistance_mode="off", decision_memory_mode="current",
-                       history_action_shadow_enabled=False)
+        updates.update(history_assistance_mode="off", decision_memory_mode="current")
     return settings.model_copy(update=updates)
 
 
@@ -58,6 +55,12 @@ class Settings(BaseSettings):
     attachment_parse_chars: int = Field(default=2_000_000, ge=1000, le=8_000_000)
     attachment_max_pages: int = Field(default=200, ge=1, le=1000)
     attachment_read_chars: int = Field(default=12000, ge=256, le=32000)
+    binary_attachment_max_bytes: int = Field(default=64 * 1024 * 1024, ge=1, le=128 * 1024 * 1024)
+    binary_analysis_seconds: float = Field(default=30, ge=1, le=120)
+    binary_analysis_memory_mb: int = Field(default=512, ge=128, le=2048)
+    binary_analysis_output_bytes: int = Field(default=16 * 1024 * 1024, ge=16384, le=32 * 1024 * 1024)
+    binary_analysis_concurrency: int = Field(default=2, ge=1, le=4)
+    binary_analysis_max_strings: int = Field(default=100000, ge=100, le=300000)
 
     # Session 记忆开关用于公平对照；盲测默认不读取跨任务经验。
     session_graph_enabled: bool = True
@@ -69,26 +72,11 @@ class Settings(BaseSettings):
     # 仅新 Run 快照采用；缺少快照的旧 Run 固定走 current。
     decision_memory_mode: Literal["current", "blackboard_v1"] = "current"
     # 新建 Run 固定保存；不改变工具集合或执行授权。旧研究开关只兼容旧 Run。
-    history_assistance_mode: Literal["off", "memory", "passive"] = "off"
+    history_assistance_mode: Literal["off", "memory"] = "memory"
     history_assistance_force_off: bool = False
     history_assistance_memory_limit: int = Field(default=3, ge=1, le=8)
     history_assistance_input_bytes: int = Field(default=16 * 1024, ge=2048, le=128 * 1024)
     history_assistance_retrieval_seconds: float = Field(default=0.5, gt=0, le=5)
-    # 配方入口单独显式开放；开启 passive 本身不改变工具或执行权限。
-    history_action_test_profiles_enabled: bool = False
-    # 纯观察默认关闭；许可文件只能由控制端配置，不能由模型工具参数指定。
-    history_action_shadow_enabled: bool = False
-    history_action_shadow_grants_path: Path | None = None
-    history_action_shadow_timeout_seconds: float = Field(default=0.25, gt=0, le=10)
-    # 有界观察资源；超过时弃判，不截取历史后伪装完整匹配。
-    history_action_shadow_history_limit: int = Field(default=64, ge=1, le=128)
-    history_action_shadow_context_path: Path | None = None
-    history_action_shadow_queue_limit: int = Field(default=8, ge=1, le=64)
-    history_action_shadow_record_bytes: int = Field(default=65536, ge=1024, le=262144)
-    history_action_shadow_storage_files: int = Field(default=512, ge=8, le=4096)
-    history_action_shadow_storage_bytes: int = Field(default=8 * 1024 * 1024, ge=4096)
-    history_action_shadow_input_bytes: int = Field(default=262144, ge=1024)
-    history_action_shadow_close_seconds: float = Field(default=0.5, gt=0, le=10)
     blind_test: bool = True
 
     # ---------- 数据库 ----------

@@ -163,7 +163,8 @@ async def test_terminate_all_and_delete_precheck(database, unique_name, fake_api
         deleted = client.delete(
             f"/api/sessions/{task_id}?terminate_resources=true", headers=headers
         )
-        assert deleted.status_code == 200
+        assert deleted.status_code == 409  # 资源已关闭，但排队运行仍需用户先停止。
+        assert client.get(f"/api/sessions/{task_id}/snapshot").status_code == 200
 
 
 async def test_environment_endpoint_requires_existing_session(fake_api):

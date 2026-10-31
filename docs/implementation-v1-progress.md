@@ -1,5 +1,7 @@
 # V1 实施进度与复核入口
 
+> 历史设计/实施记录：不代表 v1.0 当前功能范围。passive/Shadow/Progress 路径已退役；当前实现与验收见 [v1.0 收尾报告](../reports/v1-finalization.md)。
+
 日期：2026-10-13。对应 [第一版方案](implementation-and-experiments-v1.md) 第 12 节的六阶段顺序。
 
 六阶段代码已完成最终本地工程验收；累计实现统一冻结到本地提交，未伪造六个各自可运行的历史提交。真实实验由用户执行，本轮没有连接靶场或调用真实模型。启用、独立试验和复盘入口见 [操作说明](experiments/v1-operation-guide.md)。

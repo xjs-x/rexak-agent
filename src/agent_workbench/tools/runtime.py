@@ -125,12 +125,8 @@ class Toolbox:
     graph_review_window_id: str | None = None
     #: Runner 注入，只读已提交 checkpoint 的规划头，不持有第二份可写计划。
     planning_head_reader: Any = None
-    #: 可关闭的独立观察服务；不属于业务状态或 checkpoint。
-    history_action_shadow: Any = None
     #: 本次请求的低权限历史参考来源清单，不是可写记忆。
     history_assistance_manifest: dict[str, Any] | None = None
-    #: 最近一次成功普通决策的有界可见消息投影；仅运行依赖，不落 checkpoint。
-    history_assistance_visible_context: dict[str, Any] | None = None
     skill_catalog: list[dict[str, Any]] | None = None
     skill_context: str = ""
     skill_manifest: list[dict[str, Any]] = field(default_factory=list)

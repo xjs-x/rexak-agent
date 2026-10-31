@@ -9,10 +9,9 @@ from typing import Any, cast
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from agent_workbench.agent.history_assistance import memory_view
+from agent_workbench.agent.history_assistance import encoded, memory_view
 from agent_workbench.contracts.decision_memory import DecisionInput, MemorySnapshot
 from agent_workbench.domain.decision_memory import select_memory
-from agent_workbench.domain.passive_reflection import encoded
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "memory_live_s045.json"
 RUN = "eb96c527-9465-4413-89e0-2db49b213f13"

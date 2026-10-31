@@ -799,3 +799,105 @@ body{overflow:hidden}
 .attachment-preview { width: min(850px, 90vw); max-height: 85vh; overflow: auto; padding: 24px; border-radius: 16px; background: #fff; box-shadow: 0 20px 80px #0003; overflow-wrap: anywhere; }
 .attachment-preview pre { white-space: pre-wrap; background: #f5f6f8; padding: 16px; font: 12px/1.7 monospace; }
 .attachment-preview img { display: block; max-width: 100%; max-height: 60vh; margin-top: 16px; object-fit: contain; }
+
+/* =========================================================
+   2026-10-27 版面对齐：阅读宽度、字体与对比度、附件菜单
+   —— 只改呈现，不动任何数据与交互语义
+   ========================================================= */
+:root{
+  /* 对话正文与输入框共用的阅读宽度；参考稿在 1080px 窗口下约 750px */
+  --thread:752px;
+  --text:#0d0d0d;
+  --text-2:#5d5d5d;
+  --text-3:#8f8f8f;
+  --ui:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC",sans-serif;
+}
+body{font-family:var(--ui);color:var(--text)}
+
+/* ---------- 对话列：固定阅读宽度，在正文区水平居中 ---------- */
+.chat-inner{width:100%;max-width:calc(var(--thread) + 48px);padding:26px 24px 10px;margin:0 auto}
+.chat-foot{padding:0 24px 14px}
+.chat-foot-inner{width:100%;max-width:var(--thread);margin:0 auto}
+.msg.user{padding-left:8%}
+.msg .body{font-size:clamp(14.5px,.84vw,16px);line-height:1.8;color:var(--text)}
+.composer textarea{font-size:clamp(14px,.82vw,15.6px);color:var(--text)}
+
+/* ---------- 空状态：与对话列同宽，在可视区居中偏上 ---------- */
+.empty-view{justify-content:flex-start;padding:24px 24px 12px}
+.empty-wrap{width:100%;max-width:var(--thread);margin:auto 0}
+
+/* ---------- 字体对比度：正文近黑，说明文字统一中灰 ---------- */
+.msg .body strong,.msg .body h4,.msg .body h1,.msg .body h2,.msg .body h3{color:var(--text)}
+.msg .body .muted{color:var(--text-2)}
+.msg.user .bubble{background:#f2f2f2;color:var(--text)}
+.msg .body code,.md-body pre.md-code{color:var(--text)}
+code{color:#2b2b2b;background:#f4f4f4;border-color:#ececee}
+.msg-time,.turn-meta,.msg-meta-line{color:var(--text-3)}
+.activity-summary{color:var(--text-2)}
+.activity-summary:hover{color:var(--text)}
+.activity-summary .chev{opacity:.9}
+.op-row{color:#3c3c3c}
+.op-row .op-ic{color:#8f8f8f}
+.op-hint{color:var(--text-3)}
+.run-line{color:var(--text-2)}
+.run-line .mono{color:var(--text-3)}
+.digest-head{color:var(--text-2)}
+.digest-note{color:var(--text-3)}
+.weak-desc{color:#3c3c3c}
+.weak-meta,.weak-note{color:var(--text-3)}
+.state-card p{color:#3c3c3c}
+.sc-fine{color:var(--text-3)!important}
+.mini-btn{color:#3c3c3c}
+.load-more{color:var(--text-2)}
+.drawer-empty,.drawer-loading{color:var(--text-3)}
+.md-body blockquote{color:var(--text-2)}
+.md-table th{color:var(--text)}
+.empty-title{color:var(--text)}
+.empty-sub{color:var(--text-2)}
+.starter{color:#3c3c3c}
+.starter svg{color:#8f8f8f}
+.task-meta{color:var(--text-3)}
+.composer textarea::placeholder{color:#8f8f8f}
+.composer .scope,.composer .model-chip{color:var(--text-2)}
+.composer .mc-provider{color:var(--text-3)}
+.brand-name,.new-chat,.proj-head{color:var(--text)}
+.side-label{color:var(--text-3)}
+.sess{color:#3c3c3c}
+.sess.active{color:var(--text)}
+.foot-row{color:#3c3c3c}
+.exec{color:var(--text-2)}
+.profile-name{color:var(--text)}
+.profile small{color:var(--text-3)}
+.top-title{color:var(--text-2)}
+.seg button{color:var(--text-2)}
+.seg button.active{color:var(--text)}
+.ghost{color:#3c3c3c}
+.status-pill{color:var(--text-2)}
+.op .on,.op .ot{color:var(--text-3)}
+.fact small,.fine,.step .s-meta,.plan-foot{color:var(--text-3)}
+.fact strong,.step .s-title{color:var(--text)}
+
+/* ---------- 附件选择菜单：图标 + 主标题 + 说明的一行式列表 ---------- */
+.attach-menu{width:min(360px,calc(100vw - 48px));padding:6px;border-radius:14px;border:1px solid #ececee;box-shadow:0 18px 44px rgba(16,16,20,.14)}
+.attach-menu .menu-item{align-items:flex-start;gap:10px;padding:9px 12px;border-radius:10px;white-space:normal}
+.attach-menu .menu-item:hover:not(:disabled){background:#f5f5f5}
+.attach-menu .menu-ico{width:22px;height:22px;display:grid;place-items:center;color:var(--text);flex:0 0 auto;margin-top:1px}
+.attach-menu .menu-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.attach-menu .menu-title{font-size:13.5px;line-height:1.45;color:var(--text)}
+.attach-menu .menu-sub{font-size:11.5px;line-height:1.5;color:var(--text-3)}
+.attach-menu .menu-item:disabled .menu-title{color:var(--text-3)}
+.attach-menu .menu-item:disabled .menu-sub{color:#a3a3a3}
+
+@media (max-width:760px){
+  .chat-inner{max-width:100%;padding:18px 16px 8px}
+  .chat-foot-inner{max-width:100%}
+  .empty-wrap{max-width:100%}
+}
+
+/* 与侧栏保持一致的轻量上下文菜单。 */
+.chat-context-menu { position: fixed; z-index: 200; width: 240px; padding: 6px; background: #fff; border: 1px solid #e5e5e5; border-radius: 14px; box-shadow: 0 8px 32px #00000018; }
+.chat-context-menu .menu-item { width: 100%; min-height: 42px; gap: 14px; border-radius: 8px; font-size: 14px; }
+.chat-context-menu .menu-item:hover, .chat-context-menu .menu-item:focus-visible { background: #f1f1f1; outline: none; }
+.chat-context-menu .danger { color: #b42318; }
+.sess-act:focus-visible, .sess-wrap:focus-within .sess-act { opacity: 1; }
+.proj-body .sess-wrap { margin-left: 18px; }

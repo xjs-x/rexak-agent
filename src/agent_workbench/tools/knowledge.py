@@ -2,7 +2,7 @@
 
 规则（§6.3、§7.4）：
 - 方法资料**按需加载**，不把全部资料塞进系统提示；
-- 跨任务记忆**按项目隔离**；运行中按需检索，禁止每轮全量重读全部历史；
+- 长期记忆**按会话隔离**；运行中按需检索，禁止每轮全量重读全部历史；
 - 模型提出的经验先为 `candidate`；**禁止**未经验证的总结自动成为强约束；
 - 敏感凭据不写入 Store 或摘要。
 """
@@ -100,19 +100,19 @@ async def search_memory(
     limit: int = 10,
     include_methods: bool = True,
 ) -> str:
-    """检索**本项目**的跨任务经验。
+    """检索**当前会话**的历史经验；同一项目内的其他聊天也不可见。
 
     Args:
         query: 关键词；留空返回最近的条目。
         include_candidates: 是否包含未验证的候选经验（默认包含，但会标注状态）。
         limit: 最多返回条数。
-        include_methods: 同时检索当前实验读取分支的 owner 级通用方法经验。
+        include_methods: 同时检索当前会话读取分支的方法经验。
 
     Returns:
         记忆条目 JSON：content、verified_status、适用条件、失效条件、来源引用、冲突信息。
 
     Notes:
-        - 只检索当前项目命名空间，**不会**召回其他项目的记忆；
+        - 只检索当前会话命名空间，**不会**召回其他聊天的记忆；
         - `verified_status=candidate` 的经验**不能**当作已验证事实使用；
         - 条目带 `applicable_conditions` / `invalid_conditions` 时，请先判断是否适用。
     """
@@ -121,7 +121,7 @@ async def search_memory(
     if store is None:
         return _fail(
             ErrorCode.INTERNAL_ERROR,
-            "本次运行没有挂载长期记忆 Store，无法检索跨任务经验",
+            "本次运行没有挂载长期记忆 Store，无法检索会话经验",
             hint="这是配置问题，请报告给用户；不要改用猜测来替代。",
         )
 
@@ -136,9 +136,9 @@ async def search_memory(
     if row is None:
         return _fail(ErrorCode.NOT_FOUND, "找不到当前 session，无法定位记忆命名空间")
 
-    memory = MemoryStore(store, toolbox.settings)
+    memory = MemoryStore(store, toolbox.settings, session_id=toolbox.session_id)
     entries = await memory.search(
-        project_id=row.project_id,
+        project_id=row.id,
         query=query,
         limit=int(limit),
         include_candidates=bool(include_candidates),
@@ -158,7 +158,7 @@ async def search_memory(
                 "与当前观察冲突时以当前证据为准，并记录冲突。"
             ),
         },
-        f"检索到 {len(entries)} 条本项目经验",
+        f"检索到 {len(entries)} 条本对话经验",
     )
 
 
@@ -174,7 +174,7 @@ async def propose_memory(
     memory_scope: str = "project",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """提交一条**候选**跨任务经验。
+    """提交一条**候选**会话经验，不与项目中的其他聊天共享。
 
     Args:
         content: 经验内容（应当是可复用的、跨任务成立的判断，而不是本次任务的临时状态）。
@@ -227,13 +227,13 @@ async def propose_memory(
     if row is None:
         return _fail(ErrorCode.NOT_FOUND, "找不到当前 session，无法定位记忆命名空间")
 
-    memory = MemoryStore(store, toolbox.settings)
+    memory = MemoryStore(store, toolbox.settings, session_id=toolbox.session_id)
     if refs:
         from agent_workbench.tools.task import _verify_artifacts_exist
 
         await _verify_artifacts_exist(toolbox, refs)
     entry = await memory.propose(
-        project_id=row.project_id,
+        project_id=row.id,
         memory_type=memory_type,
         content=content,
         subject_key=subject_key,
@@ -285,7 +285,7 @@ async def record_memory_usage(
     from agent_workbench.tools.task import _verify_artifacts_exist
 
     await _verify_artifacts_exist(toolbox, refs)
-    memory = MemoryStore(runtime.store, toolbox.settings)
+    memory = MemoryStore(runtime.store, toolbox.settings, session_id=toolbox.session_id)
     from agent_workbench.persistence.tables import SessionRow
 
     async with toolbox.db.session() as db:
@@ -299,7 +299,7 @@ async def record_memory_usage(
         outcome=outcome,
         conditions=conditions,
         evidence_refs=refs,
-        project_id=session_row.project_id,
+        project_id=session_row.id,
     )
     return _ok({"usage": result}, "经验使用反馈已保存，不自动成为通用规则")
 

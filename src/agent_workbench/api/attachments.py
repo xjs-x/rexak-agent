@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 
 from agent_workbench.config.settings import get_settings
 from agent_workbench.contracts.attachments import AttachmentPage, AttachmentRead, AttachmentSlice
+from agent_workbench.contracts.binary_analysis import AttachmentCapabilities, BinaryAnalysisState
 from agent_workbench.contracts.enums import ErrorCode
 from agent_workbench.contracts.errors import ApiError
 from agent_workbench.domain.attachments import (
@@ -32,9 +33,10 @@ from agent_workbench.domain.attachments import (
 )
 from agent_workbench.evidence.artifacts import ArtifactStore
 from agent_workbench.persistence.db import get_database
-from agent_workbench.persistence.tables import AttachmentRow
+from agent_workbench.persistence.tables import AttachmentAnalysisRow, AttachmentRow
 
 router = APIRouter(prefix="/api/sessions/{session_id}/attachments", tags=["attachments"])
+capabilities_router = APIRouter(prefix="/api/attachments", tags=["attachments"])
 _parsers = asyncio.Semaphore(2)
 
 
@@ -46,6 +48,34 @@ def authorize(request: Request, *, write: bool = False) -> None:
     if write:
         auth.check_origin(request)
         auth.require_csrf(request, ticket)
+
+
+@capabilities_router.get("/capabilities", response_model=AttachmentCapabilities)
+async def attachment_capabilities(request: Request) -> AttachmentCapabilities:
+    authorize(request)
+    cfg = get_settings()
+    return AttachmentCapabilities(max_bytes=cfg.attachment_max_bytes,
+        binary_max_bytes=cfg.binary_attachment_max_bytes,
+        max_per_message=cfg.attachment_max_per_message, binary_formats=["PE", "ELF"])
+
+
+def binary_header(spool: BinaryIO, size: int) -> str | None:
+    """上传分级仅做定长头校验；PE/ELF 结构解析仍在隔离进程。"""
+    import struct
+
+    spool.seek(0)
+    header = spool.read(64)
+    if header.startswith(b"MZ") and len(header) == 64:
+        offset = struct.unpack_from("<I", header, 60)[0]
+        if 64 <= offset <= size - 26:
+            spool.seek(offset)
+            pe = spool.read(26)
+            if pe[:4] == b"PE\0\0" and pe[24:26] in {b"\x0b\x01", b"\x0b\x02"}:
+                return "PE"
+    if (header.startswith(b"\x7fELF") and len(header) >= 52
+        and header[4:7] in {b"\x01\x01\x01", b"\x01\x02\x01", b"\x02\x01\x01", b"\x02\x02\x01"}):
+        return "ELF"
+    return None
 
 
 @router.post("", response_model=AttachmentRead, status_code=201)
@@ -63,7 +93,8 @@ async def upload_attachment(
     async with db.session() as session:
         await require_session(session, session_id, cfg)
     length = request.headers.get("content-length")
-    if length and (not length.isdecimal() or int(length) > cfg.attachment_max_bytes):
+    hard_limit = max(cfg.attachment_max_bytes, cfg.binary_attachment_max_bytes)
+    if length and (not length.isdecimal() or int(length) > hard_limit):
         raise ApiError(ErrorCode.VALIDATION_FAILED, "文件超过上传大小限制")
     # 原始字节流协议，避免 multipart 在鉴权/大小检查前缓存任意大正文。
     cfg.tmp_root.mkdir(parents=True, exist_ok=True)
@@ -73,12 +104,18 @@ async def upload_attachment(
         prefix = b""
         async for chunk in request.stream():
             size += len(chunk)
-            if size > cfg.attachment_max_bytes:
+            if size > hard_limit:
                 raise ApiError(ErrorCode.VALIDATION_FAILED, "文件超过上传大小限制")
             prefix = (prefix + chunk)[:32] if len(prefix) < 32 else prefix
             spool.write(chunk)
             digest.update(chunk)
         extension, media_type = file_kind(filename, prefix)
+        detected_binary = binary_header(cast(BinaryIO, spool), size)
+        actual_limit = cfg.binary_attachment_max_bytes if detected_binary else cfg.attachment_max_bytes
+        if size > actual_limit:
+            raise ApiError(ErrorCode.VALIDATION_FAILED, f"文件超过此真实类型的大小上限（{actual_limit} 字节）")
+        if detected_binary:
+            media_type = "application/vnd.microsoft.portable-executable" if detected_binary == "PE" else "application/x-elf"
         spool.seek(0)
         async with db.transaction() as session:
             await require_session(session, session_id, cfg, lock=True)
@@ -134,6 +171,9 @@ async def upload_attachment(
                 relative_key = row.relative_key
     async with _parsers:
         parsed = await parse_attachment(store.resolve(relative_key), extension, cfg)
+    if detected_binary:
+        parsed["metadata"].update(binary_candidate=True, detected_format=detected_binary,
+            note="原件已保存；正文不作为文本解析。可由 Agent 按需调用 binary_profile/binary_strings 进行静态分析；分析状态独立记录。")
     parsed_key = None
     if parsed["status"] in {"ready", "empty"}:
         view = await asyncio.to_thread(
@@ -182,6 +222,23 @@ async def get_attachment(session_id: UUID, attachment_id: UUID, request: Request
     async with get_database().session() as db:
         row = await load_attachment(db, session_id, attachment_id, cfg)
         return metadata(row, ArtifactStore(cfg))
+
+
+@router.get("/{attachment_id}/analyses", response_model=list[BinaryAnalysisState])
+async def attachment_analyses(session_id: UUID, attachment_id: UUID, request: Request) -> list[BinaryAnalysisState]:
+    authorize(request)
+    cfg = get_settings()
+    async with get_database().session() as db:
+        await load_attachment(db, session_id, attachment_id, cfg)
+        rows = (await db.execute(select(AttachmentAnalysisRow).where(
+            AttachmentAnalysisRow.attachment_id == attachment_id,
+            AttachmentAnalysisRow.session_id == session_id,
+            AttachmentAnalysisRow.owner_id == cfg.owner_id,
+        ).order_by(AttachmentAnalysisRow.created_at.desc()).limit(8))).scalars().all()
+        return [BinaryAnalysisState(analysis_id=str(row.id), kind=row.kind,
+            status="interrupted" if row.status == "pending" and row.lease_expires_at and row.lease_expires_at <= datetime.now(UTC) else row.status,
+            analyzer_version=row.analyzer_version, error_type=row.error_type,
+            summary=row.summary_json) for row in rows]
 
 
 @router.get("/{attachment_id}/content")

@@ -306,7 +306,7 @@ async def read_snapshot(db: Any, request: DecisionInput, artifact_store: Any) ->
         for i, rev in (
             await db.execute(
                 select(IdentityRow.id, IdentityRow.auth_revision).where(
-                    IdentityRow.project_id == task.project_id
+                    (IdentityRow.session_id == task.id) | (IdentityRow.id == task.active_identity_id)
                 )
             )
         ).all()

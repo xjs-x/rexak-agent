@@ -144,6 +144,35 @@ class AttachmentRow(Base):
     )
 
 
+class AttachmentAnalysisRow(Base):
+    """附件派生静态观察；不创建远端 Job、Operation 或 verified finding。"""
+
+    __tablename__ = "attachment_analyses"
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    attachment_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.attachments.id"), nullable=False)
+    session_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.sessions.id"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    analyzer: Mapped[str] = mapped_column(String(64), nullable=False)
+    analyzer_version: Mapped[str] = mapped_column(String(256), nullable=False)
+    params_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    params_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    result_key: Mapped[str | None] = mapped_column(Text)
+    result_sha256: Mapped[str | None] = mapped_column(String(64))
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("attachment_id", "sha256", "kind", "analyzer", "analyzer_version", "params_hash", name="uq_attachment_analysis_cache"),
+        Index("ix_attachment_analyses_session", "session_id", "attachment_id"),
+    )
+
+
 class PriceCatalogVersionRow(Base):
     """不可变价格版本；模型调用按版本引用，旧费用不会被新配置改写。"""
 
@@ -193,14 +222,17 @@ class SessionRow(TimestampMixin, Base):
     __tablename__ = "sessions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    project_id: Mapped[uuid.UUID] = mapped_column(
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey(f"{APP_SCHEMA}.projects.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    owner_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default=lambda: get_settings().owner_id
     )
     active_identity_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
-        ForeignKey(f"{APP_SCHEMA}.identities.id", ondelete="SET NULL"),
+        ForeignKey(f"{APP_SCHEMA}.identities.id", ondelete="SET NULL", use_alter=True),
         nullable=True,
     )
     #: 稳定映射：同一 session always 使用同一 thread_id
@@ -297,10 +329,14 @@ class IdentityRow(TimestampMixin, Base):
     __tablename__ = "identities"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    project_id: Mapped[uuid.UUID] = mapped_column(
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey(f"{APP_SCHEMA}.projects.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"),
+        nullable=True,
     )
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
     role_label: Mapped[str] = mapped_column(String(64), nullable=False, default="primary")
@@ -311,7 +347,9 @@ class IdentityRow(TimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("project_id", "display_name", name="uq_identities_project_name"),
+        Index("uq_identities_project_name", "project_id", "display_name", unique=True,
+              postgresql_where=text("session_id IS NULL")),
+        UniqueConstraint("session_id", "display_name", name="uq_identities_session_name"),
     )
 
 

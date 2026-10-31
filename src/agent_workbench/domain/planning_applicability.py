@@ -65,8 +65,8 @@ async def check_applicability(
 
     if row.identity_id:
         identity = await db.get(IdentityRow, row.identity_id, populate_existing=True)
-        if identity is None or identity.project_id != task.project_id:
-            reject("source_identity_unavailable", "来源身份不属于当前项目或已不可用")
+        if identity is None or (identity.session_id != task.id and identity.id != task.active_identity_id):
+            reject("source_identity_unavailable", "来源身份不属于当前会话或已不可用")
         assert identity is not None
         captured = context.get("identity_auth_revision")
         if captured is not None and captured != identity.auth_revision:

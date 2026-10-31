@@ -87,8 +87,8 @@ async def test_completed_run_distills_only_its_available_observations(database, 
 
     assert await distill_completed_run(database, settings, run_id) == 1
     async with open_store_connection(settings) as conn:
-        memory = MemoryStore(AsyncPostgresStore(conn), settings)
-        entries = await memory.search(project_id=project.id)
+        memory = MemoryStore(AsyncPostgresStore(conn), settings, session_id=test_session.id)
+        entries = await memory.search(project_id=test_session.id)
     assert len(entries) == 1
     assert entries[0]["verified_status"] == "candidate"
     assert entries[0]["source_artifact_ids"] == [str(artifact_id)]

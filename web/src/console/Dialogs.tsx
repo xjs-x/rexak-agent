@@ -93,7 +93,7 @@ export function NewProjectDialog({
   return (
     <BaseModal
       title="新建项目"
-      sub="同一项目的任务、弱点与报告会归在一起。"
+      sub="项目只用于整理聊天，每个聊天的消息、任务与记忆各自独立。"
       onClose={onClose}
       actions={
         <>
@@ -115,6 +115,32 @@ export function NewProjectDialog({
       {error && <div className="drawer-error">{error}</div>}
     </BaseModal>
   );
+}
+
+export function RenameDialog({ title, initialName, onClose, onSave }: {
+  title: string; initialName: string; onClose: () => void; onSave: (name: string) => Promise<void>;
+}) {
+  const [name, setName] = useState(initialName);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async () => {
+    if (!name.trim() || busy) return;
+    setBusy(true); setError("");
+    try { await onSave(name.trim()); onClose(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  };
+  return <BaseModal title={title} onClose={() => { if (!busy) onClose(); }} actions={<>
+    <button className="mini-btn" disabled={busy} onClick={onClose}>取消</button>
+    <button className="mini-btn strong" disabled={busy || !name.trim()} onClick={() => void submit()}>{busy ? "保存中…" : "保存"}</button>
+  </>}>
+    <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      <label className="rk-field"><span>名称</span><input className="rk-input" value={name} maxLength={256}
+        autoFocus onFocus={(event) => event.target.select()} disabled={busy}
+        onChange={(event) => setName(event.target.value)} /></label>
+    </form>
+    {error && <div className="drawer-error">{error}</div>}
+  </BaseModal>;
 }
 
 export function DeleteSessionDialog({
@@ -148,28 +174,28 @@ export function DeleteSessionDialog({
 
   return (
     <BaseModal
-      title="删除任务？"
+      title="删除对话？"
       sub={target.title}
       onClose={onClose}
       actions={
         blocked ? (
           <>
             <button className="mini-btn" onClick={onClose} disabled={busy}>保留</button>
-            <button className="mini-btn strong" onClick={() => void run(true)} disabled={busy}>
-              {busy ? "终止中…" : "终止资源并删除"}
+            <button className="mini-btn strong" onClick={() => void run(!!blocked.resources?.length)} disabled={busy}>
+              {busy ? "核对中…" : blocked.resources?.length ? "终止资源并删除" : "重新检查并删除"}
             </button>
           </>
         ) : (
           <>
             <button className="mini-btn" onClick={onClose} disabled={busy}>保留</button>
             <button className="mini-btn strong" onClick={() => void run(false)} disabled={busy}>
-              {busy ? "删除中…" : "删除任务"}
+              {busy ? "删除中…" : "删除对话"}
             </button>
           </>
         )
       }
     >
-      <p className="meta">任务会从列表移除；历史审计记录保留。若仍有存活的执行资源，后端会拦下删除并列出资源。</p>
+      <p className="meta">此操作不可撤销。将删除这个对话及其消息、运行记录、任务结果、附件记录和会话记忆。其他对话不受影响；活动运行和未关闭资源会阻止删除。</p>
       {blocked && (
         <>
           <div className="warn" style={{ marginTop: 10 }}>{blocked.message}</div>

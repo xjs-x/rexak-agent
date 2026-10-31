@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Protocol
@@ -109,15 +110,15 @@ def _sdk() -> ModuleType:
     if _sdk_module is not None:
         return _sdk_module
     try:
-        import tsec_benchmark
+        module = importlib.import_module("tsec_benchmark")
     except ImportError as exc:  # pragma: no cover - 只在缺依赖时触发
         raise PlatformUnavailable(
             "未安装 tsec-benchmark（评测适配器是可选依赖，基础启动不安装它）。"
             "请用 `uv run --extra benchmark workbench tsec ...` 按需启动，"
             "或先执行 `uv sync --extra benchmark`。"
         ) from exc
-    _sdk_module = tsec_benchmark
-    return tsec_benchmark
+    _sdk_module = module
+    return module
 
 
 class SdkPlatformClient:

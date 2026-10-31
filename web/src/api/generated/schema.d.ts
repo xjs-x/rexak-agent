@@ -82,6 +82,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Rename Project */
+        patch: operations["rename_project_api_projects__project_id__patch"];
+        trace?: never;
+    };
+    "/api/sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Session
+         * @description 确认删除当前对话；活动执行尚未停止时保留记录。
+         */
+        delete: operations["delete_session_api_sessions__session_id__delete"];
+        options?: never;
+        head?: never;
+        /** Rename Session */
+        patch: operations["rename_session_api_sessions__session_id__patch"];
+        trace?: never;
+    };
     "/api/projects/{project_id}/sessions": {
         parameters: {
             query?: never;
@@ -105,25 +143,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/sessions/{session_id}": {
+    "/api/sessions": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** List Project Sessions */
+        get: operations["list_project_sessions_api_sessions_get"];
         put?: never;
-        post?: never;
         /**
-         * Delete Session
-         * @description 从列表移除任务，保留审计记录；活动运行经取消流程确认停止。
+         * Create Session
+         * @description 创建会话并**启动首个 run**。
          *
-         *     执行资源预检（规格 §13）：仍存活的执行资源不允许被"顺手删掉" ——
-         *     默认返回 409 与资源清单；显式 `terminate_resources=true` 时先发出终止请求，
-         *     再执行删除。台账记录（投影）保留，不制造孤儿。
+         *     返回 201：会话与首个 run 都已在同一事务内持久化。
          */
-        delete: operations["delete_session_api_sessions__session_id__delete"];
+        post: operations["create_session_api_sessions_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -802,6 +839,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/attachments/{attachment_id}/analyses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Attachment Analyses */
+        get: operations["attachment_analyses_api_sessions__session_id__attachments__attachment_id__analyses_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/attachments/{attachment_id}/content": {
         parameters: {
             query?: never;
@@ -847,6 +901,23 @@ export interface paths {
         put?: never;
         /** Cleanup Temporary */
         post: operations["cleanup_temporary_api_sessions__session_id__attachments_cleanup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/attachments/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Attachment Capabilities */
+        get: operations["attachment_capabilities_api_attachments_capabilities_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1216,6 +1287,22 @@ export interface components {
             /** @default available */
             availability: components["schemas"]["OutputAvailability"];
         };
+        /** AttachmentCapabilities */
+        AttachmentCapabilities: {
+            /** Max Bytes */
+            max_bytes: number;
+            /** Binary Max Bytes */
+            binary_max_bytes: number;
+            /** Max Per Message */
+            max_per_message: number;
+            /** Binary Formats */
+            binary_formats: string[];
+            /**
+             * Binary Analysis
+             * @default true
+             */
+            binary_analysis: boolean;
+        };
         /** AttachmentPage */
         AttachmentPage: {
             /** Attachments */
@@ -1322,6 +1409,23 @@ export interface components {
             } | null;
             /** Note */
             note: string;
+        };
+        /** BinaryAnalysisState */
+        BinaryAnalysisState: {
+            /** Analysis Id */
+            analysis_id: string;
+            /** Kind */
+            kind: string;
+            /** Status */
+            status: string;
+            /** Analyzer Version */
+            analyzer_version: string;
+            /** Error Type */
+            error_type?: string | null;
+            /** Summary */
+            summary: {
+                [key: string]: unknown;
+            };
         };
         /** Body_cancel_duty_api_sessions__session_id__execution_duties__delegation_id__cancel_post */
         Body_cancel_duty_api_sessions__session_id__execution_duties__delegation_id__cancel_post: {
@@ -1975,6 +2079,11 @@ export interface components {
              */
             set_default: boolean;
         };
+        /** NameUpdate */
+        NameUpdate: {
+            /** Name */
+            name: string;
+        };
         /** OperationPage */
         OperationPage: {
             /** Operations */
@@ -2444,11 +2553,8 @@ export interface components {
             draft: boolean;
             /** Initial Skill Refs */
             initial_skill_refs?: string[];
-            /**
-             * Project Id
-             * Format: uuid
-             */
-            project_id: string;
+            /** Project Id */
+            project_id?: string | null;
             /** Title */
             title: string;
             /** Initial Objective */
@@ -2463,6 +2569,38 @@ export interface components {
             provider_id?: string | null;
             /** Model Name */
             model_name?: string | null;
+        };
+        /** SessionList */
+        SessionList: {
+            /** Sessions */
+            sessions: components["schemas"]["SessionListItem"][];
+            /** Next Offset */
+            next_offset: number | null;
+        };
+        /** SessionListItem */
+        SessionListItem: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Project Id */
+            project_id: string | null;
+            /** Title */
+            title: string;
+            /** Status */
+            status: string;
+            /** Provider Id */
+            provider_id: string | null;
+            /** Model Name */
+            model_name: string | null;
+            /** Latest Run Status */
+            latest_run_status?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /** SessionSnapshotRead */
         SessionSnapshotRead: {
@@ -2849,43 +2987,7 @@ export interface operations {
             };
         };
     };
-    list_project_sessions_api_projects__project_id__sessions_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                offset?: number;
-            };
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_session_api_projects__project_id__sessions_post: {
+    rename_project_api_projects__project_id__patch: {
         parameters: {
             query?: never;
             header?: never;
@@ -2896,12 +2998,12 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SessionCreate"];
+                "application/json": components["schemas"]["NameUpdate"];
             };
         };
         responses: {
             /** @description Successful Response */
-            201: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2937,6 +3039,184 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_session_api_sessions__session_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NameUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_project_sessions_api_projects__project_id__sessions_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                project_id: string | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_session_api_projects__project_id__sessions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string | null;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_project_sessions_api_sessions_get: {
+        parameters: {
+            query?: {
+                project_id?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_session_api_sessions_post: {
+        parameters: {
+            query?: {
+                project_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4324,6 +4604,38 @@ export interface operations {
             };
         };
     };
+    attachment_analyses_api_sessions__session_id__attachments__attachment_id__analyses_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BinaryAnalysisState"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     download_attachment_api_sessions__session_id__attachments__attachment_id__content_get: {
         parameters: {
             query?: {
@@ -4425,6 +4737,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attachment_capabilities_api_attachments_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentCapabilities"];
                 };
             };
         };

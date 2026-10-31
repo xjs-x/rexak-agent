@@ -17,24 +17,14 @@ export interface ProjectItem {
   created_at: string;
 }
 
-export interface SessionItem {
-  id: string;
-  project_id: string;
-  title: string;
-  status: string;
-  provider_id: string | null;
-  model_name: string | null;
-  /** 只读投影：该会话最近一次 run 的状态；没有 run 时为 null。 */
-  latest_run_status?: string | null;
-  created_at: string;
-}
+export type SessionItem = components["schemas"]["SessionListItem"];
 
 export type RunItem = components["schemas"]["RunSummaryRead"];
 
 export interface Snapshot {
   session: {
     id: string;
-    project_id: string;
+    project_id: string | null;
     title: string;
     status: string;
     scope?: components["schemas"]["ScopeSnapshot"];
@@ -305,12 +295,30 @@ export class ApiClient {
     return this.write("/projects", body);
   }
 
-  sessions(projectId: string, offset = 0): Promise<{ sessions: SessionItem[]; next_offset: number | null }> {
-    return request(`/projects/${projectId}/sessions?limit=100&offset=${offset}`);
+  sessions(projectId: string | null, offset = 0): Promise<{ sessions: SessionItem[]; next_offset: number | null }> {
+    return request(`${projectId ? `/projects/${projectId}/sessions` : "/sessions"}?limit=100&offset=${offset}`);
   }
 
-  createSession(projectId: string, body: SessionCreate): Promise<{ session: SessionItem; run: RunItem | null }> {
-    return this.write(`/projects/${projectId}/sessions`, body);
+  createSession(projectId: string | null, body: SessionCreate): Promise<{ session: SessionItem; run: RunItem | null }> {
+    return this.write(projectId ? `/projects/${projectId}/sessions` : "/sessions", body);
+  }
+
+  rename(kind: "sessions" | "projects", id: string, body: components["schemas"]["NameUpdate"]): Promise<unknown> {
+    return this.withSessionRetry(() => request(`/${kind}/${id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json", "X-Workbench-CSRF": this.csrf },
+      body: JSON.stringify(body),
+    }));
+  }
+
+  async allSessions(projectId: string | null): Promise<SessionItem[]> {
+    const items: SessionItem[] = [];
+    let offset: number | null = 0;
+    do {
+      const page = await this.sessions(projectId, offset);
+      items.push(...page.sessions);
+      offset = page.next_offset;
+    } while (offset !== null);
+    return items;
   }
 
   async uploadAttachment(sessionId: string, file: File, key: string, signal: AbortSignal,
@@ -345,6 +353,15 @@ export class ApiClient {
 
   attachments(sessionId: string): Promise<components["schemas"]["AttachmentPage"]> {
     return request(`/sessions/${sessionId}/attachments`);
+  }
+
+  attachmentCapabilities(): Promise<components["schemas"]["AttachmentCapabilities"]> {
+    // 上限读的是受会话保护的接口：先建立本地会话，避免首次打开时把 401 当成附件不可用。
+    return this.withSessionRetry(() => request("/attachments/capabilities"));
+  }
+
+  attachmentAnalyses(sessionId: string, id: string): Promise<components["schemas"]["BinaryAnalysisState"][]> {
+    return request(`/sessions/${sessionId}/attachments/${id}/analyses`);
   }
 
   temporaryAttachments(sessionId: string): Promise<components["schemas"]["AttachmentPage"]> {

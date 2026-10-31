@@ -4,6 +4,7 @@ import asyncio
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 from uuid import uuid4
 
 import psycopg
@@ -22,7 +23,7 @@ from agent_workbench.maintenance.run_bundle import (
 )
 from agent_workbench.persistence.bootstrap import create_schemas, open_checkpointer_connection
 from agent_workbench.persistence.db import Database
-from agent_workbench.persistence.repositories import ProjectRepository, SessionRepository
+from agent_workbench.persistence.repositories import ProjectRepository
 
 pytestmark = pytest.mark.integration
 
@@ -61,9 +62,12 @@ async def test_baseline_database_exports_without_upgrade(settings, tmp_path):
             project = await ProjectRepository(db).create(
                 owner_id="legacy", name="baseline", target_description="local", default_scope={}
             )
-            task = await SessionRepository(db).create(
-                project_id=project.id, title="旧会话", scope_snapshot={}, policy_snapshot={}
-            )
+            # 用旧 schema 的真实列播种，不让当前 ORM 向基线库写入新增字段。
+            task = SimpleNamespace(id=uuid4())
+            await db.execute(text("""INSERT INTO app.sessions
+                (id,project_id,thread_id,title,scope_snapshot,policy_snapshot,status,revision,event_seq)
+                VALUES (:id,:project,:thread,'旧会话','{}','{}','active',1,0)"""),
+                {"id": task.id, "project": project.id, "thread": f"legacy-{task.id}"})
             run = await create_run(
                 db,
                 session_id=task.id,

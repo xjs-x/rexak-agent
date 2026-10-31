@@ -218,6 +218,26 @@ def model_environment(settings: Settings, env: dict[str, str]) -> dict[str, str]
     }
 
 
+def open_existing_console(settings: Settings, url: str, *, no_browser: bool) -> bool:
+    """原桌面入口复用本机已启动的控制台；其他占用端口的服务不能冒充。"""
+    if not port_busy(settings):
+        return False
+    try:
+        with httpx.Client(trust_env=False, timeout=3) as client:
+            response = client.get(url + "/health")
+            response.raise_for_status()
+            health = response.json()
+        valid = health.get("service") == "agent-workbench-api" and health.get("database", {}).get("ok")
+    except (httpx.HTTPError, ValueError, AttributeError):
+        valid = False
+    if not valid:
+        raise RuntimeError("API 端口被其他服务占用，未启动重复服务")
+    if not no_browser:
+        webbrowser.open(url + "/console/")
+    print(f"已打开现有 Rexak Agent 控制台：{url}/console/", flush=True)
+    return True
+
+
 def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds: float) -> None:
     settings = get_settings()
     settings.ensure_directories()
@@ -226,9 +246,11 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
     url = base_url(settings)
     env = model_environment(settings, child_process_env())
     cli = [sys.executable, str(ROOT / "scripts/workbench_child.py")]
+    if open_existing_console(settings, url, no_browser=no_browser):
+        return
     with launcher_lock(log_root / "launcher.lock"):
-        if port_busy(settings):
-            raise RuntimeError("API 端口已有服务，请先停止原 API，避免重复启动")
+        if open_existing_console(settings, url, no_browser=no_browser):
+            return
         check_existing_runner()
         if not (ROOT / "web/dist/index.html").is_file():
             raise RuntimeError("控制台尚未构建，请先构建 web 前端")

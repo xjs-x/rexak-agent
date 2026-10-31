@@ -358,7 +358,7 @@ async def _sync_artifacts(
 
 @tool("list_test_identities")
 async def list_test_identities(runtime: ToolRuntime[RunContext]) -> str:
-    """列出当前项目的测试身份 ID、名称与角色；不返回 secret_ref 或凭据。"""
+    """列出当前会话的测试身份 ID、名称与角色；不返回 secret_ref 或凭据。"""
     from sqlalchemy import select
 
     from agent_workbench.persistence.tables import IdentityRow, SessionRow
@@ -371,7 +371,7 @@ async def list_test_identities(runtime: ToolRuntime[RunContext]) -> str:
         identities = (
             (
                 await db.execute(
-                    select(IdentityRow).where(IdentityRow.project_id == session_row.project_id)
+                    select(IdentityRow).where(((IdentityRow.session_id == session_row.id) | (IdentityRow.id == session_row.active_identity_id)))
                 )
             )
             .scalars()
@@ -381,7 +381,7 @@ async def list_test_identities(runtime: ToolRuntime[RunContext]) -> str:
         ToolResult(
             operation_id=UUID(int=0),
             status=OperationStatus.SUCCEEDED,
-            summary=f"当前项目有 {len(identities)} 个测试身份",
+            summary=f"当前会话有 {len(identities)} 个测试身份",
             data={
                 "identities": [
                     {
@@ -434,12 +434,12 @@ async def browser_login(
             await db.execute(
                 select(IdentityRow).where(
                     IdentityRow.id == target_id,
-                    IdentityRow.project_id == session_row.project_id,
+                    ((IdentityRow.session_id == session_row.id) | (IdentityRow.id == session_row.active_identity_id)),
                 )
             )
         ).scalar_one_or_none()
     if identity is None or not identity.secret_ref:
-        return _identity_failure("该身份不属于当前项目，或没有配置 secret_ref")
+        return _identity_failure("该身份不属于当前会话，或没有配置 secret_ref")
     try:
         secret = json.loads(build_secret_store().resolve(identity.secret_ref))
     except (SecretNotFoundError, json.JSONDecodeError):

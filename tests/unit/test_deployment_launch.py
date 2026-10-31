@@ -104,6 +104,25 @@ def test_ipv6_api_url() -> None:
     assert start_workbench.base_url(Settings(api_host="::1", api_port=8770)) == "http://[::1]:8770"
 
 
+@pytest.mark.parametrize("service,expected", [("agent-workbench-api", True), ("other-app", False)])
+def test_existing_console_reuse_checks_identity(monkeypatch, service, expected):
+    cfg = Settings()
+    monkeypatch.setattr(start_workbench, "port_busy", lambda _: True)
+    transport = httpx.MockTransport(lambda request: httpx.Response(
+        200, request=request, json={"service": service, "database": {"ok": True}}))
+    original = httpx.Client
+    monkeypatch.setattr(start_workbench.httpx, "Client", lambda **kw: original(transport=transport, **kw))
+    opened = []
+    monkeypatch.setattr(start_workbench.webbrowser, "open", opened.append)
+    if expected:
+        assert start_workbench.open_existing_console(cfg, "http://127.0.0.1:8770", no_browser=False)
+        assert opened == ["http://127.0.0.1:8770/console/"]
+    else:
+        with pytest.raises(RuntimeError, match="其他服务"):
+            start_workbench.open_existing_console(cfg, "http://127.0.0.1:8770", no_browser=False)
+        assert opened == []
+
+
 @pytest.mark.parametrize("status", [401, 403, 503, 302])
 def test_executor_preflight_error_identifies_status_without_exposing_secret(status):
     secret = "private-fixture-value"

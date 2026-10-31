@@ -1,4 +1,4 @@
-"""有界低权限请求投影；复用 Decision Blackboard 与已验证 Shadow Observation。"""
+"""有界低权限请求投影；复用 Decision Blackboard，不修改原始证据。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,11 @@ from typing import Any
 from langchain_core.messages import AIMessage, ToolMessage
 
 from agent_workbench.contracts.decision_memory import DecisionBlackboard
-from agent_workbench.domain.passive_reflection import encoded
+
+
+def encoded(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
 
 
 def all_tools_paired(messages: list) -> bool:

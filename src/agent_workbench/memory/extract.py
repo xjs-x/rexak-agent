@@ -71,8 +71,8 @@ async def distill_completed_run(db: Database, settings: Settings, run_id: UUID) 
 
     count = 0
     async with open_store_connection(settings) as connection:
-        memory = MemoryStore(AsyncPostgresStore(connection), settings)
-        for observation, project_id in rows:
+        memory = MemoryStore(AsyncPostgresStore(connection), settings, session_id=run.session_id)
+        for observation, _project_id in rows:
             refs = [str(item) for item in observation.artifact_ids if item]
             if not refs or any(available.get(ref) != observation.session_id for ref in refs):
                 continue
@@ -81,7 +81,7 @@ async def distill_completed_run(db: Database, settings: Settings, run_id: UUID) 
                 continue
             subject = str(observation.url or observation.id)
             await memory.propose(
-                project_id=project_id,
+                project_id=observation.session_id,
                 memory_type="observed_endpoint",
                 subject_key=f"{observation.identity_label}:{subject}",
                 content=(

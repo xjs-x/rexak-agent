@@ -140,9 +140,9 @@ async def export_skill(request: Request, skill_id: UUID, version_id: UUID) -> Re
 async def session_skills(request: Request, session_id: UUID) -> SkillSessionRead:
     service = guard(request)
     async with service.db.session() as db:
-        row = (await db.execute(select(SessionRow).join(ProjectRow, SessionRow.project_id == ProjectRow.id)
+        row = (await db.execute(select(SessionRow)
             .where(SessionRow.id == session_id, SessionRow.status != "deleted",
-                   ProjectRow.owner_id == service.settings.owner_id))).scalar_one_or_none()
+                   SessionRow.owner_id == service.settings.owner_id))).scalar_one_or_none()
         if row is None:
             raise ApiError(ErrorCode.NOT_FOUND, "任务不存在")
         thread = row.thread_id

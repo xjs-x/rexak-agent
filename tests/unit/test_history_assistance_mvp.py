@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -13,7 +12,6 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import ValidationError
 
-from agent_workbench.agent.factory import build_agent_middleware
 from agent_workbench.agent.history_assistance import all_tools_paired, memory_view
 from agent_workbench.agent.middleware import history_assistance as module
 from agent_workbench.agent.middleware.history_assistance import (
@@ -21,33 +19,15 @@ from agent_workbench.agent.middleware.history_assistance import (
     reference_messages,
 )
 from agent_workbench.agent.signals import GraphRunAborted, LeaseLostError, StaleResponseError
-from agent_workbench.config.catalog import default_price_catalog
 from agent_workbench.config.settings import Settings, settings_for_run
 from agent_workbench.contracts.decision_memory import (
     ConditionDifference,
     DecisionBlackboard,
     MemoryUnit,
 )
-from agent_workbench.contracts.tool import ExecutorCapabilities
 from agent_workbench.models.invocation import graph_review_scope
-from agent_workbench.models.provider import ModelBinding
-from agent_workbench.tools.registry import ToolSelection, build_tools, default_selection
-from tests.support.scripted_model import ScriptedChatModel
+from agent_workbench.tools.registry import build_tools
 from tests.unit.test_context_budget import profile
-
-
-@pytest.mark.parametrize("mode", ["off", "memory", "passive"])
-def test_run_mode_is_pinned_and_legacy_observer_cannot_override_new_off(mode):
-    cfg = Settings(
-        history_assistance_mode="passive",
-        history_action_shadow_enabled=True,
-        decision_memory_mode="blackboard_v1",
-    )
-    result = settings_for_run(cfg, {"history_assistance_mode": mode})
-    assert result.history_assistance_mode == mode
-    assert result.history_action_shadow_enabled is (mode == "passive")
-    assert result.decision_memory_mode == "current"
-    assert settings_for_run(cfg, {}).history_assistance_mode == "off"
 
 
 def test_invalid_mode_and_environment_entry(monkeypatch):
@@ -59,59 +39,10 @@ def test_invalid_mode_and_environment_entry(monkeypatch):
         Settings(history_assistance_mode=cast(Any, "invalid"))
 
 
-def test_explicit_operational_rollback_overrides_existing_pinned_run():
-    result = settings_for_run(
-        Settings(history_assistance_force_off=True, history_action_shadow_enabled=True),
-        {"history_assistance_mode": "passive"},
-    )
-    assert result.history_assistance_mode == "off"
-    assert result.decision_memory_mode == "current"
-    assert not result.history_action_shadow_enabled
 
 
-def test_production_assembly_off_has_no_new_middleware_and_passive_precedes_observer():
-    for mode in ("off", "memory", "passive"):
-        cfg = Settings(history_assistance_mode=cast(Any, mode))
-        names = [
-            type(m).__name__
-            for m in build_agent_middleware(
-                ScriptedChatModel(), ModelBinding(profile()), cfg, [], default_price_catalog()
-            )
-        ]
-        assert ("HistoryAssistanceMiddleware" in names) is (mode != "off")
-        if mode != "off":
-            assert (
-                names.index("ContextBuilderMiddleware")
-                < names.index("HistoryAssistanceMiddleware")
-                < names.index("ModelObserverMiddleware")
-            )
 
 
-def test_passive_does_not_open_recipe_without_explicit_opt_in_and_capability(tmp_path):
-    caps = ExecutorCapabilities(
-        executor_id="fake",
-        service_version="fixture",
-        protocol_version=1,
-        boot_id="boot",
-        started_at=datetime.now(UTC),
-    )
-    base = Settings(
-        history_assistance_mode="passive",
-        history_action_shadow_context_path=tmp_path / "policy.json",
-    )
-    assert "run_http_test_profile" not in {
-        t.name for t in build_tools(default_selection(base, capabilities=caps))
-    }
-    opted = base.model_copy(update={"history_action_test_profiles_enabled": True})
-    assert "run_http_test_profile" in {
-        t.name for t in build_tools(default_selection(opted, capabilities=caps))
-    }
-    assert "run_http_test_profile" not in {t.name for t in build_tools(default_selection(opted))}
-    assert "run_http_test_profile" not in {
-        t.name for t in build_tools(ToolSelection(http=False, http_test_profiles=True))
-    }
-    no_http = caps.model_copy(update={"http_available": False})
-    assert not default_selection(opted, capabilities=no_http).http_test_profiles
 
 
 def board_for(run="run"):
@@ -330,90 +261,29 @@ def test_production_package_has_no_experiment_runtime_imports():
     for name in (
         "agent/history_assistance.py",
         "agent/middleware/history_assistance.py",
-        "tools/history_feedback.py",
-        "domain/passive_reflection.py",
     ):
         source = (root / name).read_text(encoding="utf-8")
         assert "from experiments" not in source and "import experiments" not in source
 
 
-async def test_plain_navigation_does_not_allocate_shadow_service(tmp_path):
-    from experiments.history_action_autonomous_shadow_v1.fixture import make_box
-
-    from agent_workbench.tools.history_action_shadow import enqueue_http
-
-    box = make_box(tmp_path)
-    box.settings.history_assistance_mode = "passive"
-    try:
-        enqueue_http(box, {}, {"operation_id": "navigation"}, "nav", None)
-        assert box.history_action_shadow is None
-    finally:
-        await box.executor.close()
 
 
-def test_feedback_receipt_survives_another_python_process(tmp_path):
-    import subprocess
-    import sys
-    from uuid import uuid4
-
-    from agent_workbench.domain.history_action_reflection import digest
-    from agent_workbench.tools.history_feedback import claim_reference
-
-    run, session = str(uuid4()), str(uuid4())
-    value = {"material_key": "same-trusted-material"}
-    key = digest({"run": run, "thread": "thread", "material": value["material_key"]})
-    path = tmp_path / "history_action_shadow" / session / "feedback" / (key + ".json")
-    script = """
-import sys
-from pathlib import Path
-from types import SimpleNamespace
-from agent_workbench.config.settings import Settings
-from agent_workbench.tools.history_feedback import claim_reference
-box=SimpleNamespace(run_id=sys.argv[2],session_id=sys.argv[3],settings=Settings(_env_file=None,data_root=Path(sys.argv[1])))
-assert claim_reference(box,'thread',{'material_key':'same-trusted-material'},Path(sys.argv[4]))
-"""
-    subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path), run, session, str(path)],
-        check=True,
-        timeout=20,
-    )
-    box = SimpleNamespace(run_id=run, session_id=session, settings=Settings(data_root=tmp_path))
-    assert not claim_reference(box, "thread", value, path)
 
 
-def test_shadow_uses_actual_decision_view_not_archived_checkpoint_body(tmp_path):
-    from agent_workbench.tools.history_action_shadow import dispatch_context, visible_context
-
-    original = paired()
-    original[-1] = original[-1].model_copy(update={"content": "BODY_NOT_SENT_TO_MODEL"})
-    sent = [*original[:-1], original[-1].model_copy(update={"content": "正文已归档，只有引用"})]
-    current = AIMessage(
-        content="",
-        additional_kwargs={"reasoning_content": "HIDDEN_NOT_CAPTURED"},
-        tool_calls=[{"name": "test", "args": {}, "id": "next", "type": "tool_call"}],
-    )
-    box = box_for(tmp_path, "passive")
-    box.history_assistance_visible_context = visible_context(sent, "thread", 262144)
-    runtime = SimpleNamespace(
-        context=SimpleNamespace(toolbox=box, thread_id="thread"),
-        state={"messages": [*original, current]},
-        tool_call_id="next",
-    )
-    captured = dispatch_context(runtime)
-    serialized = json.dumps(captured, ensure_ascii=False)
-    assert "正文已归档" in serialized and "BODY_NOT_SENT_TO_MODEL" not in serialized
-    assert "HIDDEN_NOT_CAPTURED" not in serialized and captured["batch_ids"] == ["next"]
-    box.history_assistance_visible_context = None
-    with pytest.raises(ValueError, match="actual_decision_view_unavailable"):
-        dispatch_context(runtime)
 
 
-def test_feedback_external_bytes_are_strict_utf8_and_preserved_on_error(tmp_path):
-    from agent_workbench.tools.history_feedback import read_bounded
 
-    path = tmp_path / "external.json"
-    raw = '{"value":"历史"}'.encode("utf-16")
-    path.write_bytes(raw)
-    with pytest.raises(UnicodeDecodeError):
-        read_bounded(path, 1024)
-    assert path.read_bytes() == raw
+@pytest.mark.parametrize("mode", ["off", "memory"])
+def test_supported_modes_and_retired_snapshot(mode):
+    cfg = Settings(history_assistance_mode=mode)
+    assert settings_for_run(cfg, {"history_assistance_mode": mode}).history_assistance_mode == mode
+    assert settings_for_run(cfg, {"history_assistance_mode": "passive"}).history_assistance_mode == "memory"
+    assert settings_for_run(cfg, {}).history_assistance_mode == "off"
+    assert settings_for_run(Settings(history_assistance_force_off=True), {"history_assistance_mode": "memory"}).history_assistance_mode == "off"
+    assert "history_action_shadow_enabled" not in Settings.model_fields
+    assert "run_http_test_profile" not in {t.name for t in build_tools()}
+
+
+def test_retired_mode_cannot_be_selected_for_new_runs():
+    with pytest.raises(ValidationError):
+        Settings(history_assistance_mode=cast(Any, "passive"))

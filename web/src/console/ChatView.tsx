@@ -10,7 +10,7 @@ import {
   type WeaknessItem,
 } from "../api/client";
 import { Icon } from "./Icon";
-import { AttachmentCards, PendingAttachments, useAttachments, type AttachmentSend } from "./Attachments";
+import { AttachmentCards, PendingAttachments, useAttachments, formatSize, type AttachmentSend } from "./Attachments";
 import { MarkdownText } from "./Markdown";
 import type { ModelOption } from "./useWorkbench";
 import {
@@ -71,7 +71,6 @@ export function Composer({
   onModelChange,
   onConfigureModel,
   onScope,
-  onSkills,
   onSend,
   onStop,
   stopper,
@@ -91,7 +90,6 @@ export function Composer({
   onModelChange: (key: string) => void;
   onConfigureModel: () => void;
   onScope: () => void;
-  onSkills: () => void;
   onSend: AttachmentSend;
   onStop?: () => void;
   stopper?: boolean;
@@ -107,6 +105,10 @@ export function Composer({
   const submitting = useRef(false);
   const pendingMessage = useRef<{ signature: string; key: string } | null>(null);
   const current = models.find((model) => model.key === modelKey) ?? models[0];
+  const limits = queue.capabilities;
+  const attachTitle = limits
+    ? `添加文件 · 普通附件 ≤ ${formatSize(limits.max_bytes)}；真实 PE/ELF ≤ ${formatSize(limits.binary_max_bytes)}。只读静态分析，不执行。`
+    : "添加文件";
 
   useEffect(() => {
     if (!seed?.text) return;
@@ -202,24 +204,27 @@ export function Composer({
         </div>
       )}
       {menu && (
-        <div className="attach-menu" onMouseLeave={() => setMenu(false)}>
+        <div className="attach-menu" role="menu" onMouseLeave={() => setMenu(false)}>
           <button
             type="button"
             className="menu-item"
+            role="menuitem"
+            disabled={busy || disabled || !attachmentsEnabled}
             onClick={() => {
               setMenu(false);
-              onToast("当前阶段后端暂不把技能随消息注入；这里只用于查看和管理。");
-              onSkills();
+              fileInput.current?.click();
             }}
           >
-            <Icon name="spark" size="sm" />
-            查看技能库
+            <span className="menu-ico"><Icon name="paperclip" size="sm" /></span>
+            <span className="menu-main">
+              <span className="menu-title">添加文件</span>
+              <span className="menu-sub">
+                {attachmentsEnabled
+                  ? "从计算机上传 · 只读静态分析，不执行"
+                  : "当前后端尚未加载附件版本；服务切换完成后开放上传。"}
+              </span>
+            </span>
           </button>
-          <button type="button" className="menu-item" disabled={busy || disabled || !attachmentsEnabled} onClick={() => { setMenu(false); fileInput.current?.click(); }}>
-            <Icon name="paperclip" size="sm" />
-            上传附件
-          </button>
-          <div className="menu-note">{attachmentsEnabled ? "可拖拽到输入区域。附件仅供只读分析，不自动执行或扩大测试范围。" : "当前后端尚未加载附件版本；服务切换完成后开放上传。"}</div>
         </div>
       )}
       <input type="file" multiple hidden disabled={!attachmentsEnabled || busy || disabled} ref={fileInput} onChange={(event) => {
@@ -250,7 +255,8 @@ export function Composer({
         <button
           type="button"
           className="attach"
-          title="添加工件或技能"
+          aria-label="添加文件"
+          title={attachTitle}
           onClick={() => {
             setModelMenu(false);
             setMenu((open) => !open);
@@ -765,7 +771,6 @@ export function ChatView({
   onLoadOlderMessages,
   onLoadMoreTools,
   onToast,
-  onSkills,
   onCreateReport,
   onCreateReportBusy,
 }: {
@@ -801,7 +806,6 @@ export function ChatView({
   onLoadOlderMessages: () => void;
   onLoadMoreTools: () => void;
   onToast: (message: string) => void;
-  onSkills: () => void;
   onCreateReport: () => void;
   onCreateReportBusy: boolean;
 }) {
@@ -1045,7 +1049,6 @@ export function ChatView({
             busy={busy}
             scopeMode={scopeMode}
             onScope={() => onOpenDrawer("settings")}
-            onSkills={onSkills}
             onSend={onSend}
             onStop={() => onControl("pause")}
             stopper={canStop(run?.status)}

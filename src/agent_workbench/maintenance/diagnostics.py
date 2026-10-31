@@ -98,6 +98,7 @@ def _record(row: Any, fields: str) -> dict[str, Any]:
 
 #: 旧 schema 可能缺少的列 / 表。缺列时必须 `defer` 读取，不能触发懒加载 IO。
 OPTIONAL_COLUMNS: dict[Any, tuple[str, ...]] = {
+    SessionRow: ("owner_id",),
     ToolOperationRow: ("execution_context", "result_snapshot"),
     ReportVersionRow: ("captured_snapshot",),
     LeadRow: ("merged_into_id", "required_conditions", "actionability_assessment"),
@@ -172,7 +173,7 @@ async def collect_run_diagnostic(
         if run is None:
             raise LookupError(f"run 不存在：{run_id}")
         task = (
-            await session.execute(select(SessionRow).where(SessionRow.id == run.session_id))
+            await session.execute(projection(SessionRow).where(SessionRow.id == run.session_id))
         ).scalar_one()
         runs = (
             (

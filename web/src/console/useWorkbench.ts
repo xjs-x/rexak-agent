@@ -79,6 +79,7 @@ export interface WorkbenchApi {
   connection: ConnectionState;
   projects: ProjectGroup[];
   recent: SessionItem[];
+  standalone: SessionItem[];
   sessionId: string;
   selectedProjectId: string;
   pendingProjectId: string | null;
@@ -120,7 +121,7 @@ export interface WorkbenchApi {
   setNotice: (value: string) => void;
   refresh: () => Promise<void>;
   refreshProjects: () => Promise<void>;
-  refreshProject: (projectId: string) => Promise<void>;
+  refreshProject: (projectId: string | null) => Promise<void>;
   reconnect: () => Promise<void>;
   ensureProjectSessions: (projectId: string) => Promise<void>;
   isProjectLoaded: (projectId: string) => boolean;
@@ -193,6 +194,7 @@ export function useWorkbench(): WorkbenchApi {
   const [attachmentsEnabled, setAttachmentsEnabled] = useState(false);
   const [bootError, setBootError] = useState("");
   const [connection, setConnection] = useState<ConnectionState>("connecting");
+  const [standalone, setStandalone] = useState<SessionItem[]>([]);
   const [projects, setProjects] = useState<ProjectGroup[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -240,7 +242,7 @@ export function useWorkbench(): WorkbenchApi {
     if (!projectId || loadedProjectsRef.current.has(projectId)) return;
     loadedProjectsRef.current.add(projectId);
     try {
-      const page = await api.sessions(projectId);
+      const page = { sessions: await api.allSessions(projectId) };
       setProjects((previous) =>
         previous.map((project) => (project.id === projectId ? { ...project, sessions: page.sessions } : project)),
       );
@@ -255,8 +257,8 @@ export function useWorkbench(): WorkbenchApi {
   );
 
   const allSessions = useMemo(
-    () => projectGroups.flatMap((project) => project.sessions),
-    [projectGroups],
+    () => [...standalone, ...projectGroups.flatMap((project) => project.sessions)],
+    [projectGroups, standalone],
   );
 
   const recent = useMemo(
@@ -330,11 +332,13 @@ export function useWorkbench(): WorkbenchApi {
         await api.signIn();
         if (!bootstrappedRef.current) {
           const data = await api.projects();
+          const ungrouped = await api.allSessions(null);
+          if (active) setStandalone(ungrouped);
           const initial = data.projects.slice(0, 8);
           const lists = await Promise.all(
             initial.map(async (project) => {
               try {
-                const page = await api.sessions(project.id);
+                const page = { sessions: await api.allSessions(project.id) };
                 return [project.id, page.sessions] as const;
               } catch {
                 return [project.id, [] as SessionItem[]] as const;
@@ -707,15 +711,16 @@ export function useWorkbench(): WorkbenchApi {
       preferredSessionRef.current = "";
       setSessionId("");
       setPendingProjectId(projectId ?? null);
-      if (projectId) setSelectedProjectId(projectId);
+      setSelectedProjectId(projectId ?? "");
       setNoticeState("");
       window.history.replaceState(null, "", window.location.pathname);
     },
     [],
   );
 
-  const refreshProject = useCallback(async (projectId: string) => {
-    const page = await api.sessions(projectId);
+  const refreshProject = useCallback(async (projectId: string | null) => {
+    if (!projectId) { setStandalone(await api.allSessions(null)); return; }
+    const page = { sessions: await api.allSessions(projectId) };
     loadedProjectsRef.current.add(projectId);
     setProjects((previous) =>
       previous.map((project) => (project.id === projectId ? { ...project, sessions: page.sessions } : project)),
@@ -724,6 +729,7 @@ export function useWorkbench(): WorkbenchApi {
 
   const refreshProjects = useCallback(async () => {
     const data = await api.projects();
+    setStandalone(await api.allSessions(null));
     setProjects((previous) => {
       const sessions = new Map(previous.map((project) => [project.id, project.sessions]));
       return data.projects.map((project) => ({ ...project, sessions: sessions.get(project.id) ?? [] }));
@@ -747,19 +753,7 @@ export function useWorkbench(): WorkbenchApi {
     }
   }, [refreshProjects]);
 
-  const ensureProjectId = useCallback(async () => {
-    if (pendingProjectId && projects.some((project) => project.id === pendingProjectId)) return pendingProjectId;
-    if (selectedProjectId && projects.some((project) => project.id === selectedProjectId)) return selectedProjectId;
-    const existing = projects.find((project) => project.name === "我的工作台") ?? projects[0];
-    if (existing) return existing.id;
-    const created = await api.createProject({
-      name: "我的工作台",
-      target_description: "个人任务与对话",
-      settings_version: "1",
-    });
-    setProjects((previous) => [...previous, { ...created, sessions: [] }]);
-    return created.id;
-  }, [pendingProjectId, projects, selectedProjectId]);
+  const ensureProjectId = useCallback(async () => pendingProjectId, [pendingProjectId]);
 
   const createProject = useCallback(async (name: string, description: string) => {
     const created = await api.createProject({
@@ -839,7 +833,7 @@ export function useWorkbench(): WorkbenchApi {
         });
         await refreshProject(projectId);
         setSessionId(created.session.id);
-        setSelectedProjectId(projectId);
+        setSelectedProjectId(projectId ?? "");
         setPendingProjectId(null);
         window.history.replaceState(null, "", `?session=${encodeURIComponent(created.session.id)}`);
         return true;
@@ -931,6 +925,7 @@ export function useWorkbench(): WorkbenchApi {
     async (target: SessionItem, terminateResources = false): Promise<DeleteResult> => {
       try {
         const result = await api.deleteSession(target.id, terminateResources);
+        if (!result.deleted) return { ok: false, message: "停止仍在确认，请稍后再删除。" };
         await refreshProject(target.project_id);
         if (sessionId === target.id) {
           setSessionId("");
@@ -960,6 +955,7 @@ export function useWorkbench(): WorkbenchApi {
     bootError,
     connection,
     projects: projectGroups,
+    standalone,
     recent,
     sessionId,
     selectedProjectId,

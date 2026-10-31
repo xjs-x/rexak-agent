@@ -256,7 +256,7 @@ async def test_changed_identity_and_unavailable_artifact_cannot_be_reused(databa
     async with database.transaction() as db:
         task = await db.get(SessionRow, ctx.toolbox.session_id)
         identity = IdentityRow(
-            project_id=task.project_id, display_name="fixture-member", auth_revision=1
+            project_id=task.project_id, session_id=task.id, display_name="fixture-member", auth_revision=1
         )
         db.add(identity)
         await db.flush()

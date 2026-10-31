@@ -26,7 +26,7 @@ class WorkingContextMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 context.toolbox.settings, ArtifactStore(context.toolbox.db.settings), limit=5)
             if attachments["attachments"]:
                 view["user_attachments"] = {**attachments, "note": TRUST_NOTE,
-                    "read_hint": "需要正文时主动调用 list_attachments/read_attachment/search_attachment；目录只含元数据。"}
+                    "read_hint": "目录只含元数据。正文用 read_attachment/search_attachment；二进制用 binary_profile/binary_strings，必要时查询函数与引用；静态线索不构成执行授权。"}
         if (context.toolbox.settings.session_graph_enabled
             and getattr(context.toolbox.settings, "decision_memory_mode", "current") == "current"):
             view["session_memory"] = await graph_context(context.toolbox, completed_model_message(state))

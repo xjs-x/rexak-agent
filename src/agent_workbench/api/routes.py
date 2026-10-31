@@ -30,6 +30,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import Text, and_, cast, literal, or_, select, tuple_, union_all
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.dialects.postgresql import distinct_on
+from sqlalchemy.exc import IntegrityError
 
 from agent_workbench.agent.state import plan_step_lead_ids
 from agent_workbench.api.auth import LocalAuth
@@ -56,6 +57,7 @@ from agent_workbench.contracts.models import (
     ModelSettingsUpdate,
     SessionSnapshotRead,
 )
+from agent_workbench.contracts.organization import NameUpdate, SessionList
 from agent_workbench.contracts.plan import (
     CurrentFocusRead,
     PlanRead,
@@ -201,10 +203,56 @@ async def create_project(
         }
 
 
-@router.get("/projects/{project_id}/sessions", tags=["sessions"])
+@router.patch("/projects/{project_id}", tags=["projects"])
+async def rename_project(project_id: UUID, request: Request, payload: NameUpdate) -> dict[str, Any]:
+    auth = get_auth()
+    auth.check_origin(request)
+    auth.require_csrf(request, auth.require_session(request))
+    from agent_workbench.persistence.db import get_database
+    from agent_workbench.persistence.tables import ProjectRow
+    async with get_database().transaction() as db:
+        row = await db.scalar(select(ProjectRow).where(
+            ProjectRow.id == project_id, ProjectRow.owner_id == get_settings().owner_id,
+            ProjectRow.deleted_at.is_(None)).with_for_update())
+        if row is None:
+            raise ApiError(ErrorCode.NOT_FOUND, "项目不存在")
+        duplicate = await db.scalar(select(ProjectRow.id).where(
+            ProjectRow.owner_id == row.owner_id, ProjectRow.name == payload.name,
+            ProjectRow.id != row.id))
+        if duplicate:
+            raise ApiError(ErrorCode.CONFLICT, "已有同名项目，请换一个名称")
+        row.name = payload.name
+        try:
+            await db.flush()
+        except IntegrityError as exc:
+            if getattr(exc.orig, "sqlstate", None) == "23505":
+                raise ApiError(ErrorCode.CONFLICT, "已有同名项目，请换一个名称") from None
+            raise
+        return {"id": str(row.id), "name": row.name}
+
+
+@router.patch("/sessions/{session_id}", tags=["sessions"])
+async def rename_session(session_id: UUID, request: Request, payload: NameUpdate) -> dict[str, Any]:
+    auth = get_auth()
+    auth.check_origin(request)
+    auth.require_csrf(request, auth.require_session(request))
+    from agent_workbench.persistence.db import get_database
+    async with get_database().transaction() as db:
+        row = await db.scalar(select(SessionRow).where(
+            SessionRow.id == session_id, SessionRow.owner_id == get_settings().owner_id,
+            SessionRow.status != "deleted").with_for_update())
+        if row is None:
+            raise ApiError(ErrorCode.NOT_FOUND, "对话不存在")
+        row.title = payload.name
+        await db.flush()
+        return {"id": str(row.id), "title": row.title}
+
+
+@router.get("/sessions", tags=["sessions"], response_model=SessionList)
+@router.get("/projects/{project_id}/sessions", tags=["sessions"], response_model=SessionList)
 async def list_project_sessions(
-    project_id: UUID,
     request: Request,
+    project_id: UUID | None = None,
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
@@ -212,14 +260,15 @@ async def list_project_sessions(
     from agent_workbench.persistence.db import get_database
 
     async with get_database().session() as db:
-        project = await ProjectRepository(db).get(project_id)
-        if project is None or project.owner_id != get_settings().owner_id:
+        project = await ProjectRepository(db).get(project_id) if project_id else None
+        if project_id and (project is None or project.owner_id != get_settings().owner_id):
             raise ApiError(ErrorCode.NOT_FOUND, f"项目不存在：{project_id}")
         rows = list(
             (
                 await db.execute(
                     select(SessionRow)
-                    .where(SessionRow.project_id == project_id, SessionRow.status != "deleted")
+                    .where(SessionRow.project_id == project_id, SessionRow.status != "deleted",
+                           SessionRow.owner_id == get_settings().owner_id)
                     .order_by(SessionRow.created_at.desc(), SessionRow.id)
                     .offset(offset)
                     .limit(limit + 1)
@@ -246,7 +295,7 @@ async def list_project_sessions(
         "sessions": [
             {
                 "id": str(row.id),
-                "project_id": str(row.project_id),
+                "project_id": str(row.project_id) if row.project_id else None,
                 "title": _redact_api_value(row.title),
                 "status": row.status,
                 "provider_id": row.provider_id,
@@ -260,15 +309,16 @@ async def list_project_sessions(
     }
 
 
+@router.post("/sessions", status_code=status.HTTP_201_CREATED, tags=["sessions"])
 @router.post(
     "/projects/{project_id}/sessions",
     status_code=status.HTTP_201_CREATED,
     tags=["sessions"],
 )
 async def create_session(
-    project_id: UUID,
     request: Request,
     payload: SessionCreate,
+    project_id: UUID | None = None,
 ) -> dict[str, Any]:
     """创建会话并**启动首个 run**。
 
@@ -305,8 +355,8 @@ async def create_session(
     settings = get_settings()
 
     async with get_database().transaction() as session:
-        project = await ProjectRepository(session).get(project_id)
-        if (
+        project = await ProjectRepository(session).get(project_id) if project_id else None
+        if project_id and (
             project is None
             or project.owner_id != settings.owner_id
             or project.deleted_at is not None
@@ -317,6 +367,7 @@ async def create_session(
 
         session_row = await SessionRepository(session).create(
             project_id=project_id,
+            owner_id=settings.owner_id,
             title=payload.title,
             scope_snapshot=initial_scope.model_dump(),
             policy_snapshot=payload.policy.model_dump(),
@@ -328,6 +379,7 @@ async def create_session(
         for identity in payload.identities:
             identity_row = IdentityRow(
                 project_id=project_id,
+                session_id=session_row.id,
                 display_name=identity.display_name,
                 role_label=identity.role_label,
                 secret_ref=identity.secret_ref,
@@ -348,7 +400,7 @@ async def create_session(
 
         if payload.draft:
             return {
-                "session": {"id": str(session_row.id), "project_id": str(project_id),
+                "session": {"id": str(session_row.id), "project_id": str(project_id) if project_id else None,
                     "title": session_row.title, "status": session_row.status,
                     "provider_id": session_row.provider_id, "model_name": session_row.model_name,
                     "created_at": session_row.created_at.isoformat()},
@@ -387,7 +439,7 @@ async def create_session(
         return {
             "session": {
                 "id": str(session_row.id),
-                "project_id": str(session_row.project_id),
+                "project_id": str(session_row.project_id) if session_row.project_id else None,
                 "active_identity_id": (
                     str(session_row.active_identity_id) if session_row.active_identity_id else None
                 ),
@@ -423,100 +475,24 @@ async def delete_session(
     request: Request,
     terminate_resources: bool = False,
 ) -> dict[str, Any]:
-    """从列表移除任务，保留审计记录；活动运行经取消流程确认停止。
-
-    执行资源预检（规格 §13）：仍存活的执行资源不允许被"顺手删掉" ——
-    默认返回 409 与资源清单；显式 `terminate_resources=true` 时先发出终止请求，
-    再执行删除。台账记录（投影）保留，不制造孤儿。
-    """
+    """确认删除当前对话；活动执行尚未停止时保留记录。"""
     auth = get_auth()
     auth.check_origin(request)
     ticket = auth.require_session(request)
     auth.require_csrf(request, ticket)
+    from agent_workbench.domain.chat_deletion import delete_chat
     from agent_workbench.persistence.db import get_database
 
+    async with get_database().session() as db:
+        await _require_session_row(db, session_id)
     if terminate_resources:
         from agent_workbench.api.execution import terminate_all
-
         termination = await terminate_all(session_id, request, f"delete-session:{session_id}")
         if termination.unresolved:
-            raise ApiError(
-                ErrorCode.CONFLICT,
-                "资源终止尚未确认，对话保留以便继续管理。",
-                details={"active_resources": termination.unresolved},
-            )
-
+            raise ApiError(ErrorCode.CONFLICT, "资源终止尚未确认，对话保留。",
+                           details={"active_resources": termination.unresolved})
     async with get_database().transaction() as db:
-        row = (
-            await db.execute(
-                select(SessionRow).where(SessionRow.id == session_id).with_for_update()
-            )
-        ).scalar_one_or_none()
-        project = await ProjectRepository(db).get(row.project_id) if row else None
-        if row is None or project is None or project.owner_id != get_settings().owner_id:
-            raise ApiError(ErrorCode.NOT_FOUND, "任务不存在")
-        from agent_workbench.persistence.repositories import ExecutionResourceRepository
-
-        active_resources = list(
-            await ExecutionResourceRepository(db).active_for_session(session_id)
-        )
-        if row.status != "deleted":
-            if active_resources:
-                raise ApiError(
-                    ErrorCode.CONFLICT,
-                    "该对话仍有存活的执行资源；删除前请显式选择终止（terminate_resources=true）"
-                    "或先逐个关闭。系统不会在删除时静默丢弃它们的台账。",
-                    details={
-                        "active_resources": [
-                            f"{item.kind}:{item.resource_id}:{item.state}"
-                            for item in active_resources
-                        ],
-                        "required_field": "terminate_resources",
-                    },
-                )
-            runs = list(
-                (
-                    await db.execute(
-                        select(RunRow)
-                        .where(
-                            RunRow.session_id == session_id,
-                            RunRow.status.in_([str(item) for item in ACTIVE_RUN_STATUSES]),
-                        )
-                        .with_for_update()
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            row.status = "deleted"
-            for run in runs:
-                await bump_control_version(db, run_id=run.id)
-                await submit_control(
-                    db,
-                    run=run,
-                    kind=CommandKind.CANCEL,
-                    idempotency_key=f"delete-session:{session_id}:{run.id}",
-                )
-                current = RunStatus(run.status)
-                if current is RunStatus.RECOVERING or current is RunStatus.PAUSING:
-                    await set_run_status(db, run_id=run.id, target=RunStatus.PAUSED)
-                if RunStatus(run.status) is not RunStatus.CANCELLING:
-                    await set_run_status(db, run_id=run.id, target=RunStatus.CANCELLING)
-            return {
-                "id": str(session_id),
-                "deleted": True,
-                "cancellation_pending": bool(runs),
-                "active_resources": [
-                    f"{item.kind}:{item.resource_id}" for item in active_resources
-                ],
-                "resources_note": (
-                    "删除只做软删除并取消运行；执行资源台账与投影保留，"
-                    "请通过执行面板或 terminate_resources 显式终止。"
-                    if active_resources
-                    else ""
-                ),
-            }
-        return {"id": str(session_id), "deleted": True, "cancellation_pending": False}
+        return await delete_chat(db, session_id, get_settings())
 
 
 @router.post(
@@ -549,12 +525,10 @@ async def post_message(
                 select(SessionRow).where(SessionRow.id == session_id).with_for_update()
             )
         ).scalar_one_or_none()
-        project = await ProjectRepository(session).get(row.project_id) if row else None
         if (
             row is None
             or row.status == "deleted"
-            or project is None
-            or project.owner_id != settings.owner_id
+            or row.owner_id != settings.owner_id
         ):
             raise ApiError(ErrorCode.NOT_FOUND, "任务不存在或已删除")
         from agent_workbench.domain.run_state import find_active_run
@@ -929,7 +903,7 @@ async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]
     return {
         "session": {
             "id": str(session_row.id),
-            "project_id": str(session_row.project_id),
+            "project_id": str(session_row.project_id) if session_row.project_id else None,
             "thread_id": session_row.thread_id,
             "title": session_row.title,
             "status": session_row.status,
@@ -1853,6 +1827,25 @@ async def list_findings(
             "`/weaknesses` 返回同一实体的弱点视图（含条件与关系）。"
         ),
     }
+
+
+@router.get("/sessions/{session_id}/graph", tags=["read"])
+async def get_session_graph(session_id: UUID, request: Request) -> dict[str, Any]:
+    get_auth().require_session(request)
+    from agent_workbench.domain.session_graph import read_graph
+    from agent_workbench.persistence.db import get_database
+
+    async with get_database().session() as session:
+        await _require_session_row(session, session_id)
+        owned = await session.scalar(select(SessionRow.id).where(
+            SessionRow.id == session_id, SessionRow.owner_id == get_settings().owner_id
+        ))
+        if owned is None:
+            raise ApiError(ErrorCode.NOT_FOUND, f"session 不存在：{session_id}")
+        graph = await read_graph(session, session_id)
+    if not get_settings().graph_attack_enabled:
+        graph.pop("attack_graph", None)
+    return graph
 
 
 @router.get("/sessions/{session_id}/coverage", tags=["read"])

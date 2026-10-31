@@ -7,6 +7,7 @@ import { Composer } from "./ChatView";
 
 vi.mock("../api/client", () => ({ api: {
   temporaryAttachments: vi.fn(), uploadAttachment: vi.fn(), removeAttachment: vi.fn(), attachmentText: vi.fn(),
+  attachmentCapabilities: vi.fn(), attachmentAnalyses: vi.fn(),
 } }));
 
 const attachment = (id = "attachment-1"): Attachment => ({ attachment_id: id, session_id: "session-1",
@@ -18,20 +19,58 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(api.temporaryAttachments).mockResolvedValue({ attachments: [] });
   vi.mocked(api.removeAttachment).mockResolvedValue({});
+  vi.mocked(api.attachmentCapabilities).mockResolvedValue({ max_bytes: 20 * 1024 * 1024, binary_max_bytes: 64 * 1024 * 1024,
+    max_per_message: 5, binary_formats: ["PE", "ELF"], binary_analysis: true });
+  vi.mocked(api.attachmentAnalyses).mockResolvedValue([]);
 });
 afterEach(cleanup);
+
+test("二进制上限来自服务端，超过普通上限仍可上传，超二进制上限明确失败", async () => {
+  vi.mocked(api.attachmentCapabilities).mockResolvedValue({ max_bytes: 1024, binary_max_bytes: 32 * 1024 * 1024,
+    max_per_message: 5, binary_formats: ["PE", "ELF"], binary_analysis: true });
+  vi.mocked(api.uploadAttachment).mockResolvedValue({ ...attachment(), filename: "client.exe", readable: false,
+    parse_status: "unsupported", metadata: { binary_candidate: true }, size: 27 * 1024 * 1024 });
+  const view = composer();
+  await waitFor(() => expect(view.getByLabelText("添加文件").getAttribute("title"))
+    .toContain("普通附件 ≤ 1.0 KiB；真实 PE/ELF ≤ 32.0 MiB"));
+  const file = new File(["fixture"], "client.exe");
+  Object.defineProperty(file, "size", { value: 27 * 1024 * 1024 });
+  fireEvent.change(view.container.querySelector('input[type="file"]')!, { target: { files: [file] } });
+  await waitFor(() => expect(api.uploadAttachment).toHaveBeenCalledTimes(1));
+  await view.findByText(/已保存/);
+  const huge = new File(["fixture"], "huge.exe");
+  Object.defineProperty(huge, "size", { value: 33 * 1024 * 1024 });
+  fireEvent.change(view.container.querySelector('input[type="file"]')!, { target: { files: [huge] } });
+  await view.findByText(/文件超过上传上限 32.0 MiB/);
+  expect(api.uploadAttachment).toHaveBeenCalledTimes(1);
+});
+
+test("二进制未分析与已分析状态来自接口，摘要保持文本转义", async () => {
+  const binary = { ...attachment(), filename: "client.exe", readable: false, parse_status: "unsupported",
+    metadata: { binary_candidate: true } };
+  const view = render(<AttachmentCards sessionId="session-1" attachments={[binary]} />);
+  fireEvent.click(view.getByText("client.exe"));
+  await view.findByText("未分析；Agent 可按需调用二进制静态分析工具。");
+  fireEvent.click(view.getByText("关闭"));
+  vi.mocked(api.attachmentAnalyses).mockResolvedValue([{ analysis_id: "analysis-1", kind: "base", status: "ready",
+    analyzer_version: "test-version", summary: { format: "PE32+", note: "<script>alert(1)</script>" } }]);
+  fireEvent.click(view.getByText("client.exe"));
+  await view.findByText(/base · 已分析 · analysis-1/);
+  expect(view.container.querySelector("script")).toBeNull();
+  expect(api.attachmentText).not.toHaveBeenCalled();
+});
 
 function composer(onSend = vi.fn().mockResolvedValue(true), attachmentsEnabled = true) {
   return { onSend, ...render(<Composer attachmentsEnabled={attachmentsEnabled} sessionId="session-1" placeholder="分析文件" scopeMode={null}
     models={[]} modelKey="test" modelLocked={false} onModelChange={() => {}}
-    onConfigureModel={() => {}} onScope={() => {}} onSkills={() => {}} onToast={() => {}}
+    onConfigureModel={() => {}} onScope={() => {}} onToast={() => {}}
     onSend={onSend} />) };
 }
 
 test("旧版后端明确禁用附件入口，原文字消息仍然可发送", async () => {
   const view = composer(undefined, false);
-  fireEvent.click(view.getByTitle("添加工件或技能"));
-  expect((view.getByText("上传附件").closest("button") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(view.getByLabelText("添加文件"));
+  expect((view.getByText("添加文件").closest("button") as HTMLButtonElement).disabled).toBe(true);
   view.getByText("当前后端尚未加载附件版本；服务切换完成后开放上传。");
   expect(api.temporaryAttachments).not.toHaveBeenCalled();
   fireEvent.change(view.getByLabelText("输入指令"), { target: { value: "普通文字消息" } });

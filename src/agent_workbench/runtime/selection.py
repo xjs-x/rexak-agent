@@ -9,6 +9,6 @@ def owned_run_ids(owner_id: str):
     return (
         select(RunRow.id)
         .join(SessionRow, RunRow.session_id == SessionRow.id)
-        .join(ProjectRow, SessionRow.project_id == ProjectRow.id)
-        .where(ProjectRow.owner_id == owner_id, ProjectRow.deleted_at.is_(None))
+        .outerjoin(ProjectRow, SessionRow.project_id == ProjectRow.id)
+        .where(SessionRow.owner_id == owner_id, ProjectRow.deleted_at.is_(None))
     )

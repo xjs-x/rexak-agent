@@ -89,13 +89,15 @@ class MemoryStore:
     Store 是**唯一可写**的跨任务记忆；本地不保留第二份可写副本（§4.4）。
     """
 
-    def __init__(self, store: BaseStore, settings: Settings | None = None) -> None:
+    def __init__(self, store: BaseStore, settings: Settings | None = None, *, session_id: UUID | None = None) -> None:
         self._store = store
         self._settings = settings or get_settings()
+        self._session_id = session_id
 
     @property
     def owner_id(self) -> str:
-        return self._settings.owner_id
+        return (f"{self._settings.owner_id}:session:{self._session_id}"
+                if self._session_id else self._settings.owner_id)
 
     async def propose(
         self,

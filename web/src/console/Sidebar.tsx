@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { SessionItem } from "../api/client";
+import { useEffect, useState } from "react";
+import type { ProjectItem, SessionItem } from "../api/client";
 import { Icon } from "./Icon";
 import { isFixtureProject, shortId } from "./labels";
 import type { ExecutorState, ProjectGroup } from "./useWorkbench";
@@ -16,7 +16,7 @@ function SessionDot({ status }: { status?: string | null }) {
 
 export function Sidebar({
   projects,
-  recent,
+  standalone,
   sessionId,
   skillCount,
   executorState,
@@ -29,12 +29,14 @@ export function Sidebar({
   onOpenSkills,
   onOpenSettings,
   onDeleteSession,
+  onRenameSession,
+  onRenameProject,
   onRefreshProject,
   isProjectLoaded,
   onLoadProject,
 }: {
   projects: ProjectGroup[];
-  recent: SessionItem[];
+  standalone: SessionItem[];
   sessionId: string;
   skillCount: number | null;
   executorState: ExecutorState;
@@ -47,6 +49,8 @@ export function Sidebar({
   onOpenSkills: () => void;
   onOpenSettings: () => void;
   onDeleteSession: (session: SessionItem) => void;
+  onRenameSession: (session: SessionItem) => void;
+  onRenameProject: (project: ProjectItem) => void;
   onRefreshProject: (projectId: string) => void;
   isProjectLoaded: (projectId: string) => boolean;
   onLoadProject: (projectId: string) => void;
@@ -57,10 +61,27 @@ export function Sidebar({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const visibleProjects = projects.filter((project) => showFixtures || !isFixtureProject(project.name));
   const hiddenCount = projects.length - visibleProjects.length;
-  const projectNames = new Map(projects.map((project) => [project.id, project.name]));
-  const visibleRecent = recent.filter(
-    (session) => showFixtures || !isFixtureProject(projectNames.get(session.project_id) ?? ""),
-  );
+  const [context, setContext] = useState<{ session: SessionItem; x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (!context && !openMenu) return;
+    const dismiss = () => { setContext(null); setOpenMenu(null); };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") dismiss(); };
+    window.addEventListener("pointerdown", dismiss);
+    window.addEventListener("keydown", key);
+    window.addEventListener("resize", dismiss);
+    window.addEventListener("scroll", dismiss, true);
+    return () => {
+      window.removeEventListener("pointerdown", dismiss);
+      window.removeEventListener("keydown", key);
+      window.removeEventListener("resize", dismiss);
+      window.removeEventListener("scroll", dismiss, true);
+    };
+  }, [context, openMenu]);
+  const showSessionMenu = (session: SessionItem, x: number, y: number) => {
+    setOpenMenu(null);
+    setContext({ session, x: Math.max(8, Math.min(x, window.innerWidth - 248)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 112)) });
+  };
 
   const toggleProject = (id: string) => {
     setClosed((previous) => {
@@ -83,23 +104,33 @@ export function Sidebar({
     executorState === "online" ? "" : executorState === "offline" ? " off" : " check";
 
   const renderSession = (session: SessionItem) => (
-    <div className="sess-wrap" key={session.id}>
+    <div className="sess-wrap" key={session.id} onContextMenu={(event) => {
+      event.preventDefault(); showSessionMenu(session, event.clientX, event.clientY);
+    }}>
       <button
         className={`sess ${sessionId === session.id ? "active" : ""}`}
         data-sess={session.id}
         title={session.title}
         onClick={() => onSelectSession(session.id)}
+        onKeyDown={(event) => {
+          if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+            event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect();
+            showSessionMenu(session, rect.left + 24, rect.bottom);
+          }
+        }}
       >
         <span className="sess-title">{session.title}</span>
         <SessionDot status={session.latest_run_status} />
       </button>
       <button
         className="sess-act"
-        title="删除任务"
-        aria-label={`删除任务 ${session.title}`}
-        onClick={() => onDeleteSession(session)}
+        title="对话操作"
+        aria-label={`对话操作 ${session.title}`}
+        aria-haspopup="menu"
+        onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect();
+          showSessionMenu(session, rect.right, rect.bottom); }}
       >
-        <Icon name="close" size="sm" />
+        <Icon name="more" size="sm" />
       </button>
     </div>
   );
@@ -131,13 +162,16 @@ export function Sidebar({
       </button>
 
       <nav className="side-scroll">
+        <div className="side-label">聊天</div>
+        {standalone.length ? standalone.map(renderSession) : <p className="side-empty">新对话会独立保存在这里。</p>}
+
         <div className="side-label">
           项目
           <button title="新建项目" onClick={onNewProject}>
             ＋
           </button>
         </div>
-        {projects.length === 0 && <p className="side-empty">还没有项目。新建项目后即可开始任务。</p>}
+        {projects.length === 0 && <p className="side-empty">项目用于整理聊天，可以随时创建。</p>}
         {visibleProjects.map((project) => {
           const all = project.sessions;
           const isExpanded = !!expanded[project.id];
@@ -151,9 +185,10 @@ export function Sidebar({
           <div
             className={`proj ${closed.has(project.id) ? "closed" : ""}`}
             key={project.id}
-            onMouseLeave={() => setOpenMenu((current) => (current === project.id ? null : current))}
           >
-            <div className="proj-row">
+            <div className="proj-row" onContextMenu={(event) => {
+              event.preventDefault(); setContext(null); setOpenMenu(project.id);
+            }}>
               <button
                 className="proj-head"
                 onClick={() => {
@@ -170,7 +205,8 @@ export function Sidebar({
                 <button
                   className="proj-act"
                   title="项目操作"
-                  onClick={() => setOpenMenu((current) => (current === project.id ? null : project.id))}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => { setContext(null); setOpenMenu((current) => (current === project.id ? null : project.id)); }}
                 >
                   <Icon name="more" size="sm" />
                 </button>
@@ -183,7 +219,7 @@ export function Sidebar({
                 </button>
               </div>
               {openMenu === project.id && (
-                <div className="menu-pop proj-menu" onClick={(event) => event.stopPropagation()}>
+                <div className="menu-pop proj-menu" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
                   <button
                     className="menu-item"
                     onClick={() => {
@@ -205,14 +241,11 @@ export function Sidebar({
                     刷新会话
                   </button>
                   <div className="menu-sep" />
-                  <button className="menu-item" disabled title="后端暂未提供项目重命名接口">
+                  <button className="menu-item" onClick={() => { setOpenMenu(null); onRenameProject(project); }}>
                     <Icon name="pencil" size="sm" />
-                    重命名（暂不可用）
+                    重命名
                   </button>
-                  <button className="menu-item" disabled title="后端暂未提供项目删除接口">
-                    <Icon name="close" size="sm" />
-                    删除（暂不可用）
-                  </button>
+
                 </div>
               )}
             </div>
@@ -249,15 +282,20 @@ export function Sidebar({
           </button>
         )}
 
-        <div className="side-label" style={{ marginTop: 8 }}>
-          最近
-        </div>
-        {visibleRecent.length ? (
-          visibleRecent.slice(0, 6).map(renderSession)
-        ) : (
-          <p className="side-empty">还没有历史任务。</p>
-        )}
       </nav>
+
+      {context && (
+        <div className="chat-context-menu" role="menu" aria-label="对话操作"
+          style={{ left: context.x, top: context.y }} onPointerDown={(event) => event.stopPropagation()}>
+          <button className="menu-item" role="menuitem" autoFocus onClick={() => {
+            onRenameSession(context.session); setContext(null);
+          }}><Icon name="pencil" />重命名</button>
+          <div className="menu-sep" />
+          <button className="menu-item danger" role="menuitem" onClick={() => {
+            onDeleteSession(context.session); setContext(null);
+          }}><Icon name="trash" />删除</button>
+        </div>
+      )}
 
       <div className="side-foot">
         <button className="foot-row" onClick={onOpenSkills}>

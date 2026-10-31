@@ -308,47 +308,6 @@ async def test_v6_checkpoint_retains_legacy_channels_and_pending_operation() -> 
     assert submitted == ["once"]
 
 
-async def test_old_protocol_node_restores_as_inert_bridge():
-    from agent_workbench.agent.middleware.progress import ProgressMiddleware
-    from agent_workbench.agent.middleware.stage_report import StageReportMiddleware
-
-    saver = InMemorySaver()
-    model = ScriptedChatModel(responses=[final_text("完成")])
-    config = {"configurable": {"thread_id": str(uuid4())}}
-    old = create_agent(
-        model=model,
-        tools=[],
-        state_schema=AgentGraphState,
-        checkpointer=saver,
-        middleware=[ProgressMiddleware(enabled=True), StageReportMiddleware(enabled=True)],
-        interrupt_before=["ProgressMiddleware.before_model"],
-    )
-    await old.ainvoke(
-        cast(
-            Any,
-            {
-                "state_schema_version": 6,
-                "messages": [HumanMessage(content="保留旧节点", id="original")],
-            },
-        ),
-        cast(Any, config),
-    )
-    new = create_agent(
-        model=model,
-        tools=[],
-        state_schema=AgentGraphState,
-        checkpointer=saver,
-        middleware=[ProgressMiddleware(enabled=False), StageReportMiddleware(enabled=False)],
-    )
-    before = await new.aget_state(cast(Any, config))
-    assert before.next == ("ProgressMiddleware.before_model",)
-    migrated = await ensure_current_checkpoint(new, config, before, database=None, session_id=None)
-    assert migrated.next == before.next
-    result = await new.ainvoke(None, cast(Any, config))
-    assert result["messages"][-1].content == "完成"
-    assert "progress_feedback" not in result and "report_retry_key" not in result
-
-
 async def test_v7_finish_node_resumes_without_review_or_history_rewrite():
     from agent_workbench.agent.middleware.finish_gate import FinishGateMiddleware
 

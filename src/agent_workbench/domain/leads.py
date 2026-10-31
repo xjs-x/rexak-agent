@@ -332,7 +332,7 @@ class LeadService:
                 except ValueError as exc:
                     raise ApiError(ErrorCode.VALIDATION_FAILED, f"条件引用 {field} 必须为对象 ID") from exc
                 valid = dependency is not None and (
-                    dependency.project_id == owner.project_id if isinstance(dependency, IdentityRow) and owner else getattr(dependency, "session_id", None) == session_id
+                    (dependency.session_id == owner.id or dependency.id == owner.active_identity_id) if isinstance(dependency, IdentityRow) and owner else getattr(dependency, "session_id", None) == session_id
                 )
                 if not valid:
                     raise ApiError(ErrorCode.VALIDATION_FAILED, f"条件引用 {field} 不属于当前会话/项目")

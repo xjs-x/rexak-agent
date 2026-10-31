@@ -21,6 +21,7 @@ from typing import Any
 from agent_workbench.config.settings import Settings, get_settings
 from agent_workbench.contracts.tool import ExecutorCapabilities
 from agent_workbench.tools.attachments import ATTACHMENT_TOOLS
+from agent_workbench.tools.binary import BINARY_TOOLS
 from agent_workbench.tools.browser import BROWSER_TOOLS
 from agent_workbench.tools.commands import COMMAND_TOOLS
 from agent_workbench.tools.evidence import EVIDENCE_TOOLS
@@ -35,7 +36,6 @@ from agent_workbench.tools.http import HTTP_TOOLS
 from agent_workbench.tools.jobs import JOB_TOOLS
 from agent_workbench.tools.knowledge import KNOWLEDGE_TOOLS
 from agent_workbench.tools.session_graph import GRAPH_TOOLS
-from agent_workbench.tools.shadow_test_profile import run_http_test_profile
 from agent_workbench.tools.skills import SKILL_TOOLS
 from agent_workbench.tools.task import TASK_TOOLS
 from agent_workbench.tools.terminals import TERMINAL_TOOLS
@@ -47,7 +47,6 @@ class ToolSelection:
     """一次 run 的工具选择。reason 用于把"为什么关掉某组"写进诊断。"""
 
     http: bool = True
-    http_test_profiles: bool = False
     #: 浏览器工具。真实可用性由 Executor 的能力预检决定；不可用时执行岛会返回
     #: `browser_unavailable`，控制端据此给出确定失败，而不是假装成功。
     browser: bool = True
@@ -78,7 +77,6 @@ class ToolSelection:
     def to_manifest(self) -> dict[str, Any]:
         return {
             "http": self.http,
-            "http_test_profiles": self.http_test_profiles,
             "browser": self.browser,
             "files": self.files,
             "evidence": self.evidence,
@@ -145,9 +143,6 @@ def default_selection(
     由工具内的能力核对给出确定失败；运行时（Runner 预检之后）必须传入真实能力。
     """
     cfg = settings or get_settings()
-    profiles_enabled = (cfg.history_action_test_profiles_enabled
-                        and cfg.history_action_shadow_context_path is not None
-                        and capabilities is not None and capabilities.http_available)
     _ = cfg
     reasons: dict[str, str] = {
         "browser": "浏览器工具已实现；若执行岛没有可用浏览器，动作会返回 browser_unavailable。",
@@ -188,7 +183,6 @@ def default_selection(
             reasons["terminals"] = capabilities.execution_reason("pty") or "PTY 能力不可用"
 
     return ToolSelection(
-        http_test_profiles=profiles_enabled,
         knowledge=not cfg.blind_test, graph=cfg.session_graph_enabled, legacy_memory=not cfg.session_graph_enabled,
         command=command_ok,
         terminals=pty_ok,
@@ -203,10 +197,9 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
     chosen = selection or default_selection()
     tools: list[Any] = []
     tools.extend(ATTACHMENT_TOOLS)
+    tools.extend(BINARY_TOOLS)
     if chosen.http:
         tools.extend(HTTP_TOOLS)
-        if chosen.http_test_profiles:
-            tools.append(run_http_test_profile)
     if chosen.files:
         tools.extend(FILE_TOOLS)
     if chosen.browser:

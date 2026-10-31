@@ -7,10 +7,9 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from agent_workbench.agent.history_assistance import memory_view
+from agent_workbench.agent.history_assistance import encoded, memory_view
 from agent_workbench.contracts.decision_memory import DecisionInput, MemorySnapshot
 from agent_workbench.domain.decision_memory import select_memory
-from agent_workbench.domain.passive_reflection import encoded
 
 
 def latest_requests():

@@ -1,5 +1,30 @@
 # 实现状态（P0–P9）
 
+当前公开交付结果见 [v1.0 验收摘要](validation-v1.md)。本页按时间保留各阶段记录，历史部署状态与测试范围不代表后续状态。
+
+## 2026-10-30：v1.0 工程收尾
+
+双图已接真实只读 API，支持手动刷新与 owner 隔离。旧 passive/Shadow/Progress 运行路径和专用配置已删除，
+保留 Decision Memory、执行幂等和历史读取。新迁移 f19a30b742c1 恢复资产写入所需唯一约束。
+工程、浏览器及部署的最终验证状态以 [收尾报告](../reports/v1-finalization.md) 为准；
+日常实例有未解决队列，本轮不强制迁移或启动 Runner，不能标为已正式上线。
+
+
+## 2026-10-28：独立聊天与项目归类
+
+已实现对话右键重命名/确认删除、项目创建/重命名、无项目的新聊天；项目仅归类，
+聊天历史、任务、身份与记忆按会话隔离。旧项目和历史聊天保留，迁移不清库。
+相关回归 66 passed，最后定向 48 passed，前端 11 passed，桌面入口相关 19 passed。
+本机新版服务与原桌面入口已核对，Kali 哈希/身份/能力一致并保留原进程。
+全量仍有既有资产注册约束问题；用户要求停止重复测试后未继续运行，不能标记全量通过。
+详见[交付记录](../reports/chat-organization-20261028.md)与 [decision 0017](decisions/0017-chat-organization-and-deletion.md)。
+
+## 2026-10-27：控制端二进制附件静态分析 v1
+
+PE/ELF 结构与字符串、函数来源、x86/x64 分页反汇编和有限引用五个只读工具已实现，继续使用原 create_agent 和附件授权。共享 CAS，独立分析记录/租约缓存；二进制头识别后可使用 64 MiB 上限，工具 JSON 强制不超过 8 KiB。无执行/传输 Kali/反编译；原 Runner、Decision Memory 和双图机制保持。
+
+工程证据：P0 30 passed，最终定向 46 passed，前端 7 passed；真实 Raphael 样本的结构、Web 字符串、函数/引用及上传恢复实测通过。最终全量 1,044 passed、3 skipped，仍有开发前已复现的 4 项 schema/asset 失败，详情见[实施报告](../reports/binary-analysis-v1-implementation.md)。真实当前模型试验触及测试图步数边界，NOT_COMPLETED；浏览器因 Computer Use URL 检查停止，NOT_VERIFIED。日常实例未迁移/重启，Kali 只读核对一致，不能标记已上线或真实自主效果通过。
+
 > 本文件是 `IMPLEMENTATION_CHECKLIST.md` 在本仓库的落地记录。
 > **只有具备验证证据的条目才标 ✅**；未验证的一律标 ⬜ / ⛔，不用"已支持"文案。
 
@@ -200,7 +225,7 @@
 | 独立核验器；模型提出发现不直接 confirmed | 🟡 | `verify_public_git_head` 已接入工具注册表：先校验候选的原始 HTTP 工件，再以隔离身份发起新的 GET；代码核对两个操作、响应格式与文件哈希后才写确认记录，并把结论限定为 Git HEAD 引用可读。集成测试覆盖成功、伪证据、重复操作、文件篡改与报告引用；真实小米任务及执行岛端到端复测尚未做，其他漏洞类型仍保持 candidate |
 | `propose_completion` 与 `finish_gate`，不加独立评审模型调用 | ✅ | `runtime/stopping.FinishGate` 不调模型；已确认发现逐个核对独立验证记录与工件哈希 |
 | 开放探索收尾做覆盖缺口复查 | ✅ | `FinishGate._coverage_gap`；零登记覆盖不能宣称收敛，重点线索仅设为 deferred 不能绕过检查 |
-| 无进展检查去重；区分工具故障/模型重复/有效阴性 | 🟡 | `ProgressMiddleware` 按去重证据、入口、线索、覆盖、验证计算签名；连续 3 轮提示换路线，8 轮在模型调用前暂停并保留任务。假模型 + PostgreSQL checkpoint 已验证，真实模型效果待评测 |
+| 无进展检查去重；区分工具故障/模型重复/有效阴性（已退役，仅历史记录） | ⛔ | `ProgressMiddleware` 按去重证据、入口、线索、覆盖、验证计算签名；连续 3 轮提示换路线，8 轮在模型调用前暂停并保留任务。假模型 + PostgreSQL checkpoint 已验证，真实模型效果待评测 |
 | 明确目标与开放探索两种停止口径 | ✅ | `CompletionReason.GOAL_ANSWERED` / `EXPLORATION_CONVERGED` |
 | 报告快照、Markdown/HTML 模板、引用校验、版本管理、脱敏导出 | ✅ | `domain/reports.py` 两段短事务发布版本；确认项要求独立验证、同任务工件、未截断且文件哈希通过；旧版本保留、报告和证据受保护；API 集成测试通过 |
 

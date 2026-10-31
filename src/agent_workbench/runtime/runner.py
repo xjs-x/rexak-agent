@@ -892,11 +892,6 @@ class AgentRunner:
         finally:
             # checkpointer / store 连接成对关闭（生命周期由本函数持有）
             try:
-                if getattr(settings, "history_action_shadow_enabled", False) and toolbox.history_action_shadow is not None:
-                    try:
-                        await toolbox.history_action_shadow.aclose()
-                    except Exception as exc:
-                        log.warning("history_action_shadow_close_failed", error_type=type(exc).__name__)
                 with contextlib.suppress(Exception):
                     await runtime_ctx.__aexit__(None, None, None)
             finally:

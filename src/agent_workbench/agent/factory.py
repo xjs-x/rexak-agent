@@ -34,7 +34,6 @@ from agent_workbench.agent.middleware import (
 )
 from agent_workbench.agent.middleware.command_guard import CommandGuardMiddleware
 from agent_workbench.agent.middleware.history_assistance import HistoryAssistanceMiddleware
-from agent_workbench.agent.middleware.progress import ProgressMiddleware
 from agent_workbench.agent.middleware.response_recovery import ResponseRecoveryMiddleware
 from agent_workbench.agent.middleware.segment import SegmentMiddleware
 from agent_workbench.agent.middleware.skills import SkillsMiddleware
@@ -201,7 +200,6 @@ def build_agent_middleware(
             else []
         ),
         SegmentMiddleware(settings.segment_decision_rounds),
-        *([ProgressMiddleware(enabled=False)] if legacy_protocol_checkpoint else []),
         WorkingContextMiddleware(),
         *([StageReportMiddleware(enabled=False)] if legacy_protocol_checkpoint else []),
         ResponseRecoveryMiddleware(
@@ -290,7 +288,7 @@ async def open_agent_runtime(
             legacy_protocol_checkpoint=bool(
                 saved
                 and any(
-                    "ProgressMiddleware." in str(key) or "StageReportMiddleware." in str(key)
+                    "StageReportMiddleware." in str(key)
                     for field in ("versions_seen", "channel_versions", "channel_values")
                     for key in (saved.checkpoint.get(field) or {})
                 )

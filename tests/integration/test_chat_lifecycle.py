@@ -5,7 +5,6 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 
 from agent_workbench.api.app import create_app
 from agent_workbench.config.settings import get_settings
@@ -119,33 +118,26 @@ async def test_empty_scope_chat_creation_delete_and_cancel_without_model(databas
         assert task["scope"]["rules"] == []
         assert client.delete(f"/api/sessions/{task['id']}").status_code == 403
         removed = client.delete(f"/api/sessions/{task['id']}", headers=headers)
-        assert removed.status_code == 200, removed.text
-        assert removed.json()["cancellation_pending"] is True
-        assert client.get(f"/api/projects/{project_id}/sessions").json()["sessions"] == []
-        assert (
-            client.post(
-                f"/api/sessions/{task['id']}/messages",
-                headers={
-                    **headers,
-                    "Idempotency-Key": str(uuid4()),
-                },
-                json={"content": "继续"},
-            ).status_code
-            == 404
-        )
-        assert client.delete(f"/api/sessions/{task['id']}", headers=headers).status_code == 200
+        assert removed.status_code == 409, removed.text
+        assert len(client.get(f"/api/projects/{project_id}/sessions").json()["sessions"]) == 1
+        cancelled = client.post(f"/api/runs/{run_id}/cancel", headers={
+            **headers, "Idempotency-Key": str(uuid4()),
+        })
+        assert cancelled.status_code == 202, cancelled.text
     runner = AgentRunner(database=database)
     from uuid import UUID
 
     outcome = await runner.step(only_run_id=UUID(run_id))
     assert outcome and outcome.status is RunStatus.CANCELLED
+    with TestClient(create_app()) as client:
+        headers = {"X-Workbench-CSRF": client.post("/api/session").json()["csrf_token"]}
+        removed = client.delete(f"/api/sessions/{task['id']}", headers=headers)
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["cancellation_pending"] is False
+        assert client.get(f"/api/projects/{project_id}/sessions").json()["sessions"] == []
     async with database.session() as db:
-        row = (
-            await db.execute(select(SessionRow).where(SessionRow.id == UUID(task["id"])))
-        ).scalar_one()
-        assert row.status == "deleted"
-        run = (await db.execute(select(RunRow).where(RunRow.id == UUID(run_id)))).scalar_one()
-        assert run.control_version == 1
+        assert await db.get(SessionRow, UUID(task["id"])) is None
+        assert await db.get(RunRow, UUID(run_id)) is None
 
 
 async def test_production_selection_and_recovery_never_touch_other_owners(database, unique_name):

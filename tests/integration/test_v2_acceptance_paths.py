@@ -39,15 +39,32 @@ from agent_workbench.models.invocation import InvocationScope, invoke_chat_model
 from agent_workbench.models.provider import ModelBinding
 from agent_workbench.models.response_quality import ModelResponseIncomplete
 from agent_workbench.models.xiaomi import XiaomiChatOpenAI
+from agent_workbench.persistence.repositories import ToolOperationRepository
 from agent_workbench.persistence.tables import ModelCallRow, ReportVersionRow, ToolOperationRow
 from agent_workbench.tools.http import HttpRequestArgs, run_http_request
 from agent_workbench.tools.task import _evidence_operation_context, _link_asset
-from tests.integration.test_progress import _operation
 from tests.integration.test_request_budget import context_for
 from tests.support.scripted_model import ScriptedChatModel
 from tests.unit.test_context_budget import profile
 
 pytestmark = pytest.mark.integration
+
+async def _operation(database, context, *, digest: str, tool_call_id: str, status: str):
+    async with database.transaction() as db:
+        row, _created = await ToolOperationRepository(db).prepare(
+            operation_id=uuid4(),
+            run_id=context.toolbox.run_id,
+            session_id=context.toolbox.session_id,
+            tool_call_id=tool_call_id,
+            tool_name="http_request",
+            request_digest=digest,
+            effect_class="read_only",
+            policy_revision=1,
+            scope_revision=1,
+            dispatch_control_version=1,
+        )
+        row.status = status
+    return row
 
 
 async def test_actual_wire_recovery_limit_matches_manifest_and_each_attempt(database, unique_name):

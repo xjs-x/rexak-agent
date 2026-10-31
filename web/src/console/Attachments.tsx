@@ -13,6 +13,18 @@ export function useAttachments(sessionId: string, prepare?: () => Promise<string
   const sessionRef = useRef<Promise<string> | null>(null);
   const controllers = useRef(new Map<string, AbortController>());
   const generation = useRef(0);
+  const [capabilities, setCapabilities] = useState<Awaited<ReturnType<typeof api.attachmentCapabilities>> | null>(null);
+  const capabilitiesPromise = useRef<ReturnType<typeof api.attachmentCapabilities> | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (enabled) {
+      capabilitiesPromise.current = api.attachmentCapabilities();
+      void capabilitiesPromise.current.then((value) => { if (active) setCapabilities(value); })
+        .catch((error) => { if (active) { capabilitiesPromise.current = null; setRecoveryError(`读取附件限制失败：${String(error)}`); } });
+    }
+    return () => { active = false; };
+  }, [enabled]);
 
   useEffect(() => {
     generation.current++;
@@ -24,7 +36,7 @@ export function useAttachments(sessionId: string, prepare?: () => Promise<string
       if (version !== generation.current) return;
       setFiles((current) => [...current, ...page.attachments.filter((a) => a.status === "temporary")
         .filter((a) => !current.some((p) => p.attachment?.attachment_id === a.attachment_id))
-        .slice(0, Math.max(0, 5 - current.length)).map((a): Pending => ({ key: crypto.randomUUID(),
+        .slice(0, Math.max(0, (capabilities?.max_per_message ?? 5) - current.length)).map((a): Pending => ({ key: crypto.randomUUID(),
           name: a.filename, size: a.size, type: a.content_type, progress: 100, state: "ready", attachment: a }))]);
     }).catch((error) => {
       if (version === generation.current) setRecoveryError(`恢复临时附件失败：${String(error)}`);
@@ -46,6 +58,14 @@ export function useAttachments(sessionId: string, prepare?: () => Promise<string
     controllers.current.set(item.key, controller);
     patch(item.key, { state: "uploading", progress: 0, error: undefined });
     try {
+      if (!capabilitiesPromise.current) capabilitiesPromise.current = api.attachmentCapabilities();
+      const limits = await capabilitiesPromise.current;
+      if (version !== generation.current || controller.signal.aborted) return;
+      setCapabilities(limits);
+      if (filesRef.current.length > limits.max_per_message) throw new Error(`单消息最多选择 ${limits.max_per_message} 个附件，请移除多余文件后重试。`);
+      const binary = /\.(exe|dll|elf|sys|so|bin)$/i.test(item.name) || !item.name.includes(".");
+      const maximum = binary ? limits.binary_max_bytes : limits.max_bytes;
+      if (item.size > maximum) throw new Error(`文件超过上传上限 ${formatSize(maximum)}；二进制上限仅适用于真实 PE/ELF。`);
       if (!sessionRef.current) {
         if (!prepare) throw new Error("当前无法创建附件会话");
         sessionRef.current = prepare().catch((error) => { sessionRef.current = null; throw error; });
@@ -69,8 +89,9 @@ export function useAttachments(sessionId: string, prepare?: () => Promise<string
 
   const add = (selected: File[]) => {
     if (!enabled) throw new Error("当前后端尚未加载附件版本，请等待服务切换完成");
-    const slots = 5 - filesRef.current.length;
-    if (selected.length > slots) throw new Error("单消息最多选择 5 个附件");
+    const maximum = capabilities?.max_per_message ?? 5;
+    const slots = maximum - filesRef.current.length;
+    if (selected.length > slots) throw new Error(`单消息最多选择 ${maximum} 个附件`);
     const added = selected.map((file): Pending => ({ key: crypto.randomUUID(), file,
       name: file.name, size: file.size, type: file.type || "未知类型", progress: 0, state: "uploading" }));
     filesRef.current = [...filesRef.current, ...added];
@@ -86,7 +107,7 @@ export function useAttachments(sessionId: string, prepare?: () => Promise<string
     setFiles((current) => current.filter((p) => p.key !== item.key));
   };
 
-  return { files, add, remove, retry: upload, recoveryError,
+  return { files, add, remove, retry: upload, recoveryError, capabilities,
     blocked: files.some((p) => p.state !== "ready"),
     async payload() { return { ids: files.map((p) => p.attachment!.attachment_id),
       session: files.length && sessionRef.current ? await sessionRef.current : sessionId }; },
@@ -97,15 +118,18 @@ export function useAttachments(sessionId: string, prepare?: () => Promise<string
 export function PendingAttachments({ queue, onError, disabled }: {
   queue: ReturnType<typeof useAttachments>; onError: (message: string) => void; disabled?: boolean;
 }) {
-  return <div className="attachment-list">{queue.recoveryError && <small className="chat-error">{queue.recoveryError}</small>}{queue.files.map((item) => <div className="attachment-card" key={item.key}>
-    <strong>{item.name}</strong><small>{item.type} · {formatSize(item.size)}</small>
-    {item.state === "uploading" && <><progress value={item.progress} max={100} />
-      <small>{item.progress === 100 ? "上传完成，服务端解析中…" : `上传 ${item.progress}%`}</small></>}
-    {item.state === "ready" && <small>已保存 · {item.attachment?.metadata?.note as string || "可按需读取"}</small>}
-    {item.error && <small className="chat-error">{item.error}</small>}
-    {item.state === "failed" && <button type="button" disabled={disabled} onClick={() => void queue.retry(item)}>重试上传</button>}
-    <button type="button" disabled={disabled} onClick={() => void queue.remove(item).catch((e) => onError(String(e)))}>移除</button>
-  </div>)}</div>;
+  return <div className="attachment-list">
+    {queue.recoveryError && <small className="chat-error">{queue.recoveryError}</small>}
+    {queue.files.map((item) => <div className="attachment-card" key={item.key}>
+      <strong>{item.name}</strong><small>{item.type} · {formatSize(item.size)}</small>
+      {item.state === "uploading" && <><progress value={item.progress} max={100} />
+        <small>{item.progress === 100 ? "上传完成，服务端解析中…" : `上传 ${item.progress}%`}</small></>}
+      {item.state === "ready" && <small>已保存 · {item.attachment?.metadata?.note as string || "可按需读取"}</small>}
+      {item.error && <small className="chat-error">{item.error}</small>}
+      {item.state === "failed" && <button type="button" disabled={disabled} onClick={() => void queue.retry(item)}>重试上传</button>}
+      <button type="button" disabled={disabled} onClick={() => void queue.remove(item).catch((e) => onError(String(e)))}>移除</button>
+    </div>)}
+  </div>;
 }
 
 export function AttachmentCards({ sessionId, attachments }: { sessionId: string; attachments: Attachment[] }) {
@@ -114,6 +138,20 @@ export function AttachmentCards({ sessionId, attachments }: { sessionId: string;
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const requestId = useRef(0);
+  const [analyses, setAnalyses] = useState<Awaited<ReturnType<typeof api.attachmentAnalyses>>>([]);
+  const [analysesLoaded, setAnalysesLoaded] = useState(false);
+  useEffect(() => {
+    setAnalyses([]);
+    setAnalysesLoaded(false);
+    if (!selected || !isBinary(selected)) return;
+    let active = true;
+    const refresh = () => void api.attachmentAnalyses(sessionId, selected.attachment_id)
+      .then((value) => { if (active) { setAnalyses(value); setAnalysesLoaded(true); } })
+      .catch((e) => { if (active) setError(`读取分析状态失败：${String(e)}`); });
+    refresh();
+    const timer = window.setInterval(refresh, 2500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [selected, sessionId]);
   const load = async (attachment: Attachment, cursor: Record<string, number> = {}) => {
     const currentRequest = ++requestId.current;
     setLoading(true); setError("");
@@ -127,7 +165,7 @@ export function AttachmentCards({ sessionId, attachments }: { sessionId: string;
     <div className="attachment-list">{attachments.map((a) => <button type="button" className="attachment-card"
       key={a.attachment_id} onClick={() => { requestId.current++; setSelected(a); setSlice(null); setError(""); setLoading(false); if (a.readable) void load(a); }}>
       <strong>{a.filename}</strong><small>{a.content_type} · {formatSize(a.size)}</small>
-      <small>{a.parse_status} · 用户资料</small>
+      <small>{isBinary(a) ? "二进制资料 · 点击查看静态分析状态" : `${a.parse_status} · 用户资料`}</small>
     </button>)}</div>
     {selected && <div className="attachment-overlay" onClick={() => setSelected(null)}>
       <section className="attachment-preview" role="dialog" aria-modal="true" aria-label="附件预览" onClick={(e) => e.stopPropagation()}>
@@ -137,6 +175,10 @@ export function AttachmentCards({ sessionId, attachments }: { sessionId: string;
         <p>用户提供的资料，不代表已验证的事实或测试授权。</p>
         <small className="mono">SHA256: {selected.sha256}</small>
         <p>{String(selected.metadata?.note ?? "")}</p>
+        {isBinary(selected) && <div><p>{!analysesLoaded ? "正在读取静态分析状态…" : analyses.length ? "静态分析记录" : "未分析；Agent 可按需调用二进制静态分析工具。"}</p>
+          {analyses.map((a) => <div key={a.analysis_id}><small>{a.kind} · {analysisLabel(a.status)} · {a.analysis_id}</small>
+            <pre>{JSON.stringify(a.summary, null, 2)}</pre>{a.error_type && <p>{a.error_type}</p>}</div>)}
+          <p>反汇编与引用可在工具活动中查看；不提供反编译或运行文件。</p></div>}
         <a href={`/api/sessions/${sessionId}/attachments/${selected.attachment_id}/content`} download>下载原文件</a>
         {selected.content_type.startsWith("image/") && selected.parse_status === "metadata_only" &&
           <img alt={selected.filename} src={`/api/sessions/${sessionId}/attachments/${selected.attachment_id}/content?preview=true`} />}
@@ -151,4 +193,6 @@ export function AttachmentCards({ sessionId, attachments }: { sessionId: string;
   </>;
 }
 
-function formatSize(size: number) { return size < 1024 ? `${size} B` : size < 1048576 ? `${(size / 1024).toFixed(1)} KiB` : `${(size / 1048576).toFixed(1)} MiB`; }
+export function formatSize(size: number) { return size < 1024 ? `${size} B` : size < 1048576 ? `${(size / 1024).toFixed(1)} KiB` : `${(size / 1048576).toFixed(1)} MiB`; }
+function isBinary(a: Attachment) { return a.metadata?.binary_candidate === true || /\.(exe|dll|elf|sys|so|bin)$/i.test(a.filename); }
+function analysisLabel(status: string) { return ({ pending: "分析中", ready: "已分析", failed: "分析失败", interrupted: "已中断，可重试", unsupported: "此格式不支持深入分析" } as Record<string, string>)[status] ?? status; }

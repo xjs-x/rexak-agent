@@ -182,7 +182,7 @@ async def build_blackboard(
             for i, revision in (
                 await db.execute(
                     select(IdentityRow.id, IdentityRow.auth_revision).where(
-                        IdentityRow.project_id == task.project_id,
+                        ((IdentityRow.session_id == task.id) | (IdentityRow.id == task.active_identity_id)),
                         IdentityRow.id.in_([UUID(key) for key in expected_auth]),
                     )
                 )

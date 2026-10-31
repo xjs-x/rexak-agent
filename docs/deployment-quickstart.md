@@ -56,3 +56,27 @@ uv run python scripts/deploy_executor.py --wheel data/tmp/deployment/workbench_e
 - Kali 日志：安装目录下的 `executor.log`，默认 `~/rexak-agent-executor/executor.log`。
 
 只停止数据库使用 `docker compose stop postgres`。不要将 `docker compose down -v`当作日常操作，它会删除数据库卷。
+
+
+## v1.0 安全切换与独立验收
+
+当前版本移除旧 passive/Shadow/Progress 配置与工具，不需要配置关闭这些功能。
+历史模式读取兼容，不覆盖 `.env`；Decision Memory 的现有 memory/off 与运维 force_off 保留。
+
+更新前先核对 API/Runner 进程、非终态 Run、有效租约、Job 及开放资源。停止新任务提交；
+有无法确认的执行状态或历史队列时，先在原版本按运行控制完成暂停/对账，不要启动会自动领取历史队列的 Runner。
+不要靠清库、清 STOP、改 Run 状态或删除队列完成更新。
+
+1. 保存当前源码与配置备份，使用 `uv run workbench backup --docker-container workbench-postgres` 备份日常库与工件。
+2. 安装锁定依赖，构建前端；修改 `.env.example` 不代表要覆盖已有 `.env`。
+3. 在维护窗口执行 `uv run workbench db-init`。新迁移恢复资产身份唯一约束；有重复历史键时事务回滚，保留数据并调查，不自动删行。
+4. 先用 `start-workbench.cmd --api-only` 或 `uv run workbench api` 验证健康、登录、历史聊天、图和工件读取。
+5. 明确选择本次允许继续的任务后再启动 Runner。CLI 支持的 `--run-id`、`--once`、`--no-recover` 以 `uv run workbench runner --help` 为准；不要把不扫描恢复误当成不领取 queued。
+6. Executor 文件相同且身份/能力一致时保留原进程；确有更新才按现有部署脚本检查活动作业、安装和核对新 boot_id。
+
+需要独立验证时设置专用 `WORKBENCH_DATABASE_URL`、`WORKBENCH_DATA_ROOT`、`WORKBENCH_API_PORT`，
+使用无历史队列的隔离库。API 和 Runner 必须共用同一隔离配置。不要向日常实例注入验收任务。
+测试脚本与 Mock 模型只能证明协议、持久化、恢复和安全边界，不能证明真实靶场效果。
+
+API/Runner 重启加载新代码；停止启动窗口不会清除 Checkpoint、任务或工件。旧节点挂起的退役模式不再继续执行，
+只读查看历史不要求重新启用旧检测器。原始记录保留，必要的任务迁移应单独维护处理。

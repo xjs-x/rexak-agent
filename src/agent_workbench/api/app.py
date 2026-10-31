@@ -176,9 +176,11 @@ def create_app() -> FastAPI:
     from agent_workbench.api.routes import router
 
     app.include_router(router)
+    from agent_workbench.api.attachments import capabilities_router
     from agent_workbench.api.attachments import router as attachments_router
 
     app.include_router(attachments_router)
+    app.include_router(capabilities_router)
     # 执行底座：会话资源 / 输出 / 值班 / 环境（不驱动 Agent，不把 stdout 塞 SSE）
     app.include_router(execution_router)
     from agent_workbench.api.skills import router as skills_router

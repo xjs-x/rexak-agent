@@ -1,7 +1,7 @@
 """身份模型：project / session / run / command。
 
 生命周期与规则见 BUILD_PLAN §4.1：
-- project：一个被测网站/业务项目，隔离经验、账号、历史任务；
+- project：仅归类聊天，不授予跨会话读取历史、账号或记忆的权限；
 - session：一次可持续对话的测试任务，映射**一个稳定 graph thread_id**；
 - run：一次用户启动的自主工作阶段；阶段结束后继续输入创建**新 run**，沿用 session/thread；
 - command：一条用户指令，幂等提交、排队、消费记录。
@@ -95,7 +95,7 @@ class PolicySnapshot(_Base):
 
 
 class ProjectCreate(_Base):
-    name: str
+    name: str = Field(min_length=1, max_length=256)
     target_description: str
     default_scope: ScopeSnapshot = Field(default_factory=ScopeSnapshot)
     settings_version: str = "1"
@@ -126,7 +126,7 @@ class IdentityRef(_Base):
 class SessionCreate(_Base):
     draft: bool = False
     initial_skill_refs: list[str] = Field(default_factory=list, max_length=20)
-    project_id: UUID
+    project_id: UUID | None = None
     title: str
     initial_objective: str
     scope: ScopeSnapshot = Field(default_factory=lambda: ScopeSnapshot(mode="instruction"))
@@ -139,7 +139,7 @@ class SessionCreate(_Base):
 
 class Session(_Base):
     id: UUID
-    project_id: UUID
+    project_id: UUID | None = None
     active_identity_id: UUID | None = None
     #: 稳定映射：同一 session always 使用同一 thread_id
     thread_id: str
