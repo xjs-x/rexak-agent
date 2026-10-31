@@ -1,278 +1,273 @@
-# Agent Workbench
+# rexak-agent
 
-个人使用的 **Web / API 自主黑盒测试工作台**。
+**LLM-Driven Autonomous Security Testing Agent**
 
-用户创建项目与任务，提供测试范围与可选测试账号；Agent 自主探索目标、维护假设、
-选择工具、验证线索并持续产出带证据的结论。在目标达成、探索收敛或需要用户补充条件时
-结束本阶段，后续输入继续沿用同一任务记录。
+面向授权 Web / API 安全测试与 CTF 场景的自主 Agent 工作台。用户给出目标与授权范围，Agent 组织测试步骤、调用远程工具，并根据回显调整行动、生成结果。项目将 LangChain / LangGraph 模型循环与独立 Runner、Kali 执行岛、持久化状态和证据链结合，使多步骤测试可观察、可恢复、可追溯。
 
-本仓库是独立新项目，**不 import 旧 `xak` 包、不依赖旧目录存在、不继承旧数据库结构**。
-架构决策见 [docs/decisions](docs/decisions/)，实现和验收状态见 [docs/implementation-status.md](docs/implementation-status.md)。新成员部署不依赖其他本地项目目录。
+[核心能力](#核心能力) · [系统架构](#系统架构) · [快速开始](#快速开始) · [验证与案例](#验证与案例) · [项目文档](#项目文档)
 
----
+## 控制台预览
 
-## 1. 三个进程
+真实 React Web Console 集成对话、运行控制、工具记录与 Session 双图。下图来自 **2026-10-30 真实后端验收**，使用隔离数据库中的 **Demo 夹具**，展示信息关系和节点详情，不代表真实漏洞发现。
 
-| 进程 | 运行位置 | 职责 | 禁止承担 |
-|---|---|---|---|
-| **API** | 控制端（本机 Windows） | 指令持久化、查询、SSE、配置、工件授权读取 | 在请求处理函数里运行整段 Agent |
-| **Runner** | 控制端 | 驱动 Agent、读指令、调模型、调度工具、恢复 | 直接在控制机执行模型生成的命令 |
-| **Executor** | 独立 Linux/Kali 执行岛 | 浏览器、HTTP 会话、命令、后台任务、执行输出 | 持有模型 API Key 或控制端数据库凭据 |
+![真实控制台中的 Information Graph，数据为隔离验收 Demo](docs/assets/readme/information-graph.jpg)
 
-**运行与浏览器连接解耦**：关闭网页、SSE 断开都不会停止任务。
+<details>
+<summary>查看更多：攻击状态图与工具执行详情</summary>
 
-```
-UI(React) ──REST/SSE──> API ──> PostgreSQL
-                         ▲
-Runner ──模型──> 小米/后续供应商
-   └──SSH 隧道──> Executor(执行岛) ──> 目标网站/API
-                      └──> 岛上工件与执行台账
-```
+**Attack State Graph｜攻击状态图**：同一隔离验收 Demo，手动刷新后读取到图版本 v4。
 
----
+![真实后端返回的攻击状态图，数据为隔离验收 Demo](docs/assets/readme/attack-state-graph.jpg)
 
-## 2. 环境要求
+**工具执行详情**：2026-10-11 真实前端验收截图，使用不联网的 Demo 工具，展示参数、结果、失败状态及脱敏投影。此图为历史界面，当前布局已有调整。
 
-首次 clone 请按 [新成员部署指南](docs/team-setup.md)准备自己的 Kali、SSH 和本地配置；日常启动/更新见 [部署指南](docs/deployment-quickstart.md)。Executor 的配置边界与浏览器登录细节见 [P3–P5 部署说明](docs/p3-p5-deployment.md)。
+![工具调用、执行状态及脱敏结果的历史 Demo 截图](docs/assets/readme/tool-execution.png)
 
-| 组件 | 版本 | 说明 |
+截图均来自实际应用，无真实 API Key、Cookie、Token、靶场答案或私有目标地址。来源与验收范围见[公开验收摘要](docs/validation-v1.md)。
+
+</details>
+
+## 核心能力
+
+### 自主测试执行｜Autonomous Execution
+
+官方 `create_agent` 是唯一模型—工具循环，LangGraph 负责编排状态。Agent 结合目标、工具反馈和历史证据决定下一步，通过 `update_plan` 维护可选结构化计划；没有第二套独立 Planner 主循环。HTTP、浏览器、脚本及异步 Job 支持多阶段测试，普通模型答复自然结束，Runner 随后完成运行安全收尾。
+
+`WorkingContext` 汇集当前领域记录，`ContextBuilder` 为每次请求组织上下文和完整输入预算。中间件在请求、派发与片段边界处理用户指令、控制版本、响应恢复和模型调用记录；原始消息与实际发送视图有各自来源，便于复盘模型当时获得了哪些信息。
+
+### 远程工具与执行隔离｜Remote Execution
+
+控制端与 Kali Executor 分离。HTTP 请求、Playwright 浏览器、命令、脚本和 PTY 终端在执行岛运行，控制端通过 **SSH 隧道上的 HTTP API** 派发，执行子协议为 `/execution/v1`。模型密钥与数据库凭据留在控制端。
+
+工具调用经过参数、能力、Scope、Run 所有权及控制版本检查。耗时操作作为 Job 管理，支持输出游标、等待唤醒、取消和资源生命周期。命令/终端按 Executor 实际能力开放，可组合 Kali 已安装的安全测试工具；缺失能力明确报告，不回退到控制端执行。
+
+### 持久化与可靠恢复｜Durability & Recovery
+
+- **请求与运行解耦**：API 持久化用户指令，独立 Runner 取得租约后推进任务。浏览器断开不终止运行，SSE 提供状态与事件补读。
+- **Checkpoint 恢复**：Session 使用稳定 `thread_id`，PostgreSQL 保存 LangGraph Checkpoint；Run、指令、Operation 和事件分别持久化。
+- **执行幂等**：`(run_id, tool_call_id)` 关联稳定 Operation，同一身份重放复用结果、参数冲突被拒绝；Executor Ledger 记录远端实际执行。
+- **保留不确定性**：连接中断后先对账，`unknown` 不推断为失败，也不自动重做副作用。暂停、取消、租约失效与过期模型响应有独立处理边界。
+
+### 双图状态管理｜Dual Graphs
+
+| 图 | 组织内容 | 在复杂测试中的作用 |
 |---|---|---|
-| Python | **3.12.x** | `.python-version` 锁定 `3.12`；由 uv 管理 |
-| uv | ≥ 0.9 | 依赖与虚拟环境管理，需在 PATH 中可用 |
-| Node.js | 22 LTS | 前端构建 |
-| pnpm | 与 `web/package.json` 的 `packageManager` 一致 | 前端包管理 |
-| Docker + Compose | ≥ 27 | 仅用于本地 PostgreSQL |
-| SSH 客户端 | OpenSSH | 连接执行岛 |
+| **Information Graph / 信息关系图** | Entity、Relation 及来源引用 | 将接口、对象和关联整理成可查询的关系，追踪信息来自哪次操作或工件 |
+| **Attack State Graph / 攻击状态图** | AttackState、Attempt、关联实体及结果 | 记录已观察到的状态、状态之间的测试尝试，以及成功、失败或未知结果 |
 
----
+双图按 Session 隔离，领域表 `session_graphs.document` 是唯一文档真源；更新检查 revision、引用归属和同步页。控制台通过只读 API 查看图与详情、手动刷新。图是模型维护的工作资料，结构校验及来源引用不能替代独立语义验证，也不自动将模型判断提升为已确认漏洞。
 
-## 3. 干净安装与启动
+### 历史证据辅助｜Decision Memory
+
+在普通模型请求前检索**同一 Session** 的历史执行证据，结合身份、环境条件与结果可见性选择参考。参考以低权限数据投影加入发送视图，受字节和完整上下文预算限制；已有可见信息去重，不覆盖原始 ToolMessage、Checkpoint 或业务记录。
+
+新环境默认 `WORKBENCH_HISTORY_ASSISTANCE_MODE=memory`，可设为 `off`；模式在新 Run 创建时固定。它用于帮助模型参考已有证据，**目前没有可靠匹配对照证明它提高成功率或降低 Token 成本**。
+
+### 证据追溯与可视化｜Evidence & Console
+
+Operation、Job、工具回执、Artifact 与来源引用连接实际动作和最终答复。长正文及已归档输出保存为独立工件，使用内容哈希及归属校验；上下文、事件和 UI 使用摘要或脱敏投影。运行结束时归档模型最终答复，执行输出可显式导出，模型报告与执行证据分别保留。
+
+控制台支持独立聊天、项目归类、Session / Run 历史、工具状态、执行资源、附件与双图详情。项目用于整理聊天，会话之间不隐式共享身份与工作记忆。附件另提供受限文本解析和 PE / ELF 静态分析，不执行上传程序。
+
+## 系统架构
+
+```mermaid
+flowchart TB
+  UI["Web Console · React / TypeScript"]
+  API["FastAPI · 鉴权 / 指令 / 查询 / SSE"]
+  RUN["Runner · 租约 / 调度 / 暂停取消 / 恢复"]
+  LLM["LLM Provider"]
+
+  subgraph Runtime["Agent Runtime · 官方 create_agent / LangGraph"]
+    AGENT["模型与工具循环 · 动态决策 / 可选计划"]
+    CTX["Middleware · WorkingContext / ContextBuilder / Decision Memory"]
+    DISPATCH["ToolDispatch · 控制版本 / 权限 / 能力检查"]
+    AGENT <--> CTX
+    AGENT --> DISPATCH
+  end
+
+  subgraph Persistence["控制端持久化"]
+    APP[("PostgreSQL · app<br/>Session / Run / Command / Operation / 双图 / Event")]
+    CP[("PostgreSQL · agent_checkpoint / agent_memory<br/>LangGraph Checkpoint / Store")]
+    CAS[("Artifact Store · 原始输出 / 附件 / 最终答复")]
+  end
+
+  OPS["工具层 · OperationRegistry / ExecutorClient"]
+  GRAPH["图工具 · 来源 / revision / 同步页校验"]
+
+  subgraph Island["Kali Executor · 独立执行岛"]
+    EXEC["HTTP API · /execution/v1"]
+    LEDGER[("SQLite Ledger · 实际执行状态")]
+    TOOLS["HTTP / Playwright / Command / Script / PTY"]
+    EXEC <--> LEDGER
+    EXEC --> TOOLS
+  end
+  TARGET["授权测试目标"]
+
+  UI <-->|"HTTP / SSE"| API
+  API <-->|"指令写入 / 状态与证据读取"| APP
+  API --> CAS
+  RUN <-->|"领取指令 / 租约 / 事件"| APP
+  RUN --> AGENT
+  AGENT <--> LLM
+  AGENT <--> CP
+  CTX --> APP
+  DISPATCH --> GRAPH
+  GRAPH <--> APP
+  DISPATCH --> OPS
+  OPS <--> APP
+  OPS --> CAS
+  OPS <-->|"HTTP over SSH tunnel"| EXEC
+  RUN -->|"对账 / 事件补读"| OPS
+  TOOLS --> TARGET
+```
+
+**持久化让长任务脱离页面生命周期。** API 只提交指令，Runner 驱动 Agent；Checkpoint 负责执行状态与消息，领域表负责业务记录，Executor Ledger 负责实际执行状态，恢复时有可核对的依据。
+
+**控制与执行分离让凭据和工具权限各有边界。** 控制端负责模型调用、授权和证据组织，Kali 承载目标访问及系统工具。执行岛不等于系统级网络沙箱，部署仍需选择合适的信任与网络边界。
+
+**稳定身份使恢复不依赖盲目重试。** 同一逻辑调用复用 Operation，失联、取消或重启后先核对原 Job 和资源，避免将“没收到响应”理解为“没执行”。
+
+**图与 Memory 各有职责。** 双图组织测试知识与尝试关系，Decision Memory 在请求边界召回历史证据。二者服务于上下文和复盘，不代替执行台账或结果核验。更多见[实际架构](docs/architecture.md)。
+
+## 技术栈
+
+| 层次 | 实际使用的技术 |
+|---|---|
+| Agent | LangChain `create_agent`、LangGraph、PostgreSQL Checkpointer / Store |
+| Backend | Python 3.12、FastAPI、asyncio、Pydantic、SQLAlchemy Async、Alembic |
+| Persistence | PostgreSQL 16、内容寻址 Artifact、Executor SQLite Ledger |
+| Frontend | React、TypeScript、Vite、React Flow；OpenAPI 生成接口类型 |
+| Executor | Kali Linux、Python 3.12 / 3.13、HTTPX、Playwright / Chromium、HTTP + SSH Tunnel |
+| Development | uv Workspace、pnpm、Docker Compose（PostgreSQL）、pytest、Ruff、Pyright、Vitest |
+
+依赖以 [pyproject.toml](pyproject.toml)、[Executor 配置](executor/pyproject.toml)、[前端配置](web/package.json)及锁文件为准。
+
+## 快速开始
+
+当前验收部署路径是 **Windows 控制端 + 独立 Kali Executor**。需要 Git、uv、Docker Desktop、Node.js 22 LTS、pnpm **11.22.0**；Kali 需 SSH、Python **3.12 或 3.13**、venv 和 Chromium。先准备密钥登录并核对 SSH 主机指纹，详见[新成员指南](docs/team-setup.md)。
+
+### 1. 获取代码与配置
+
+v1.0 本次交付位于 `codex/implementation-v1` 分支：
 
 ```powershell
-# 1) 依赖（锁定版本，禁止未锁定的 latest）
+git clone --branch codex/implementation-v1 https://github.com/xjs-x/rexak-agent.git
+cd rexak-agent
 uv sync --frozen --all-packages --group dev
 
-# 2) 配置：自己的 Kali 地址；生成独立令牌，不覆盖既有 .env
-uv run python scripts/setup_workbench.py configure --executor-host <自己的Kali地址> --executor-user <SSH用户名>
-#    模型和 API Key 在启动后的 Web 模型设置中配置并保存，不写入仓库。
+# 替换为自己的 Kali 主机与 SSH 用户；配置器生成独立令牌
+uv run python scripts/setup_workbench.py configure --executor-host <KALI_HOST> --executor-user <SSH_USER>
+```
 
-# 3) 先按新成员指南完成 SSH 认证，再安装数据库、前端和 Kali Executor
+配置器从 [.env.example](.env.example) 创建个人 `.env`，已有文件时拒绝覆盖。连接、路径与授权令牌通过环境配置，不提交 `.env`。模型供应商、端点和 Key 在 Web「模型设置」中保存。
+
+### 2. 初始化数据库、前端和执行端
+
+保持 Docker Desktop 与 Kali 运行：
+
+```powershell
 uv run python scripts/setup_workbench.py install
 ```
 
-首次安装不启动 Runner，不调用模型或访问目标。每人的 `.env`被 Git 忽略；修改 Kali IP 无需修改源码。目标映射、登录状态与已验证能力边界见 [P3–P5 部署说明](docs/p3-p5-deployment.md)。
+安装器依次执行 `docker compose up -d --wait postgres`、`workbench db-init`、前端依赖安装与构建，再构建、部署 Executor，最后检查环境；不创建测试任务。它在指定 Kali 启用 `trusted` 模式，需使用专门的授权测试环境。详细过程与更新方法见[部署说明](docs/deployment-quickstart.md)。
 
-日常使用保留唯一启动入口：双击桌面 **Rexak Agent**，或在本项目目录运行：
+### 3. 启动与使用
 
 ```powershell
 .\start-workbench.cmd
 ```
 
-启动器检查数据库和 Kali Executor，启动 API、Runner 并打开控制台，不再在终端要求选择模型或输入 Key。
-在左侧“模型设置”填写供应商 Base URL 与 API Key，保存后下次启动仍可用。输入框上方可选择小米三款模型或百炼 `deepseek-v4.1-flash`。
-Windows Key 用当前用户 DPAPI 加密保存；同一供应商共用 Key，接口不返回原值。运行阶段固定模型与接入地址；新聊天或新阶段可切换，暂停继续保留原模型。
-官方额度、旧任务预算升级和验收边界见[模型配置与预算说明](docs/model-settings.md)。
+统一入口启动 FastAPI 与独立 Runner，访问 **[http://127.0.0.1:8770/console/](http://127.0.0.1:8770/console/)**。已有桌面 **Rexak Agent** 快捷方式继续使用同一脚本。关闭网页不停止任务，在启动窗口按 `Ctrl+C` 停止本次 API / Runner。
 
-以下命令仅供维护和调试，日常无需分别启动：
+首次使用：配置模型 → 新建聊天 → 给出目标、授权范围和测试要求 → 查看工具结果及状态 → 按需暂停、继续或取消 → 在「图谱」读取并手动刷新双图。取消已受理不等于远端进程已退出，仍应检查资源状态。
 
-```powershell
-uv run workbench api
-uv run workbench runner
-uv run workbench-executor   # 仅在 Kali 执行岛运行
-```
+已有历史数据的升级请先备份并核对非终态任务、租约与 Job，不要直接启动 Runner 领取旧队列。仅查看历史可用 `.\start-workbench.cmd --api-only`。分开调试时可用 `uv run workbench api`、`uv run workbench runner`；前端开发使用 `pnpm --dir web dev`。完整安全切换流程见部署说明。
 
-前端开发：
+## 验证与案例
 
-```powershell
-cd web
-pnpm install --frozen-lockfile
-pnpm dev                    # Vite dev server，代理 /api 到 127.0.0.1:8770
-pnpm build                  # 构建后由控制端在 /console/ 提供
-```
+### v1.0 工程验收
 
-启动 `uv run workbench api` 后，访问 <http://127.0.0.1:8770/console/> 使用基础控制台。
-它已提供项目与任务、对话输入、运行控制、发现证据、后台任务、费用、控制端耗时诊断与报告版本。
-旧的只读诊断页仍在 <http://127.0.0.1:8770/observer>。实时活动可逐页浏览，长日志只渲染可见行，点击事件从脱敏接口读取详情。“对话归档”按页显示用户指令和模型文本，并可分段展开长正文；模型正文从此版本开始归档，旧调用不会自动回填，也不作为 Agent 记忆。“当前计划”直接读取 LangGraph checkpoint，关系图只展示步骤明确关联的线索。耗时诊断把 Executor 接收、开始、结束时间分别用于排队和执行区间；缺少时间戳时显示未知。模型首个可见分片仅在流分片与最终消息 ID 匹配时记录，不能当作供应商首字节耗时。结束提议检查、Runner 复核和报告生成分别计时；报告进一步区分快照采集、证据校验、正文渲染和版本发布，并在失败时标记中断阶段。Git HEAD 独立核验区分预检查、复测调用返回和结论写入；后台复测的实际运行时间仍以任务台账为准。设置页可录入每百万 token 的模型价格，生成不可变价格版本；之后启动的运行使用新版本，历史费用保留原版本。真实小米/Kali 任务轨迹尚未验收。
+以下为 **2026-10-30 v1.0 工作区代码**的正式验收记录，覆盖协议、持久化、恢复、权限、附件与双图，不代表真实模型成功率或研究机制效果证明。
 
-后端接口变更后，重新生成前端契约类型：
+| 范围 | 已记录结果 |
+|---|---|
+| 后端 `tests/unit` + `tests/integration` | **1019 passed / 3 skipped / 0 failed**；跳过项为 Windows 符号链接权限 2 项、真实模型凭据 1 项 |
+| 前端 Vitest | **66 passed**，6 个测试文件 |
+| 正式源码静态检查与构建 | 生产范围 Ruff、Pyright、UTF-8 编码检查、TypeScript / Vite 构建通过 |
+| 真实后端与浏览器 | Session 图 API、owner 隔离、手动刷新及六条历史会话双图读取通过 |
+| 正式 API + Runner 启动 | **184.4 秒 / 66 次采样**，未领取旧任务、未新增模型调用，保留暂停状态与历史记录 |
+
+**范围区别：** 当时全仓 Ruff 在归档实验范围仍有 43 项问题；历史研究套件为 120 passed / 90 failed / 6 skipped，不属于上述正式后端回归。工程回归、空闲启动和靶场效果分别报告。公开摘要与本次交付检查见[验证记录](docs/validation-v1.md)。
+
+**本次公开源码快照（2026-10-31）**另经独立验证：**981 passed / 2 skipped / 1 deselected / 0 failed**，前端 **66 passed**。三份依赖原始 CTF 研究资料的测试留在本地，因此与工作区 1019 项通过数口径不同；真实模型探针被显式排除，资料与测试原件未删除。
+
+开发者检查命令：
 
 ```powershell
-uv run python scripts/export_openapi.py web/openapi.json
-cd web
-pnpm generate:api
-```
-
-报告可通过 `POST /api/sessions/{session_id}/reports` 创建版本，随后用
-`GET /api/sessions/{session_id}/reports` 查询历史版本，并用
-`GET /api/sessions/{session_id}/reports/{version}/export?format=markdown|html`
-下载附件。写请求需要本地会话 Cookie 与 CSRF 头。报告只将带独立验证记录且证据工件
-哈希可核对的发现列为已确认；候选发现单列，旧版本保留。当前只接入一类窄范围的
-确定性核验工具：`verify_public_git_head` 对 `/.git/HEAD` 做隔离 HTTP 复测，
-仅能确认 Git HEAD 分支引用公开可读，不能推断整个仓库或源码可读。
-
-领域记录可通过 `GET /api/sessions/{session_id}/assets`、`/leads`、`/findings`、
-`/coverage` 查询；单条发现的验证历史通过
-`GET /api/sessions/{session_id}/findings/{finding_id}/verifications` 查询。
-资产、线索和验证历史支持 `limit`、`offset` 分页；线索还可按 `status` 筛选。
-
-> 默认 compose 重建应用**不删除**数据库与工件卷。
-> **禁止**把 `docker compose down -v` 当作日常启动步骤，那是破坏性操作。
-
----
-
-## 4. 标准验证命令
-
-根目录：
-
-```powershell
-uv run ruff check .
+uv run ruff check src executor/src tests scripts evals
 uv run pyright
 uv run python scripts/check_encoding.py
-uv run pytest tests/unit tests/integration -q
-uv run pytest tests/recovery -q
+uv run pytest tests/unit tests/integration -q -m "not real_model"
+pnpm --dir web exec vitest run
+pnpm --dir web build
 ```
 
-前端 `web/`：
+集成测试创建独占随机测试库与临时工件目录，需要可用的 PostgreSQL；以上命令显式排除真实模型探针。确定性模型测试验证工程协议，不能替代真实目标验证。
 
-```powershell
-pnpm lint; pnpm typecheck; pnpm test; pnpm build; pnpm test:e2e
-```
+### 六条历史 CTF 轨迹
 
-真实基础设施与模型：
+2026-10-28 对六条已保存轨迹的只读复盘，观察到多阶段探测、根据回显调整方法、跨异步 Job 处理与自主答复。表中不公开目标、载荷或答案。
 
-```powershell
-uv run workbench doctor --skip-model
-uv run python evals/runner.py --suite smoke --provider xiaomi
-uv run python evals/runner.py --suite acceptance --provider xiaomi --trials 3
-```
+| 案例 | 场景 | 可观察的 Agent 行为 | 真实验证等级 |
+|---|---|---|---|
+| R1 | Web 表达式处理 | 多阶段试探与图记录维护 | 工具输出 Flag 格式候选 |
+| R2 | 登录与模板渲染 | 结合响应调整测试动作 | 工具输出 Flag 格式候选 |
+| R3 | 渲染、机器人身份与权限 | 原离线工具不可用后切换处理方法 | 工具输出 Flag 格式候选 |
+| R4 | 上传与执行条件 | 结合执行回执完成多步骤测试 | 候选 + 同源工件哈希核验 |
+| R5 | PHP 多关卡状态挑战 | 根据关卡反馈修正参数并保持会话 | 候选 + 同源工件 + **目标应用明确通关** |
+| R6 | 参数入口与数据库查询 | 从早期解释转向数据库错误证据 | 工具输出 Flag 格式候选 |
 
-只能在 Linux 执行岛验证的部分（进程控制 / 软链接逃逸 / 工作区文件实机链路）：
+**六条均未观察到外部平台正式判对记录。** Run 的 `completed` 表示模型循环结束与运行收尾，不等于 Flag 正确。样本按已有完成候选选取，缺少完整挑战身份及重置记录，不能计算总体成功率或视作六个独立挑战成绩；四条候选缺少独立 stdout 工件的缺口仍保留。
 
-```bash
-uv run python scripts/executor_process_check.py
-```
-
-进程级重启演练（需要真实模型与可达执行岛）：
-
-```
-XIAOMI_API_KEY=<本机密钥> uv run python scripts/restart_drill.py
-```
-
-调试时可以只推进指定 run（避免被数据库里其它 queued run 拖住）：
-
-```powershell
-uv run workbench runner --once --only-run-id <run_id> --no-recover
-```
-
-**无凭据时相关测试标记 `NOT_RUN`，不能算通过。模拟通过不代表真实模型通过。**
-
----
-
-## 5. 目录导览
+## 项目结构
 
 ```text
 src/agent_workbench/
-  api/            FastAPI 路由、鉴权、SSE
-  contracts/      协议真源（请求/结果/事件模型）——前端类型由此生成
-  config/         设置、模型目录、价格目录、密钥存储
-  domain/         任务、资产、线索、发现、验证规则
-  agent/          create_agent 装配、图状态、middleware、提示
-  runtime/        Runner 运行所有权、指令消费、恢复、阶段结束
-  models/         供应商适配、能力探测、用量
-  memory/         任务笔记、上下文构造、Store 访问
-  tools/          Agent 可见工具及权限/并发包装
-  execution/      Executor 客户端、SSH 隧道、远端事件同步
-  evidence/       工件存储、索引、脱敏视图、验证记录
-  persistence/    ... 业务表、仓储、事务
-  observability/  事件、日志、span、费用计算
-  reporting/      报告快照与渲染
-executor/src/workbench_executor/   执行岛常驻服务
-migrations/      Alembic，**仅业务 schema**
-tests/           unit / integration / recovery / e2e
-evals/           场景、fixture、grader、runner
-docs/            decisions / implementation-status / acceptance-results
+├── agent/          # create_agent 装配、上下文与 middleware
+├── api/            # FastAPI、鉴权、只读查询与 SSE
+├── runtime/        # Runner、指令、租约、Job 与恢复
+├── tools/          # 模型工具、Operation 身份与派发
+├── execution/      # ExecutorClient、SSH 隧道与协议适配
+├── domain/         # 双图、计划、Memory、Scope 与附件领域服务
+├── contracts/      # Pydantic 协议真源
+├── persistence/    # PostgreSQL 表、仓储与框架存储初始化
+└── evidence/       # Artifact 保存、读取与来源管理
+executor/           # 独立 Kali 执行端与本地 Ledger
+web/                # React 控制台与生成的 API 类型
+migrations/         # Alembic 增量迁移
+tests/              # 单元、集成、恢复与独立研究测试
+scripts/            # 配置、安装、启动与部署工具
+docs/               # 架构、部署、决策与公开验收摘要
 ```
 
-运行数据写在 `WORKBENCH_DATA_ROOT`，**不放进源码包**。
+运行数据由 `WORKBENCH_DATA_ROOT` 管理；数据库备份、CAS、凭据与原始测试数据不随源码分发。
 
----
+## 安全边界与已知限制
 
-## 6. 关键设计约束（改代码前必读）
+- **仅用于获得明确授权的目标。** Scope 对可信用户目标作范围约束，HTTP / 浏览器路径和执行授权有检查。控制台默认仅监听回环地址、使用本地鉴权，Cookie 写请求要求 CSRF，图查询检查 Session owner。
+- **`trusted` 执行不是网络沙箱。** 任意命令/脚本的网络行为不能仅靠应用层 Scope 完整约束，需在专用 Kali 和受控网络运行；不应将本地单用户控制端直接暴露为公网服务。
+- **结论需要证据核验。** 工具执行成功、模型答复、候选 Flag 与平台判对是不同事实。系统不保证所有任务成功，也不自动确认模型生成的漏洞结论。
+- **研究收益尚未充分隔离验证。** 双图与 Decision Memory 有实现及使用证据，成功率、Token 或成本收益尚无可靠匹配对照。历史实验与正式工程回归范围不同。
+- **能力依赖环境。** 浏览器、命令与 PTY 以 Executor 实际预检为准；二进制附件仅做有限静态分析，不提供程序执行或完整反编译。
 
-1. 基础模型—工具循环使用官方 `create_agent`，**不写第二套自研 ReAct 主循环**。
-2. 每项信息只有一个权威归属：图状态 → LangGraph checkpoint；领域记录 → 业务表；
-   真实执行状态 → Executor 台账。
-3. 模型猜测**不能**直接写成已确认事实；`confirmed` 必须有验证记录。
-4. 不设任务总时长/费用硬上限；单次操作仍有超时、取消与资源边界。
-5. 持久操作身份：重放复用 `operation_id`；显式重测生成新的逻辑操作 ID。
-6. 全部源码/配置/日志 UTF-8 无 BOM；不做静默 GBK/Latin-1 兜底。
-7. 长正文不塞 checkpoint / events / findings，落工件后只传摘要与引用。
+## 项目文档
 
-详细状态见 `docs/implementation-status.md`；已锁定决策见 `docs/decisions/`。
-
-V1 六阶段代码已接通。验收证据及限制见 [V1 实施进度](docs/implementation-v1-progress.md)，启用、独立试验、封包和离线复盘见 [操作说明](docs/experiments/v1-operation-guide.md)。工程回归不代表真实靶场效果验收。
-
----
-
-## 7. 当前状态
-
-见 **`docs/implementation-status.md`**（P0–P9 逐项状态 + 证据）。只有具备验证证据的条目才标完成。
-
-已完成并通过验证：**P0、P1、P2**；P3–P5 已有可运行切片，Kali 执行岛关键链路已验证，真实模型验收仍有缺口。P6–P8 部分落地。
-
-当前能力边界（未验证的部分不得声称"已支持"）：
-
-| 能力 | 现状 |
+| 文档 | 内容 |
 |---|---|
-| 前端控制台（P7） | 基础控制台已可构建；事件历史虚拟列表与新产生的对话正文归档已接入，真实模型长任务交互和细粒度阶段时间线仍待验收 |
-| 浏览器 / 登录探针（P4） | 本机 Edge 与 Kali Chromium 已验证；真实模型任务未复测 |
-| 报告与独立复测（P6） | 版本创建和 Markdown/HTML 导出已通过集成测试；Git HEAD 引用复测工具已接入，真实模型及执行岛端到端效果尚未验收，其他漏洞类型没有自动核验器 |
-| 文件 read/write/edit 工具（P3） | 已实现；Linux 路径与软链接专项测试已在执行岛通过 |
-| 通用命令与持久执行资源 | 指定 Kali 显式 trusted 时启用；默认发行 disabled，不承诺系统级出站隔离。见 [使用说明](docs/execution-runtime.md) |
-| 效果 grader / 配对基线（P9） | 八个自然目标、独立原件判定与离线复核已实现；真实重复 trial 与旧 B1 配对效果未验收 |
-
-已锁定的技术决策与实测结论见 `docs/decisions/`。
-
-# P8 隔离备份还原演练
-
-本机使用 `compose.yaml` 的 PostgreSQL 容器时，备份命令可通过
-`workbench backup --docker-container workbench-postgres` 在容器内执行 `pg_dump`。
-`--docker-container` 只接受配置为本机回环地址的数据库；运行前请确认该容器对应
-`WORKBENCH_DATABASE_URL`。不指定时使用 PATH 中的本机 `pg_dump`。
-备份完成后运行 `workbench verify-backup <备份目录>` 可核对 SQL 和工件的
-SHA-256 清单；该校验用于发现意外损坏，不提供防篡改认证。
-
-运行 `python scripts/backup_restore_drill.py` 会创建两份带 `p8_drill_` 前缀的
-临时数据库，调用实际备份命令，再将 SQL 导入另一份数据库，核对 UTF-8 记录与
-工件正文，结束时删除这两份临时数据库。它不会还原或覆盖工作库。
-
-升级代码后先备份并运行 `workbench db-init`。API 和 Runner 启动时只读核对业务库
-Alembic 版本与当前代码的迁移 head；不一致会拒绝启动，不会自动改表。
-Runner 恢复已有 LangGraph checkpoint 前也会核对状态版本；缺失或不匹配时拒绝续跑，
-以免把旧状态误当作新任务并重复执行工具。当前只有状态版本 v1，跨版本转换尚未实现。
-
-事件流按 `WORKBENCH_EVENT_RETENTION_DAYS`（默认 30 天）提供**手动**保留策略；
-`workbench prune-events` 只预览，`workbench prune-events --apply` 才按批删除。
-可加 `--session-id <任务 ID>` 限定任务、`--limit 1000` 控制单批数量。
-按数据库写入时间判断过期；有活动 run 的任务完全跳过，每个任务至少保留最新事件。
-清理后的旧浏览器游标会收到重新获取快照的提示。该命令不删除报告版本、证据工件、
-模型调用台账或其他业务记录；需要完整审计轨迹时，应在清理前先做数据库和工件备份。
-
-运行中显式修改范围使用 `PUT /api/sessions/{session_id}/scope`，请求体需包含
-`expected_revision`、新 `scope`（其 `revision` 为旧值加一）与非空 `reason`，
-并像其他写接口一样携带本地会话、CSRF 与 `Idempotency-Key`。更新会让旧提议停止
-派发；已经提交的 job 继续核对真实状态，并作为历史结果展示，不会被盲目重做或
-直接纳入新方向的结论。当前控制台只展示范围，编辑入口仍需单独接入。
-
-
-## 隔离回归与运行诊断
-
-Skill 模块支持用户目录或 ZIP 导入、按需加载、附件和 Kali 脚本、固定版本恢复及技能库页面。添加自己的 Skill 不需要修改主循环；格式、使用方法和明确边界见 [Skill 模块说明](docs/skills.md)。
-
-运行数据库集成或恢复测试时，pytest 自动创建随机 `workbench_test_*` 临时库和工件目录，初始化后再运行用例，结束时清理。本地测试数据库用户需有创建数据库权限；测试不再扫描日常工作库。初始化或清理失败会明确报错，不能记为通过。只运行单测时无需真实数据库。
-
-`workbench export-run <run-id>` 输出诊断 v2 和 SHA-256 清单，按指定 run 收集保留事件、模型调用、操作、远端任务、观察和工件完整性。领域知识单独标为导出时的当前会话快照，不冒充历史 run 成果；工件哈希在数据库快照之后检查。按已知规则脱敏，不含工件正文、完整模型请求或 checkpoint，也不能保证识别自由文本中的未知凭据。
-
-模型连续无有效分片默认等待 300 秒（`WORKBENCH_MODEL_REQUEST_TIMEOUT_SECONDS`），持续返回正文、思考或工具参数时会延长等待；单次调用另有 1800 秒墙钟保护（`WORKBENCH_MODEL_REQUEST_MAX_SECONDS`）。小米的 `reasoning_content` 会保留并在后续工具轮次回传，界面只显示思考状态，不展示思考原文。三条数据库连接路径默认 10 秒（`WORKBENCH_DB_CONNECT_TIMEOUT_SECONDS`）。超时不自动重发模型请求；点击继续或提交新指令可以恢复，存在未核实工具任务时仍需明确核对。不构成任务总时长或费用上限，费用未知或未定价时仍保持未知。
-
-评测入口保留 smoke，并已接入八个自然目标的 acceptance 矩阵、独立靶场重置、原件判定和离线复核。运行与交接方式见 [P9 评测说明](docs/p9-evaluation.md)。真实模型重复 trial 与旧 B1 配对结果尚未取得，不能用机制测试替代效果验收。真实 Earth 任务状态及本轮修复证据见 [验收记录](docs/acceptance-results/2026-10-10/README.md)。
+| [实际架构](docs/architecture.md) | 当前数据流、权威归属与运行边界 |
+| [新成员部署](docs/team-setup.md) | Windows / Kali、SSH、个人配置与首次安装 |
+| [部署与安全更新](docs/deployment-quickstart.md) | 启动、备份、迁移、Executor 更新与维护切换 |
+| [实现状态](docs/implementation-status.md) | 按时间记录的实现与验证状态，以最新决策为准 |
+| [v1.0 公开验收摘要](docs/validation-v1.md) | 工程测试、启动验收、截图来源、CTF 证据与本次检查 |
+| [技术决策](docs/decisions/) | 已锁定的架构选择与版本边界 |
