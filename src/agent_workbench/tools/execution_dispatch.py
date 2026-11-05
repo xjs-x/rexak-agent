@@ -32,7 +32,7 @@ from agent_workbench.persistence.repositories import (
     ToolJobRepository,
     ToolOperationRepository,
 )
-from agent_workbench.persistence.tables import RunRow
+from agent_workbench.persistence.tables import RunRow, ToolOperationRow
 from agent_workbench.tools.remote import json_text, prepare_operation
 from agent_workbench.tools.runtime import Toolbox
 
@@ -233,6 +233,12 @@ async def dispatch_operation(
     envelope: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, ToolResult | None]:
     """提交操作包。返回 `(receipt, failure_result)`；两者恰有一个非空。"""
+    # Persist the last safe boundary before a Worker mutation can leave this process.
+    # A crash after this commit is ambiguous even if the Executor currently answers 404.
+    async with toolbox.db.transaction() as db:
+        row = await db.get(ToolOperationRow, operation_id)
+        if row and (row.execution_context or {}).get("parent_worker_operation"):
+            row.execution_context = {**(row.execution_context or {}), "submission_state": "may_have_submitted"}
     try:
         receipt = await toolbox.executor.execution_submit(envelope)
     except ExecutorRejected as exc:

@@ -44,8 +44,10 @@ def test_non_loopback_api_is_rejected() -> None:
         start_workbench.base_url(Settings(api_host="0.0.0.0"))
 
 
+@pytest.mark.parametrize("worker_state", ["unconfigured", "stopped", "running", "failed"])
+@pytest.mark.parametrize("recover", [True, False])
 def test_complete_launcher_starts_web_and_runner_without_terminal_model_or_key(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, worker_state, recover
 ):
     root = tmp_path / "checkout"
     (root / "web/dist").mkdir(parents=True)
@@ -58,6 +60,21 @@ def test_complete_launcher_starts_web_and_runner_without_terminal_model_or_key(
     monkeypatch.setattr(start_workbench, "get_settings", lambda: cfg)
     monkeypatch.setattr(start_workbench, "port_busy", lambda _: False)
     monkeypatch.setattr(start_workbench, "check_existing_runner", lambda: None)
+    monkeypatch.setattr(
+        "agent_workbench.config.ultra_worker.read_worker_config",
+        lambda _s: {} if worker_state == "unconfigured" else {"token": "fixture-worker-token"},
+    )
+    monkeypatch.setattr(start_workbench, "worker_ready", lambda _s: worker_state == "running")
+    monkeypatch.setattr(
+        "scripts.start_ultra_worker.worker_process",
+        lambda _s: (["node", "server.js"], {"REXAK_WORKER_TOKEN": "fixture-worker-token"}),
+    )
+
+    def wait_worker(*_args):
+        if worker_state == "failed":
+            raise RuntimeError("Ultra Worker 启动失败")
+
+    monkeypatch.setattr(start_workbench, "wait_worker", wait_worker)
 
     async def executor(_settings):
         pass
@@ -75,7 +92,7 @@ def test_complete_launcher_starts_web_and_runner_without_terminal_model_or_key(
 
     def spawn(argv, **kwargs):
         spawned.append((list(argv), dict(kwargs["env"])))
-        if argv[-1] == "runner":
+        if "runner" in argv:
             kwargs["stdout"].write("Runner 已启动\n".encode())
             kwargs["stdout"].flush()
         return FakeChild()
@@ -86,9 +103,19 @@ def test_complete_launcher_starts_web_and_runner_without_terminal_model_or_key(
     monkeypatch.setattr(start_workbench, "wait_api", lambda *_a: None)
     monkeypatch.setattr(start_workbench, "stop_child", lambda child: stopped.append(child))
     monkeypatch.setattr("builtins.input", lambda _: pytest.fail("launcher must not prompt"))
-    start_workbench.launch(api_only=False, check_only=False, no_browser=True, smoke_seconds=0.01)
-    assert len(spawned) == len(stopped) == 2
-    api_env, runner_env = spawned[0][1], spawned[1][1]
+    if worker_state == "failed":
+        with pytest.raises(RuntimeError, match="Ultra Worker"):
+            start_workbench.launch(api_only=False, check_only=False, no_browser=True, smoke_seconds=0.01, recover=recover)
+        assert [argv[-1] for argv, _ in spawned] == ["api", "server.js"]
+        assert len(stopped) == 2
+        return
+    start_workbench.launch(api_only=False, check_only=False, no_browser=True, smoke_seconds=0.01, recover=recover)
+    assert len(spawned) == len(stopped) == (3 if worker_state == "stopped" else 2)
+    assert [argv[-2] if argv[-1] == "--no-recover" else argv[-1] for argv, _ in spawned] == (
+        ["api", "server.js", "runner"] if worker_state == "stopped" else ["api", "runner"]
+    )
+    assert ("--no-recover" in spawned[-1][0]) is (not recover)
+    api_env, runner_env = spawned[0][1], spawned[-1][1]
     assert api_env["XIAOMI_API_KEY"] == api_env["DASHSCOPE_API_KEY"] == ""
     assert runner_env["XIAOMI_API_KEY"] == runner_env["DASHSCOPE_API_KEY"] == ""
     assert all(env["XIAOMI_API_KEY"] == env["DASHSCOPE_API_KEY"] == "" for _, env in checks)
@@ -100,6 +127,48 @@ def test_complete_launcher_starts_web_and_runner_without_terminal_model_or_key(
     )
 
 
+@pytest.mark.parametrize("status,payload", [
+    (401, {}), (503, {}), (200, {"runtime": "other", "protocol": "1.0"}),
+])
+def test_worker_preflight_rejects_other_or_unhealthy_service(monkeypatch, status, payload):
+    monkeypatch.setattr(
+        "agent_workbench.config.ultra_worker.read_worker_config",
+        lambda _s: {"token": "private-fixture-worker-token"},
+    )
+    transport = httpx.MockTransport(lambda _r: httpx.Response(status, json=payload))
+    original = httpx.Client
+    monkeypatch.setattr(start_workbench.httpx, "Client", lambda **kw: original(transport=transport, **kw))
+    with pytest.raises(RuntimeError) as exc:
+        start_workbench.worker_ready(isolated_settings())
+    assert "private-fixture-worker-token" not in str(exc.value)
+
+
+def test_failed_worker_start_is_reported_without_waiting():
+    class ExitedChild:
+        @staticmethod
+        def poll():
+            return 1
+
+    with pytest.raises(RuntimeError, match="Ultra Worker 启动失败"):
+        start_workbench.wait_worker(ExitedChild(), isolated_settings())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("error", [httpx.ConnectError, httpx.ConnectTimeout])
+def test_worker_without_listener_is_started_even_when_windows_drops_connection(monkeypatch, error):
+    monkeypatch.setattr(
+        "agent_workbench.config.ultra_worker.read_worker_config",
+        lambda _s: {"token": "fixture-worker-token"},
+    )
+
+    def unavailable(request):
+        raise error("fixture connection unavailable", request=request)
+
+    transport = httpx.MockTransport(unavailable)
+    original = httpx.Client
+    monkeypatch.setattr(start_workbench.httpx, "Client", lambda **kw: original(transport=transport, **kw))
+    assert not start_workbench.worker_ready(isolated_settings())
+
+
 def test_ipv6_api_url() -> None:
     assert start_workbench.base_url(Settings(api_host="::1", api_port=8770)) == "http://[::1]:8770"
 
@@ -107,6 +176,7 @@ def test_ipv6_api_url() -> None:
 @pytest.mark.parametrize("service,expected", [("agent-workbench-api", True), ("other-app", False)])
 def test_existing_console_reuse_checks_identity(monkeypatch, service, expected):
     cfg = Settings()
+    monkeypatch.setattr("agent_workbench.config.ultra_worker.read_worker_config", lambda _s: {})
     monkeypatch.setattr(start_workbench, "port_busy", lambda _: True)
     transport = httpx.MockTransport(lambda request: httpx.Response(
         200, request=request, json={"service": service, "database": {"ok": True}}))
@@ -121,6 +191,18 @@ def test_existing_console_reuse_checks_identity(monkeypatch, service, expected):
         with pytest.raises(RuntimeError, match="其他服务"):
             start_workbench.open_existing_console(cfg, "http://127.0.0.1:8770", no_browser=False)
         assert opened == []
+
+
+def test_existing_console_does_not_hide_missing_worker(monkeypatch):
+    monkeypatch.setattr(start_workbench, "port_busy", lambda _: True)
+    monkeypatch.setattr("agent_workbench.config.ultra_worker.read_worker_config", lambda _s: {"token": "fixture"})
+    monkeypatch.setattr(start_workbench, "worker_ready", lambda _s: False)
+    transport = httpx.MockTransport(lambda _r: httpx.Response(
+        200, json={"service": "agent-workbench-api", "database": {"ok": True}}))
+    original = httpx.Client
+    monkeypatch.setattr(start_workbench.httpx, "Client", lambda **kw: original(transport=transport, **kw))
+    with pytest.raises(RuntimeError, match="缺少 Ultra Worker"):
+        start_workbench.open_existing_console(isolated_settings(), "http://127.0.0.1:8770", no_browser=True)
 
 
 @pytest.mark.parametrize("status", [401, 403, 503, 302])

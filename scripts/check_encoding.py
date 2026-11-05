@@ -25,6 +25,9 @@ DEFAULT_ROOTS = (
     "evals",
     "docs",
     "web/src",
+    "worker/src",
+    "worker/test",
+    "worker/vendor",
 )
 
 TEXT_SUFFIXES = frozenset(
@@ -42,6 +45,7 @@ TEXT_SUFFIXES = frozenset(
         ".ts",
         ".tsx",
         ".js",
+        ".mjs",
         ".jsx",
         ".css",
         ".html",

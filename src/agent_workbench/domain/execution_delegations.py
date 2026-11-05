@@ -217,5 +217,11 @@ async def session_row(session: AsyncSession, session_id: UUID) -> SessionRow:
 async def revocation_payload(session: AsyncSession, session_id: UUID) -> list[dict[str, Any]]:
     """每次 fence 同步均携带撤销，断线后的下一次派发也不能遗漏旧 revision。"""
     rows = await ExecutionDelegationRepository(session).list_for_session(session_id, include_cancelled=True)
-    return [{"delegation_id": str(row.id), "revision": int(row.revision)}
-            for row in rows if row.status != "active"]
+    from agent_workbench.persistence.tables import AgentDelegationRow
+
+    workers = list((await session.scalars(select(AgentDelegationRow).where(
+        AgentDelegationRow.parent_session_id == session_id,
+        (AgentDelegationRow.cancel_requested | (AgentDelegationRow.authorization_snapshot["execution_revoked"].astext == "true")
+         | AgentDelegationRow.state.in_(["completed", "failed", "cancelled", "rejected"]))))) .all())
+    return ([{"delegation_id": str(row.id), "revision": int(row.revision)}
+            for row in rows if row.status != "active"] + [{"delegation_id": str(row.id), "revision": 1} for row in workers])

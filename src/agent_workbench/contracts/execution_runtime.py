@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from enum import StrEnum
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -348,6 +350,10 @@ class RawOutputSnapshot(_Base):
     data_base64: str
     captured_at: str
     at_current_end: bool
+    source_bytes: int | None = None
+    missing_ranges: list[list[int]] = Field(default_factory=list)
+    missing_ranges_truncated: bool = False
+    collection_metadata_known: bool = False
     note: str = ""
 
 
@@ -391,6 +397,8 @@ class CommandArguments(_CommonExecutionArguments):
     command: str | None = None
     argv: list[str] | None = None
     stdin_text: str | None = None
+    worker_workspace_id: str | None = None
+    worker_file: dict[str, Any] | None = None
 
     def validate_one_form(self) -> None:
         if bool(self.command) == bool(self.argv):
@@ -473,7 +481,23 @@ class CancelResourceArguments(_Base):
     resource_id: str
 
 
+class InputFileArguments(_Base):
+    """原始附件输入；目的由身份推导，不接受任意路径。"""
+
+    attachment_id: UUID
+    filename: str = Field(min_length=1, max_length=240)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    byte_size: int = Field(ge=0, le=64 * 1024 * 1024)
+    worker_workspace_id: UUID | None = None
+
+    @property
+    def relative_path(self) -> str:
+        name = re.sub(r"[^a-zA-Z0-9._-]", "_", self.filename).lstrip(".-")[:160] or "attachment"
+        return f"inputs/attachments/{self.attachment_id}/{self.sha256}/{name}"
+
+
 ACTION_ARGUMENT_MODELS: dict[str, type[BaseModel]] = {
+    "materialize_attachment": InputFileArguments,
     "run_command": CommandArguments,
     "run_script": ScriptArguments,
     "start_monitor": MonitorArguments,
@@ -607,6 +631,7 @@ class OperationReceipt(_Base):
     executed_at: str | None = None
     note: str = ""
     capabilities_note: str | None = None
+    input_file: dict[str, Any] | None = None
 
 
 class ExecutionEventRecord(_Base):

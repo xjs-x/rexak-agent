@@ -241,6 +241,7 @@ class AgentRunner:
                     )
                     .order_by(
                         case((cancelling, 0), (pending, 1), (interactive, 2), else_=3),
+                        case((cancelling, RunRow.updated_at), else_=None).asc(),
                         RunRow.created_at.desc(),
                         RunRow.id,
                     )
@@ -424,6 +425,7 @@ class AgentRunner:
 
         await self._db.start()
         last_probe = 0.0
+        delegation_poll = asyncio.create_task(self._poll_delegations(only_run_id=only_run_id))
         try:
             while not self._stopping:
                 outcome = None
@@ -448,7 +450,21 @@ class AgentRunner:
                 if outcome is None:
                     await asyncio.sleep(poll_interval)
         finally:
+            delegation_poll.cancel()
+            await asyncio.gather(delegation_poll, return_exceptions=True)
             await self._db.close()
+
+    async def _poll_delegations(self, *, only_run_id: UUID | None = None) -> None:
+        from agent_workbench.domain.agent_delegations import reconcile_inactive_parents
+
+        while not self._stopping:
+            try:
+                await reconcile_inactive_parents(self._db, self._settings, only_run_id=only_run_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.error("ultra_reconciliation_failed", error_type=type(exc).__name__)
+            await asyncio.sleep(self._settings.job_wakeup_interval_seconds)
 
     async def _serve_sessions(self, *, poll_interval: float) -> None:
         """调度不同会话；每个会话仍由同一个官方 Agent 图驱动。"""
@@ -459,6 +475,7 @@ class AgentRunner:
         cancellation_task: asyncio.Task[RunOutcome | None] | None = None
         await self._db.start()
         last_probe = 0.0
+        delegation_poll = asyncio.create_task(self._poll_delegations())
         try:
             while not self._stopping:
                 if cancellation_task is not None and cancellation_task.done():
@@ -535,6 +552,8 @@ class AgentRunner:
                     log.error("runner_loop_failed", error_type=type(exc).__name__)
                 await asyncio.sleep(poll_interval)
         finally:
+            delegation_poll.cancel()
+            await asyncio.gather(delegation_poll, return_exceptions=True)
             if cancellation_task is not None:
                 cancellation_task.cancel()
                 await asyncio.gather(cancellation_task, return_exceptions=True)
@@ -641,6 +660,9 @@ class AgentRunner:
         from agent_workbench.config.settings import settings_for_run
 
         settings = settings_for_run(self._settings, run.config_snapshot or {})
+        from agent_workbench.contracts.delegation import ExecutionMode
+
+        execution_mode = ExecutionMode((run.config_snapshot or {}).get("execution_mode", "standard"))
         from agent_workbench.domain.instruction_scope import sync_instruction_scope
 
         async with self._db.transaction() as db:
@@ -672,14 +694,25 @@ class AgentRunner:
         await self._set_status(run.id, RunStatus.RUNNING, reason="runner_acquired")
         await self._capture_runtime_source(run, generation)
 
+        infrastructure = "Ultra Worker / A2A" if execution_mode is ExecutionMode.ULTRA else "Kali Executor"
         try:
+            if execution_mode is ExecutionMode.ULTRA:
+                from agent_workbench.execution.a2a_worker import A2AWorkerClient
+
+                async with A2AWorkerClient(settings) as worker_client:
+                    await worker_client.connect()
+            infrastructure = "Kali Executor"
             await executor.start()
             # 能力预检：协议版本不兼容时给出明确阻碍，不默认远端一定支持（§8.6）。
             # 预检结果同时决定执行底座工具是否开放（trusted 模式 + 逐项能力）。
             capabilities = await executor.capabilities()
             selection = default_selection(settings, capabilities=capabilities)
+            if execution_mode is ExecutionMode.ULTRA:
+                from dataclasses import replace
+
+                selection = replace(selection, ultra=True)
         except Exception as exc:
-            detail = f"执行岛不可用：{type(exc).__name__}: {exc}"
+            detail = f"运行基础设施（{infrastructure}）不可用：{type(exc).__name__}: {exc}"
             await self._fail(run.id, ErrorCode.EXECUTOR_UNAVAILABLE, detail)
             await self._finalize(run.id, RunStatus.FAILED, detail=detail, completion_reason=None)
             await self._shutdown(tunnel, executor)
@@ -1488,6 +1521,7 @@ class AgentRunner:
                         ToolOperationRow.run_id == run.id,
                         ToolOperationRow.status.in_(["accepted", "running", "unknown"]),
                         ToolOperationRow.job_id.is_(None),
+                        ToolOperationRow.execution_context["worker_tool_aggregate"].astext.is_distinct_from("true"),
                     )
                 )
             ).first()
@@ -1558,6 +1592,19 @@ class AgentRunner:
             saved_run = await db.get(RunRow, run.id, populate_existing=True)
             if saved_run is None:
                 raise RuntimeError("最终回答投影找不到原运行")
+            if (saved_run.config_snapshot or {}).get("execution_mode", "standard") == "ultra":
+                from sqlalchemy import update
+
+                from agent_workbench.contracts.delegation import TERMINAL_DELEGATIONS
+                from agent_workbench.persistence.tables import AgentDelegationRow
+
+                # A validated final END, not ordinary waiting. Commit stop intents with
+                # the answer before checking pending resources; the existing reconciler
+                # performs cancellation over HTTP after commit.
+                await db.execute(update(AgentDelegationRow).where(
+                    AgentDelegationRow.parent_run_id == run.id,
+                    AgentDelegationRow.state.not_in(TERMINAL_DELEGATIONS),
+                ).values(cancel_requested=True, state="cancel_requested"))
             # 只保存可重建的读取指针；结果权威仍是已提交 checkpoint。
             saved_run.config_snapshot = {
                 **saved_run.config_snapshot,
@@ -1646,6 +1693,28 @@ class AgentRunner:
         return RunStatus.PAUSED, None, exc.detail or "已按用户请求暂停"
 
     async def _cancel_active_jobs(self, run: RunRow) -> bool:
+        """Attempt both cancellation chains independently; errors never assert termination."""
+        if (run.config_snapshot or {}).get("execution_mode", "standard") != "ultra":
+            return await self._cancel_executor_jobs(run)
+        from agent_workbench.domain.agent_delegations import DelegationManager
+
+        async def cancel_workers() -> bool:
+            # A per-attempt bound, not a Run duration limit. Other Sessions get a turn.
+            async with asyncio.timeout(self._settings.ultra_request_seconds + 1):
+                return await DelegationManager(
+                    self._db, self._settings, run.session_id, run.id
+                ).cancel_all()
+
+        results = await asyncio.gather(
+            self._cancel_executor_jobs(run), cancel_workers(), return_exceptions=True,
+        )
+        for side, result in zip(("executor", "ultra_worker"), results, strict=True):
+            if isinstance(result, BaseException):
+                log.warning("cancel_unconfirmed", run_id=str(run.id), side=side,
+                            error_type=type(result).__name__)
+        return all(result is True for result in results)
+
+    async def _cancel_executor_jobs(self, run: RunRow) -> bool:
         """取消全部活动工具并**核对结果**。
 
         不能在只发出取消请求时显示"已全部停止"（§4.2）。
@@ -1974,6 +2043,19 @@ class AgentRunner:
                     completion_reason=completion_reason,
                     stop_reason=detail or None,
                 )
+            if (status in {RunStatus.PAUSED, RunStatus.COMPLETED, RunStatus.FAILED}
+                    and (run.config_snapshot or {}).get("execution_mode", "standard") == "ultra"):
+                from sqlalchemy import update
+
+                from agent_workbench.contracts.delegation import TERMINAL_DELEGATIONS
+                from agent_workbench.persistence.tables import AgentDelegationRow
+
+                # After ownership/control checks, persist cleanup with the parent transition.
+                # The independent reconciler performs HTTP after commit; Standard scheduling stays independent.
+                await session.execute(update(AgentDelegationRow).where(
+                    AgentDelegationRow.parent_run_id == run_id,
+                    AgentDelegationRow.state.not_in(TERMINAL_DELEGATIONS),
+                ).values(cancel_requested=True, state="cancel_requested"))
             await append_event(
                 session,
                 session_id=run.session_id,

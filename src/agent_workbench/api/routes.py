@@ -34,6 +34,7 @@ from sqlalchemy.exc import IntegrityError
 
 from agent_workbench.agent.state import plan_step_lead_ids
 from agent_workbench.api.auth import LocalAuth
+from agent_workbench.api.delegations import router as delegations_router
 from agent_workbench.api.redaction import redact_api_value as _redact_api_value
 from agent_workbench.api.redaction import redact_event_payload
 from agent_workbench.api.sse import SSE_HEADERS, event_stream
@@ -106,6 +107,7 @@ from agent_workbench.runtime.commands import submit_control, submit_message
 
 router = APIRouter(prefix="/api")
 router.include_router(tool_activity_router)
+router.include_router(delegations_router)
 
 _auth = LocalAuth()
 
@@ -297,6 +299,7 @@ async def list_project_sessions(
                 "id": str(row.id),
                 "project_id": str(row.project_id) if row.project_id else None,
                 "title": _redact_api_value(row.title),
+                "execution_mode": row.execution_mode,
                 "status": row.status,
                 "provider_id": row.provider_id,
                 "model_name": row.model_name,
@@ -369,6 +372,7 @@ async def create_session(
             project_id=project_id,
             owner_id=settings.owner_id,
             title=payload.title,
+            execution_mode=payload.execution_mode.value,
             scope_snapshot=initial_scope.model_dump(),
             policy_snapshot=payload.policy.model_dump(),
             provider_id=selected_provider,
@@ -401,7 +405,8 @@ async def create_session(
         if payload.draft:
             return {
                 "session": {"id": str(session_row.id), "project_id": str(project_id) if project_id else None,
-                    "title": session_row.title, "status": session_row.status,
+                    "title": session_row.title,
+                "execution_mode": session_row.execution_mode, "status": session_row.status,
                     "provider_id": session_row.provider_id, "model_name": session_row.model_name,
                     "created_at": session_row.created_at.isoformat()},
                 "run": None, "note": "附件草稿会话；发送真实消息前不会启动 Agent。",
@@ -445,6 +450,7 @@ async def create_session(
                 ),
                 "thread_id": session_row.thread_id,
                 "title": session_row.title,
+                "execution_mode": session_row.execution_mode,
                 "status": session_row.status,
                 "scope": session_row.scope_snapshot,
                 "policy": session_row.policy_snapshot,
@@ -452,6 +458,7 @@ async def create_session(
             },
             "run": {
                 "id": str(run.id),
+                "execution_mode": run.config_snapshot["execution_mode"],
                 "status": str(run.status),
                 "provider_id": run.provider_id,
                 "model_name": run.model_name,
@@ -744,6 +751,14 @@ async def _control(
         ).scalar_one_or_none()
         if run is None:
             raise ApiError(ErrorCode.NOT_FOUND, f"run 不存在：{run_id}")
+        from agent_workbench.domain.run_state import get_session
+
+        parent = await get_session(session, run.session_id)
+        if parent.owner_id != get_settings().owner_id:
+            raise ApiError(ErrorCode.NOT_FOUND, "Run 不存在")
+        await session.execute(select(SessionRow).where(SessionRow.id == run.session_id).with_for_update())
+        run = (await session.scalars(select(RunRow).where(RunRow.id == run_id)
+            .with_for_update().execution_options(populate_existing=True))).one()
         current = RunStatus(run.status)
         if current in {RunStatus.COMPLETED, RunStatus.CANCELLED}:
             raise ApiError(ErrorCode.CONFLICT, f"run 已处于终态 {current}，不能再{kind}")
@@ -906,6 +921,7 @@ async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]
             "project_id": str(session_row.project_id) if session_row.project_id else None,
             "thread_id": session_row.thread_id,
             "title": session_row.title,
+                "execution_mode": session_row.execution_mode,
             "status": session_row.status,
             "scope": session_row.scope_snapshot,
             "policy": session_row.policy_snapshot,
@@ -918,6 +934,7 @@ async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]
                 "status": row.status,
                 "completion_reason": row.completion_reason,
                 "objective": row.objective,
+                "execution_mode": (row.config_snapshot or {}).get("execution_mode", "standard"),
                 "control_version": row.control_version,
                 "stop_reason": _redact_api_value(row.stop_reason),
                 "owner_generation": row.owner_generation,

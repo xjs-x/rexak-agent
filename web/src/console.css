@@ -901,3 +901,9 @@ code{color:#2b2b2b;background:#f4f4f4;border-color:#ececee}
 .chat-context-menu .danger { color: #b42318; }
 .sess-act:focus-visible, .sess-wrap:focus-within .sess-act { opacity: 1; }
 .proj-body .sess-wrap { margin-left: 18px; }
+
+.execution-mode select { background: var(--bg, #f5f5f7); color: inherit; border: 1px solid #ddd; border-radius: 8px; padding: 6px 8px; max-width: 220px; font: inherit; font-size: 12px; }
+.ultra-panel { margin: 12px 24px; padding: 12px 16px; border: 1px solid #c9c5ed; border-radius: 12px; background: #f8f7ff; max-height: 280px; overflow: auto; flex-shrink: 0; font-size: 13px; }
+.ultra-panel summary { cursor: pointer; font-weight: 600; }
+.delegation-item { padding: 10px 0; border-top: 1px solid #e6e3f4; overflow-wrap: anywhere; }
+.delegation-item small { color: #6b6878; }

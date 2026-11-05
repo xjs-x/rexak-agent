@@ -1,0 +1,51 @@
+{
+  "package": "@earendil-works/pi-coding-agent",
+  "version": "1.5.0",
+  "files": [
+    {
+      "name": "read",
+      "source_sha256": "a5493a6cc7a3a03ba23d345f603bc7ee839ead2fe0ea79a096107fb9ebaa03eb",
+      "result_sha256": "6586a1830b9380a79b071eeda5db829fdf1ed0cdd8cd4a96a407c934315818b1"
+    },
+    {
+      "name": "write",
+      "source_sha256": "0e9daec15a5001cafe651db391aed63a463c346d29b60e6dc91ef09477fd22f5",
+      "result_sha256": "62d00de8a6c0a3eefb419fc2d3a263678ecdc1c368cade4d18e5c4d98771d04b"
+    },
+    {
+      "name": "edit",
+      "source_sha256": "7a220a800ed2997338f08b22e780a3d114243f106c66d66eb33d50c8d7930297",
+      "result_sha256": "908587d1cdb6e2c57c34d5bc23e4a13e4cfb87caab0335cae2d784667548e006"
+    },
+    {
+      "name": "find",
+      "source_sha256": "cbb5e3a76e962899f833452ff26670c1fdbf333e7efdecb9953b07f6ebd14ed7",
+      "result_sha256": "afd1e4a76c264a8afb99c8f2953c3fecf7b9ea91322e101608a59f453e87bfdd"
+    },
+    {
+      "name": "grep",
+      "source_sha256": "651a8f76a1b5af4a1b52edd32d70691ebd15604436bedf65176ec7c7d4ad6174",
+      "result_sha256": "e63f4cdce65696e36a013b2b74d2378f2bd58fa53b14a57e136ab7929de9af30"
+    },
+    {
+      "name": "bash",
+      "source_sha256": "f32e87a42f66276b2eafaaf0848babf52523d37ab0fd448439586376747f03c4",
+      "result_sha256": "296af7ae321cc5510c4352cb5161f411af56f2cf4ea4dcc527b40f0533ee9514"
+    },
+    {
+      "name": "edit-diff",
+      "source_sha256": "fadc87523d52babf246967a1f1b921e621eb4437e50c50f8426c46cec3f05071",
+      "result_sha256": "9fb0c9a5c3f289fa1f7cd7b76bfcd5470817f984421581dbff35aee4216c5bc4"
+    },
+    {
+      "name": "truncate",
+      "source_sha256": "24c5350761b487c154f950acf56a995dc1acdeac0c5d0f096efdaac71c8c231e",
+      "result_sha256": "2d35dba41fe40c0235c8d23adf9cda644b97c926c47c11ab5097a996adeeba2f"
+    },
+    {
+      "name": "file-mutation-queue",
+      "source_sha256": "cd300f1ecae2b8d45a7c69011221f4f2e4e289865bf879df537c859889f26e5b",
+      "result_sha256": "d8f52779b97cb9ed989e2bdf016686a93dd9df6329d3cefc59428b653ce94a03"
+    }
+  ]
+}

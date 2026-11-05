@@ -219,6 +219,7 @@ class ProjectRow(TimestampMixin, Base):
 
 
 class SessionRow(TimestampMixin, Base):
+    execution_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="standard", server_default="standard")
     __tablename__ = "sessions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -247,7 +248,7 @@ class SessionRow(TimestampMixin, Base):
     #: session 事件序号分配器（在短事务内 `SELECT ... FOR UPDATE` 后递增）
     event_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
-    __table_args__ = (Index("ix_sessions_project_status", "project_id", "status"),)
+    __table_args__ = (Index("ix_sessions_project_status", "project_id", "status"), CheckConstraint("execution_mode IN ('standard', 'ultra')", name="session_execution_mode"))
 
 
 class RunRow(TimestampMixin, Base):
@@ -1177,3 +1178,63 @@ class SessionGraphReceiptRow(TimestampMixin, Base):
     request_id: Mapped[str] = mapped_column(String(256), primary_key=True)
     digest: Mapped[str] = mapped_column(String(64), nullable=False)
     receipt: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+
+class AgentDelegationRow(TimestampMixin, Base):
+    """主 Agent 的委派意图；不等同 A2A Task 或 Executor Operation。"""
+
+    __tablename__ = "agent_delegations"
+    id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    parent_session_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.sessions.id", ondelete="CASCADE"), nullable=False)
+    parent_run_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.runs.id", ondelete="CASCADE"), nullable=False)
+    parent_tool_call_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    context_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    handoff_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    worker_id: Mapped[str | None] = mapped_column(String(128))
+    a2a_task_id: Mapped[str | None] = mapped_column(String(128))
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    context_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    authorization_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="intent")
+    remote_state: Mapped[str | None] = mapped_column(String(64))
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    result_artifact_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    diagnostic: Mapped[str | None] = mapped_column(String(256))
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    __table_args__ = (
+        UniqueConstraint("parent_run_id", "parent_tool_call_id", name="uq_agent_delegation_call"),
+        Index("ix_agent_delegations_run_state", "parent_run_id", "state"),
+        UniqueConstraint("a2a_task_id", name="uq_agent_delegation_a2a_task"),
+    )
+
+
+class DelegationCollaborationRow(Base):
+    """Immutable bounded collaboration payload + delivery receipt, not Agent memory."""
+
+    __tablename__ = "delegation_collaboration"
+    id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    delegation_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.agent_delegations.id", ondelete="CASCADE"), nullable=False)
+    parent_run_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.runs.id", ondelete="CASCADE"), nullable=False)
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    delivery_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    __table_args__ = (UniqueConstraint("parent_run_id", "sequence", name="uq_collaboration_run_sequence"),)
+
+
+class DelegationEvidenceReadRow(Base):
+    """已交付证据视图的收据，正文在 CAS；不作为 Finding 或模型记忆。"""
+
+    __tablename__ = "delegation_evidence_reads"
+    id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    delegation_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey(f"{APP_SCHEMA}.agent_delegations.id", ondelete="CASCADE"), nullable=False)
+    tool_call_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
+    source_sha256: Mapped[str | None] = mapped_column(String(64))
+    response_artifact_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    __table_args__ = (UniqueConstraint("delegation_id", "tool_call_id", name="uq_delegation_evidence_call"),)

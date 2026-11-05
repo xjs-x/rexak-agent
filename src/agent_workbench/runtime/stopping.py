@@ -260,6 +260,7 @@ class FinishGate:
                     select(ToolOperationRow).where(
                         ToolOperationRow.session_id == session_id,
                         ToolOperationRow.job_id.is_(None),
+                        ToolOperationRow.execution_context["worker_tool_aggregate"].astext.is_distinct_from("true"),
                         ToolOperationRow.status.in_(("accepted", "running", "unknown")),
                     )
                 )

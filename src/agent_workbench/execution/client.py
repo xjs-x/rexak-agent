@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -55,6 +57,7 @@ class ExecutorProtocolError(RuntimeError):
 
 @runtime_checkable
 class ExecutorClient(Protocol):
+    async def execution_input_file(self, envelope: dict[str, Any], path: Path) -> dict[str, Any]: ...
     async def execution_skill_package(self, payload: dict[str, Any]) -> dict[str, Any]: ...
     async def capabilities(self) -> ExecutorCapabilities: ...
 
@@ -191,6 +194,10 @@ class HttpExecutorClient:
                 method, path, params=params, json=json_body, timeout=timeout
             )
         except (httpx.TransportError, httpx.TimeoutException) as exc:
+            # A lost mutation response is not permission to send it again. The caller
+            # owns reconciliation by stable operation identity (including after a fence change).
+            if method.upper() != "GET":
+                raise ExecutorConnectionError(f"执行请求响应不确定：{type(exc).__name__}: {exc}") from exc
             # 隧道可能已断；尝试一次退避重建后重试（**不加创建新 job 的副作用**）
             try:
                 await self._rebind()
@@ -433,6 +440,40 @@ class HttpExecutorClient:
         if not isinstance(data, dict):
             raise ExecutorProtocolError("环境发现返回了无效响应")
         return data
+
+    async def execution_input_file(self, envelope: dict[str, Any], path: Path) -> dict[str, Any]:
+        from agent_workbench.contracts.execution_runtime import InputFileArguments, OperationReceipt
+
+        value = InputFileArguments.model_validate(envelope["arguments"])
+
+        async def chunks():
+            with path.open("rb") as source:
+                while chunk := await asyncio.to_thread(source.read, 262144):
+                    yield chunk
+
+        try:
+            response = await self._d.put(
+                f"/execution/v1/input-files/{envelope['operation_id']}", content=chunks(),
+                headers={"Content-Type": "application/octet-stream",
+                         "X-Execution-Envelope": json.dumps(envelope, ensure_ascii=True)},
+                timeout=300,
+            )
+        except (httpx.TransportError, httpx.TimeoutException, OSError) as exc:
+            raise ExecutorConnectionError(f"附件交付结果不确定：{type(exc).__name__}") from exc
+        self._raise_for_status(response, context="原始附件交付")
+        try:
+            receipt = OperationReceipt.model_validate(response.json()).model_dump(mode="json")
+        except ValueError as exc:
+            raise ExecutorProtocolError("附件交付返回了非法回执；需按原操作身份核对") from exc
+        result = receipt.get("input_file") or {}
+        if (receipt["operation_id"] != envelope["operation_id"] or receipt["status"] != "succeeded"
+                or result.get("sha256") != value.sha256 or result.get("byte_size") != value.byte_size
+                or result.get("relative_path") != value.relative_path
+                or result.get("attachment_id") != str(value.attachment_id)
+                or result.get("worker_workspace_id") != (str(value.worker_workspace_id) if value.worker_workspace_id else None)
+                or result.get("session_id") != envelope["session_id"]):
+            raise ExecutorProtocolError("附件交付回执与请求不一致")
+        return receipt
 
     async def execution_skill_package(self, payload: dict[str, Any]) -> dict[str, Any]:
         response = await self._request("PUT", "/execution/v1/skill-packages", json_body=payload, data_client=True)

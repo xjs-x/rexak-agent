@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     history_assistance_retrieval_seconds: float = Field(default=0.5, gt=0, le=5)
     blind_test: bool = True
 
+    # Ultra 地址和凭据只由运维设置；模型不能指定。Standard 不连接 Worker。
+    ultra_worker_url: str = "http://127.0.0.1:8795"
+    ultra_worker_token: str = Field(default="", repr=False)
+    ultra_request_seconds: float = Field(default=10, gt=0, le=60)
+    ultra_worker_execution_enabled: bool = True
+
     # ---------- 数据库 ----------
     database_url: str = "postgresql+psycopg://workbench:workbench@127.0.0.1:55432/workbench"
     checkpoint_schema: str = "agent_checkpoint"

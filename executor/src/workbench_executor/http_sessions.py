@@ -12,11 +12,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
+import hmac
+import secrets
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from http.cookiejar import Cookie
+from http.cookies import CookieError, SimpleCookie
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
@@ -65,6 +69,7 @@ class RawResponse:
     elapsed_ms: float
     redirect_chain: list[str] = field(default_factory=list)
     truncated: bool = False
+    protocol_hops: list[dict[str, Any]] = field(default_factory=list)
     #: 请求体的编码事实（本地构造结果，**不**证明服务端解析成功）。
     request_encoding: str = "none"
     request_body_bytes: int = 0
@@ -125,9 +130,39 @@ class HttpSessionRegistry:
 
     def __init__(self, policy: NetworkPolicy | None, *, use_system_proxy: bool = False) -> None:
         self._policy = policy
+        self._cookie_key = secrets.token_bytes(32)
         self._sessions: dict[str, IdentitySession] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._use_system_proxy = use_system_proxy
+
+    def _protocol_hop(self, response: httpx.Response) -> dict[str, Any]:
+        # Equality labels are scoped to this Executor process, never reusable credentials.
+        def cookies(value: str, *, attributes: bool = False) -> list[dict[str, Any]]:
+            parsed = SimpleCookie()
+            try:
+                parsed.load(value)
+            except CookieError:
+                return []  # Raw evidence remains available; never expose an unparsed secret.
+            result = []
+            for name, morsel in parsed.items():
+                label = hmac.new(self._cookie_key, (name + "=" + morsel.value).encode(), hashlib.sha256).hexdigest()[:24]
+                item: dict[str, Any] = {"name": name, "value_id": label}
+                if attributes:
+                    item["attributes"] = {k: v for k, v in morsel.items() if v}
+                result.append(item)
+            return result
+
+        received = []
+        for value in response.headers.get_list("set-cookie"):
+            received.extend(cookies(value, attributes=True))
+        return {
+            "method": response.request.method, "url": str(response.request.url),
+            "status_code": response.status_code,
+            "request_cookies": cookies(response.request.headers.get("cookie", "")),
+            "response_cookies": received,
+            "headers": list(response.headers.multi_items()),
+            "cookie_id_scope": "executor_process; equality only, not proof of authenticated session",
+        }
 
     def _new_client(self, *, verify_tls: bool = True) -> httpx.AsyncClient:
         # trust_env=False 明确关闭"隐式继承系统代理"，避免本地目标经外部代理（§9.3）
@@ -349,9 +384,10 @@ class HttpSessionRegistry:
             body_bytes = None
 
         chain: list[str] = []
+        protocol_hops: list[dict[str, Any]] = []
         current_logical = url
         current_method = method.upper()
-        current_params = params
+        current_params = params or None
         current_body = body_bytes
         # 303/301/302 改 GET 后必须同时移除请求体与对应的实体头，
         # 否则会把仍带 Content-Type/Length 的 GET 发给目标（§6.2）。
@@ -398,8 +434,9 @@ class HttpSessionRegistry:
                 content=current_body,
                 follow_redirects=False,
             ) as response:
+                protocol_hops.append(self._protocol_hop(response))
                 location = response.headers.get("location")
-                if response.status_code in {301, 302, 303, 307, 308} and location:
+                if response.status_code in {301, 302, 303, 307, 308} and location and max_redirects != 0:
                     next_url = str(httpx.URL(current_logical).join(location))
                     # 逐跳范围检查：拒绝"首次解析通过就当整段任务永久放行"
                     policy.check(policy.resolve_mapping(next_url)[0])
@@ -438,6 +475,7 @@ class HttpSessionRegistry:
                     body=bytes(body),
                     elapsed_ms=(time.perf_counter() - request_started) * 1000,
                     redirect_chain=chain,
+                    protocol_hops=protocol_hops,
                     truncated=truncated,
                     request_encoding=encoded.mode,
                     request_body_bytes=encoded.byte_count,

@@ -275,9 +275,20 @@ class CommandRuntime:
         purpose: str,
         reservation: int,
     ) -> dict[str, Any]:
+        from workbench_executor.filesystem import WorkspaceFileSystem
+
         workspace_id = str(arguments.get("workspace_id") or envelope.session_id)
         workspace_root = self.session_workspace(workspace_id)
         workspace_root.mkdir(parents=True, exist_ok=True)
+        worker_workspace_id = arguments.get("worker_workspace_id")
+        if worker_workspace_id:
+            from uuid import UUID
+
+            worker_workspace_id = str(UUID(worker_workspace_id))
+            if envelope.delegation_id != worker_workspace_id or envelope.delegation_revision != 1:
+                raise RuntimeRejected("resource_owner_mismatch", "Worker 工作区与委派身份不匹配")
+            workspace_root = WorkspaceFileSystem(workspace_root).resolve(f".rexak/workers/{worker_workspace_id}", must_exist=False)
+            workspace_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         cwd_raw = str(arguments.get("cwd") or ".")
         cwd = (workspace_root / cwd_raw).resolve() if cwd_raw not in {"", "."} else workspace_root
         if cwd != workspace_root and workspace_root not in cwd.parents:
@@ -285,12 +296,27 @@ class CommandRuntime:
 
         job_dir = self.job_dir(job_id)
         argv, script_snapshot = self._resolve_argv(kind, arguments, job_dir, envelope)
+        if arguments.get("worker_file") is not None:
+            if not worker_workspace_id or kind != "command":
+                raise RuntimeRejected("validation_failed", "Worker 文件操作缺少独立工作区")
+            # -I excludes cwd, PYTHONPATH and user site packages. Keep cwd for file semantics.
+            argv = [sys.executable, "-I", "-m", "workbench_executor.worker_files"]
+            arguments = {**arguments, "stdin_text": json.dumps(arguments["worker_file"], ensure_ascii=False)}
         timeout = arguments.get("execution_timeout_seconds")
         deadline_at = None
         if timeout:
             from datetime import timedelta
 
             deadline_at = (datetime.now(UTC) + timedelta(seconds=int(timeout))).isoformat()
+        child_env = {str(k): str(v) for k, v in (arguments.get("env") or {}).items()}
+        if worker_workspace_id:
+            # Private default profiles/cookies/cache/temp, while retaining the existing trusted execution boundary.
+            for name, relative in {"HOME": ".home", "TMPDIR": ".tmp", "TMP": ".tmp", "TEMP": ".tmp",
+                    "XDG_CONFIG_HOME": ".home/.config", "XDG_CACHE_HOME": ".home/.cache",
+                    "XDG_DATA_HOME": ".home/.local/share"}.items():
+                target = WorkspaceFileSystem(workspace_root).resolve(relative, must_exist=False)
+                target.mkdir(parents=True, exist_ok=True, mode=0o700)
+                child_env[name] = str(target)
         spec: dict[str, Any] = {
             "schema_version": 1,
             "job_id": job_id,
@@ -300,7 +326,7 @@ class CommandRuntime:
             "kind": kind,
             "argv": argv,
             "cwd": str(cwd),
-            "env": {str(k): str(v) for k, v in (arguments.get("env") or {}).items()},
+            "env": child_env,
             "stdin_text": (arguments.get("params_json") if kind == "script" and arguments.get("params_json") is not None else arguments.get("stdin_text")),
             "execution_timeout_seconds": int(timeout) if timeout else None,
             "deadline_at": deadline_at,

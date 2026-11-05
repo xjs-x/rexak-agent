@@ -20,6 +20,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
 from agent_workbench.config.deployment import (  # noqa: E402
     remote_path,
@@ -232,13 +233,66 @@ def open_existing_console(settings: Settings, url: str, *, no_browser: bool) -> 
         valid = False
     if not valid:
         raise RuntimeError("API 端口被其他服务占用，未启动重复服务")
+    from agent_workbench.config.ultra_worker import read_worker_config
+
+    if (read_worker_config(settings) or settings.ultra_worker_token) and not worker_ready(settings):
+        raise RuntimeError("现有控制台缺少 Ultra Worker；请停止原启动窗口后重新启动，任务记录会保留")
     if not no_browser:
         webbrowser.open(url + "/console/")
     print(f"已打开现有 Rexak Agent 控制台：{url}/console/", flush=True)
     return True
 
 
-def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds: float) -> None:
+def worker_ready(settings: Settings) -> bool:
+    """只复用通过服务令牌、运行身份及 A2A Card 校验的 Worker。"""
+    from agent_workbench.config.ultra_worker import read_worker_config
+    from agent_workbench.execution.a2a_worker import A2AWorkerClient
+
+    config = read_worker_config(settings)
+    if not config and not settings.ultra_worker_token:
+        return False
+    token = settings.ultra_worker_token or config["token"]
+    try:
+        with httpx.Client(trust_env=False, timeout=2) as client:
+            response = client.get(
+                settings.ultra_worker_url.rstrip("/") + "/health",
+                headers={"Authorization": "Bearer " + token},
+            )
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        return False
+    if response.status_code != 200:
+        raise RuntimeError(f"Ultra Worker 健康检查失败（HTTP {response.status_code}），未启动重复服务")
+    try:
+        health = response.json()
+        valid = health.get("runtime") == "pi" and health.get("protocol") == "1.0"
+    except (ValueError, AttributeError):
+        valid = False
+    if not valid:
+        raise RuntimeError("Ultra Worker 端口服务身份不匹配，未启动重复服务")
+
+    async def check_card() -> None:
+        async with A2AWorkerClient(settings) as client:
+            await client.connect()
+
+    asyncio.run(check_card())
+    return True
+
+
+def wait_worker(child: subprocess.Popen[bytes], settings: Settings) -> None:
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            raise RuntimeError("Ultra Worker 启动失败，请检查 data/logs/launcher/worker.log")
+        if worker_ready(settings):
+            return
+        time.sleep(0.5)
+    raise RuntimeError("Ultra Worker 就绪超时，请检查 data/logs/launcher/worker.log")
+
+
+def launch(
+    *, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds: float,
+    recover: bool = True,
+) -> None:
     settings = get_settings()
     settings.ensure_directories()
     log_root = settings.log_root / "launcher"
@@ -272,10 +326,12 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
         try:
             with contextlib.ExitStack() as stack:
 
-                def spawn(name: str, child_env: dict[str, str]) -> subprocess.Popen[bytes]:
+                def spawn(
+                    name: str, child_env: dict[str, str], argv: list[str] | None = None
+                ) -> subprocess.Popen[bytes]:
                     output = stack.enter_context((log_root / f"{name}.log").open("wb"))
                     child = subprocess.Popen(
-                        [*cli, name],
+                        argv if argv is not None else [*cli, name],
                         cwd=ROOT,
                         env=child_env,
                         stdin=subprocess.DEVNULL,
@@ -290,8 +346,18 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
 
                 api = spawn("api", env)
                 wait_api(api, url)
+                from agent_workbench.config.ultra_worker import read_worker_config
+
+                if read_worker_config(settings) or settings.ultra_worker_token:
+                    if not worker_ready(settings):
+                        from scripts.start_ultra_worker import worker_process
+
+                        worker_argv, worker_env = worker_process(settings)
+                        worker = spawn("worker", worker_env, worker_argv)
+                        wait_worker(worker, settings)
+                    print("Ultra Worker / A2A 检查通过。", flush=True)
                 if not api_only:
-                    runner = spawn("runner", env)
+                    runner = spawn("runner", env, [*cli, "runner", "--no-recover"] if not recover else None)
                     deadline = time.monotonic() + 60
                     while time.monotonic() < deadline:
                         if runner.poll() is not None:
@@ -304,7 +370,7 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
                     else:
                         raise RuntimeError("Runner 就绪超时，请检查 data/logs/launcher/runner.log")
                 print(
-                    f"已启动：{url}/console/\n保留此窗口；按 Ctrl+C 停止 API 和 Runner。",
+                    f"已启动：{url}/console/\n保留此窗口；按 Ctrl+C 停止本次启动的服务。",
                     flush=True,
                 )
                 if not no_browser:
@@ -317,7 +383,7 @@ def launch(*, api_only: bool, check_only: bool, no_browser: bool, smoke_seconds:
         finally:
             for child in reversed(children):
                 stop_child(child)
-            print("本次启动的 API、Runner 已停止；数据库和 Kali Executor 保留运行。", flush=True)
+            print("本次启动的服务已停止；数据库和 Kali Executor 保留运行。", flush=True)
 
 
 def main() -> int:
@@ -331,6 +397,10 @@ def main() -> int:
     parser.add_argument("--api-only", action="store_true", help="只启动控制台，不执行模型任务")
     parser.add_argument("--check-only", action="store_true", help="只检查依赖，不启动 API/Runner")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--no-recover", dest="recover", action="store_false",
+        help="启动服务但保留旧任务的恢复状态，供维护验收使用",
+    )
     parser.add_argument("--smoke-seconds", type=float, default=0)
     args = parser.parse_args()
     if args.smoke_seconds < 0 or (args.smoke_seconds and not args.api_only):

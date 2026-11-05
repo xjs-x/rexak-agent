@@ -155,3 +155,23 @@ test("刷新后恢复未绑定的已上传附件；历史附件正文始终以�
   expect(history.container.querySelector("script")).toBeNull();
   expect(history.getByText("下载原文件").getAttribute("href")).toContain("/attachments/attachment-1/content");
 });
+
+
+test("新会话切换模式后不复用先前模式的附件草稿", async () => {
+  const prepare = vi.fn().mockResolvedValueOnce("ultra-draft").mockResolvedValueOnce("standard-draft");
+  function Harness({ mode }: { mode: string }) {
+    const queue = useAttachments("", prepare, true, mode);
+    return <><button onClick={() => queue.add([new File(["test"], "fixture.txt")])}>add-mode</button>
+      {queue.files.map(item => <button key={item.key} onClick={() => void queue.remove(item)}>remove-mode</button>)}
+      <span>{queue.files.map(item => item.state).join(",")}</span></>;
+  }
+  const view = render(<Harness mode="ultra" />);
+  fireEvent.click(view.getByText("add-mode"));
+  await waitFor(() => expect(view.getByText("ready")).toBeTruthy());
+  fireEvent.click(view.getByText("remove-mode"));
+  await waitFor(() => expect(view.queryByText("remove-mode")).toBeNull());
+  view.rerender(<Harness mode="standard" />);
+  fireEvent.click(view.getByText("add-mode"));
+  await waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(api.uploadAttachment).toHaveBeenLastCalledWith("standard-draft", expect.any(File), expect.any(String), expect.any(AbortSignal), expect.any(Function)));
+});

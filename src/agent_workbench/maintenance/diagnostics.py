@@ -98,7 +98,7 @@ def _record(row: Any, fields: str) -> dict[str, Any]:
 
 #: 旧 schema 可能缺少的列 / 表。缺列时必须 `defer` 读取，不能触发懒加载 IO。
 OPTIONAL_COLUMNS: dict[Any, tuple[str, ...]] = {
-    SessionRow: ("owner_id",),
+    SessionRow: ("owner_id", "execution_mode"),
     ToolOperationRow: ("execution_context", "result_snapshot"),
     ReportVersionRow: ("captured_snapshot",),
     LeadRow: ("merged_into_id", "required_conditions", "actionability_assessment"),
@@ -543,7 +543,7 @@ async def collect_run_diagnostic(
             )
             for row in runs
         ],
-        "session": _record(task, "id project_id thread_id title scope_snapshot policy_snapshot"),
+        "session": _record(task, "id project_id thread_id title execution_mode scope_snapshot policy_snapshot"),
         "session_knowledge": {
             "scope": "current_session_at_export_not_historical_run_result",
             **knowledge,

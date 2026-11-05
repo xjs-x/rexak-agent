@@ -5,13 +5,18 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent_workbench.contracts.delegation import ExecutionMode
+
 
 class NameUpdate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     name: str = Field(min_length=1, max_length=256)
 
 
+
+
 class SessionListItem(BaseModel):
+    execution_mode: ExecutionMode = ExecutionMode.STANDARD
     id: UUID
     project_id: UUID | None
     title: str

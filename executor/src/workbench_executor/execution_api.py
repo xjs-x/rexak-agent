@@ -19,6 +19,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import tempfile
 import uuid
 import zipfile
 from collections.abc import Callable
@@ -66,15 +67,16 @@ def create_router(get_state: Callable[[], Any], require_token: Callable[..., Any
     @router.post("/control", dependencies=[Depends(require_token)])
     async def sync_control(payload: proto.ExecutionControlSync) -> dict[str, Any]:
         state = get_state()
-        applied, view, reason = await state.ledger.sync_fence(
-            session_id=payload.session_id,
-            run_id=payload.run_id,
-            owner=payload.owner,
-            owner_generation=payload.owner_generation,
-            control_version=payload.control_version,
-            revocations=[item.model_dump() for item in payload.revocations],
-            expected_seq=payload.expected_seq,
-        )
+        async with state.execution_admission_lock:
+            applied, view, reason = await state.ledger.sync_fence(
+                session_id=payload.session_id,
+                run_id=payload.run_id,
+                owner=payload.owner,
+                owner_generation=payload.owner_generation,
+                control_version=payload.control_version,
+                revocations=[item.model_dump() for item in payload.revocations],
+                expected_seq=payload.expected_seq,
+            )
         if applied:
             await state.ledger.append_event(
                 event_id=str(uuid.uuid4()),
@@ -149,6 +151,82 @@ def create_router(get_state: Callable[[], Any], require_token: Callable[..., Any
     # ------------------------------------------------------------------ #
     # 操作
     # ------------------------------------------------------------------ #
+
+    @router.put("/input-files/{operation_id}", dependencies=[Depends(require_token)])
+    async def input_file(operation_id: str, request: Request) -> dict[str, Any]:
+        from workbench_executor.input_files import destination, publish, verify
+
+        state = get_state()
+        try:
+            envelope = proto.ExecutionOperationEnvelope.model_validate_json(
+                request.headers.get("X-Execution-Envelope", "")
+            )
+            value = proto.InputFileArguments.model_validate(envelope.arguments)
+            if envelope.action != "materialize_attachment" or envelope.operation_id != operation_id:
+                raise ValueError("输入操作身份不一致")
+            if envelope.request_digest != proto.execution_request_digest(envelope.action, envelope.arguments):
+                raise ValueError("输入操作摘要不一致")
+            uuid.UUID(operation_id)
+            if not state.execution_available:
+                raise RuntimeRejected("execution_disabled", "执行底座未启用")
+            await _require_current_fence(state, envelope)
+            target = destination(state.settings, envelope, value)
+            state.command_runtime._ensure_disk_headroom()
+        except (ValueError, OSError) as exc:
+            raise _http_error("validation_failed", str(exc), 422) from exc
+        # 不占用控制 admission 锁等待网络；最终发布前再次核对 fence。
+        staged = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".incoming-", delete=False) as output:
+                staged = Path(output.name)
+                size = 0
+                digest = hashlib.sha256()
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > value.byte_size:
+                        raise ValueError("输入超过声明大小")
+                    digest.update(chunk)
+                    output.write(chunk)
+                output.flush()
+                import os
+
+                os.fsync(output.fileno())
+            if size != value.byte_size or digest.hexdigest() != value.sha256:
+                raise ValueError("输入大小或 SHA-256 不一致")
+            async with state.execution_admission_lock:
+                await _require_current_fence(state, envelope)
+                target = destination(state.settings, envelope, value)
+                previous = await state.ledger.get_operation(operation_id)
+                if previous and (previous.session_id != envelope.session_id or previous.request_digest != envelope.request_digest):
+                    raise RuntimeRejected("operation_conflict", "相同操作身份的输入参数冲突")
+                if previous and previous.status == "succeeded":
+                    verify(target, value)
+                    return {**previous.receipt, "deduplicated": True}
+                if previous is None:
+                    await state.ledger.insert_operation(
+                        operation_id=operation_id, session_id=envelope.session_id, run_id=envelope.run_id,
+                        tool_call_id=envelope.tool_call_id, request_digest=envelope.request_digest,
+                        action=envelope.action, resource_id=None, owner_generation=envelope.owner_generation,
+                        dispatch_control_version=envelope.dispatch_control_version,
+                        session_control_seq=envelope.session_control_seq, delegation_id=envelope.delegation_id,
+                        delegation_revision=envelope.delegation_revision,
+                    )
+                deduplicated = publish(staged, target, value)
+                receipt = proto.OperationReceipt(
+                    operation_id=operation_id, action=envelope.action, status="succeeded",
+                    deduplicated=deduplicated, executed_at=_utcnow(), input_file={
+                        **value.model_dump(mode="json"), "relative_path": value.relative_path,
+                        "session_id": envelope.session_id, "operation_id": operation_id,
+                        "source": f"attachment:{value.attachment_id}:sha256:{value.sha256}",
+                    },
+                ).model_dump(mode="json")
+                await state.ledger.complete_operation(operation_id, status="succeeded", receipt=receipt)
+                return receipt
+        except (ValueError, OSError) as exc:
+            raise _http_error("validation_failed", str(exc), 422) from exc
+        finally:
+            if staged is not None:
+                staged.unlink(missing_ok=True)
 
     @router.post("/operations", dependencies=[Depends(require_token)])
     async def submit_operation(payload: dict[str, Any]) -> JSONResponse:
@@ -420,11 +498,19 @@ def create_router(get_state: Callable[[], Any], require_token: Callable[..., Any
             size = path.stat().st_size
             handle.seek(offset)
             data = handle.read(min(limit, max(0, size - offset)))
+        from workbench_executor.output_store import INDEX_FILENAME, OutputIndex
+
+        index = OutputIndex.load(root / INDEX_FILENAME, resource_id=resource_id)
+        stream_index = index.streams.get(stream) if index else None
         return proto.RawOutputSnapshot(
             resource_id=resource_id, stream=stream, stored_offset=offset,
             next_offset=offset + len(data), observed_size=size,
             sha256=hashlib.sha256(data).hexdigest(), data_base64=base64.b64encode(data).decode(),
             captured_at=_utcnow(), at_current_end=offset + len(data) >= size,
+            source_bytes=stream_index.source_bytes if stream_index else None,
+            missing_ranges=[list(item) for item in stream_index.missing_ranges()] if stream_index else [],
+            missing_ranges_truncated=stream_index.missing_truncated if stream_index else False,
+            collection_metadata_known=stream_index is not None,
             note="快照只覆盖本次已存字节区间；采集丢弃区间须结合 output-index/输出页核对。",
         ).model_dump(mode="json")
 

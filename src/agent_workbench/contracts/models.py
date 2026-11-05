@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field, SecretStr
 
 from agent_workbench.config.catalog import Capability, TokenEstimationMethod
+from agent_workbench.contracts.delegation import ExecutionMode
 
 
 class ModelProfileRead(BaseModel):
@@ -44,7 +45,10 @@ class ModelSettingsUpdate(BaseModel):
     set_default: bool = True
 
 
+
+
 class RunSummaryRead(BaseModel):
+    execution_mode: ExecutionMode = ExecutionMode.STANDARD
     id: str
     provider_id: str
     model_name: str

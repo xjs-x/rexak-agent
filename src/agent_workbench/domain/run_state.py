@@ -10,9 +10,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import Table, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -296,6 +297,20 @@ async def create_run(
     依赖 `uq_runs_active_per_session` 部分唯一索引兜底：即使并发提交绕过了
     `find_active_run` 的检查，数据库也会拒绝第二条。
     """
+    from agent_workbench.contracts.delegation import ExecutionMode
+
+    # Row-to-JSON reads the actual schema without selecting newer ORM columns.
+    # Legacy offline export fixtures can still create a Standard run before upgrade.
+    parent = (await session.execute(select(
+        func.to_jsonb(cast(Table, SessionRow.__table__).table_valued()).op("->>")("execution_mode")
+    ).where(SessionRow.id == session_id))).first()
+    if parent is None:
+        raise ApiError(ErrorCode.NOT_FOUND, "Session 不存在")
+    mode = ExecutionMode(parent[0] or "standard")
+    supplied = config_snapshot.get("execution_mode", mode.value)
+    if supplied != mode:
+        raise ApiError(ErrorCode.CONFLICT, "Run 模式必须与创建时的 Session 模式一致")
+    config_snapshot = {**config_snapshot, "execution_mode": mode.value}
     row = RunRow(
         session_id=session_id,
         objective=objective,

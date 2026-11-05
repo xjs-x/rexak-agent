@@ -122,6 +122,7 @@ export function Workbench({
             </p>
             <p className="objective">{run.objective || snapshot.session.title}</p>
             <div className="fact-grid">
+              <div className="fact"><small>运行模式</small><strong>{snapshot.session.execution_mode === "ultra" ? "Ultra（Pi 子 Agent）" : "Standard"}</strong></div>
               <div className="fact"><small>项目</small><strong>{projectName}</strong></div>
               <div className="fact"><small>范围模式</small><strong>{modeLabel(scope?.mode)}</strong></div>
               <div className="fact"><small>计划版本</small><strong>{plan ? `v${plan.revision} · ${steps.length} 步` : "未读取"}</strong></div>

@@ -32,6 +32,7 @@ from agent_workbench.agent.middleware import (
     ToolDispatchMiddleware,
     build_compaction_middleware,
 )
+from agent_workbench.agent.middleware.collaboration import CollaborationMiddleware
 from agent_workbench.agent.middleware.command_guard import CommandGuardMiddleware
 from agent_workbench.agent.middleware.history_assistance import HistoryAssistanceMiddleware
 from agent_workbench.agent.middleware.response_recovery import ResponseRecoveryMiddleware
@@ -225,6 +226,8 @@ def build_agent_middleware(
             idle_timeout_seconds=binding.request_timeout_seconds,
             price_catalog=price_catalog,
         ),
+        # Deliver after compaction so a new hint is not summarized before first use.
+        *([CollaborationMiddleware()] if any(getattr(t, "name", "") == "delegate_task" for t in tools) else []),
         *([FinishGateMiddleware()] if legacy_finish_checkpoint else []),
     ]
 
@@ -298,7 +301,40 @@ async def open_agent_runtime(
         graph = create_agent(
             model=model,
             tools=tools,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=SYSTEM_PROMPT + (
+                """
+
+## Ultra 模式：Main 与 Pi Worker 协作
+
+### 自主委派与任务分工
+
+- 你可以使用 delegate_task 自主委派 Pi Worker，并通过 get_delegated_task、wait_delegated_task、send_delegated_message、cancel_delegated_task 管理协作。是否委派、委派数量和任务分工由你根据当前目标与实际需求自主决定，无需固定角色或委派流程。
+- 优先将适合独立深入研究、并行探索或需要不同分析思路的局部任务交给 Worker。Main 继续负责整体目标、跨线索关联和关键决策，不必等待 Worker 完成才能推进其他工作。
+- **参考委派情形（不限于此）：** 存在源码或附件时，Main 可以探索 Web 服务与业务链路，Worker 并行分析源码或附件；存在多个值得研究的漏洞方向时，可以分别开展独立验证；遇到复杂过滤、编码或程序逻辑时，可以委派 Worker 深入分析，Main 继续推进其他线索；需要不同解题思路时，也可以让 Worker 独立研究同一局部问题。
+- 委派任务应具有清晰目标与适当边界，但不要预先规定 Worker 的具体操作顺序。允许 Worker 自主选择技术路线、调整假设并深入探索有价值的线索。以上情形仅用于启发委派决策，不构成固定分工或必须并行的要求。
+
+### 上下文交接与独立分析
+
+- 委派时通过 objective 明确目标，通过 background 提供必要背景，按需使用 context_refs 和 completion_requirements。重点传递已经观察到的事实、相关证据、当前假设和待解决问题，避免复制无关历史。
+- Worker 可以独立评价 Main 的技术假设，提出不同解释或新的探索方向。已有可靠证据优先复用，不必重复执行已经完成的原始测试。
+- Worker 使用独立配置的模型，并根据实际开放的能力使用 Kali 工具和 Session 证据。context_refs 用于推荐重要证据，Worker 也可以自主检索其他相关的 Session 工件。
+- 对于具有持久历史的已完成 Worker，可以通过 resume_from_delegation_id 发起关联的新任务，利用已有探索上下文继续研究。
+
+### 阶段性发现与动态协作
+
+- **重要发现应及时汇报：** Worker 可以在执行过程中通过 report_finding 主动向 Main 汇报足以影响整体决策的重要发现，而不必等待子任务结束。尤其是关键漏洞线索、利用链突破、重要前置条件或对现有假设的有力反证。汇报后 Worker 可以继续深入探索，形成“发现即反馈、探索不中断”的协作方式。
+- Main 应及时评估 Worker 的重要发现，并结合当前任务决定是否调整攻击方向、关联其他线索、补充委派或改变其他 Worker 的调查重点，而不是仅将其作为普通任务日志。
+- wait_delegated_task 可能因阶段性发现提前返回，此时 Worker 仍可能运行。Main 可以根据进展继续行动、等待后续结果，或通过 send_delegated_message 补充信息和调整调查重点。
+- Main 应综合自身与 Worker 的发现推进任务，合理利用不同 Worker 的独立探索成果，避免重复投入和无价值的并行工作。
+
+### 目标完成与结果汇总
+
+- 对 CTF 或指定目标，由 Main 综合实际执行结果、Worker 发现和平台反馈判断目标是否完成。Worker 报告的 Flag 可以作为重要候选线索推进任务，不要求固定 Flag 格式或机械重放已完成的探索。
+- 达到用户目标后，及时结束不再需要的协作任务；尚未完成时，根据实际进展自主继续探索、调整策略或结束，不设置固定失败次数。
+- 最终报告简洁说明目标结果、关键执行路径、Main 与 Worker 的贡献、重要证据引用及尚未解决的问题。
+"""
+                if chosen.ultra else ""
+            ),
             middleware=middleware,
             state_schema=AgentGraphState,
             context_schema=RunContext,

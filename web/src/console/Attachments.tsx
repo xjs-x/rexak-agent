@@ -5,7 +5,7 @@ export type AttachmentSend = (text: string, ids?: string[], session?: string, ke
 type Pending = { key: string; file?: File; name: string; size: number; type: string;
   progress: number; state: "uploading" | "ready" | "failed"; error?: string; attachment?: Attachment };
 
-export function useAttachments(sessionId: string, prepare?: () => Promise<string>, enabled = true) {
+export function useAttachments(sessionId: string, prepare?: () => Promise<string>, enabled = true, draftKey = "") {
   const [files, setFiles] = useState<Pending[]>([]);
   const [recoveryError, setRecoveryError] = useState("");
   const filesRef = useRef(files);
@@ -46,7 +46,7 @@ export function useAttachments(sessionId: string, prepare?: () => Promise<string
       for (const controller of controllers.current.values()) controller.abort();
       controllers.current.clear();
     };
-  }, [sessionId, enabled]);
+  }, [sessionId, enabled, draftKey]);
 
   const patch = (key: string, update: Partial<Pending>) => setFiles((current) =>
     current.map((item) => item.key === key ? { ...item, ...update } : item));

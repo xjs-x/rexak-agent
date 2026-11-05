@@ -15,6 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from agent_workbench.contracts.delegation import ExecutionMode
 from agent_workbench.contracts.enums import (
     CommandKind,
     CommandStatus,
@@ -123,7 +124,10 @@ class IdentityRef(_Base):
     auth_revision: int = 0
 
 
+
+
 class SessionCreate(_Base):
+    execution_mode: ExecutionMode = ExecutionMode.STANDARD
     draft: bool = False
     initial_skill_refs: list[str] = Field(default_factory=list, max_length=20)
     project_id: UUID | None = None
@@ -138,6 +142,7 @@ class SessionCreate(_Base):
 
 
 class Session(_Base):
+    execution_mode: ExecutionMode = ExecutionMode.STANDARD
     id: UUID
     project_id: UUID | None = None
     active_identity_id: UUID | None = None

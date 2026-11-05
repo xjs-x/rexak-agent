@@ -41,7 +41,7 @@ from agent_workbench.contracts.http import (
 from agent_workbench.contracts.planning import planning_digest
 from agent_workbench.contracts.tool import ArtifactRef, ToolError, ToolResult
 from agent_workbench.domain.scope import ScopeViolation, TargetMappingRequired
-from agent_workbench.evidence.artifacts import redact_text
+from agent_workbench.evidence.artifacts import contains_secret_marker, redact_text
 from agent_workbench.execution.client import (
     ExecutorConnectionError,
     ExecutorProtocolError,
@@ -148,6 +148,31 @@ def _preview_text(raw: bytes, content_type: str, limit: int) -> tuple[str, bool]
             "已保留原始字节为工件，未做猜测性解码。",
             truncated,
         )
+
+
+def _protocol_feedback(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project raw evidence to a readable view; retain duplicate headers."""
+    def headers(items: list[Any]) -> list[list[str]]:
+        result = []
+        for name, value in items:
+            key = str(name).lower()
+            if key in {"set-cookie", "cookie", "authorization", "proxy-authorization"}:
+                value = "<redacted; see cookie equality labels>" if "cookie" in key else "<redacted>"
+            elif contains_secret_marker(str(name)):
+                value = "<redacted>"
+            else:
+                value = redact_text(str(value))
+            result.append([str(name), str(value)])
+        return result
+
+    hops = []
+    for hop in payload.get("protocol_hops", []):
+        hops.append({
+            **{k: hop.get(k) for k in ("method", "status_code", "request_cookies", "response_cookies", "cookie_id_scope")},
+            "url": redact_text(str(hop.get("url", ""))),
+            "headers": headers(hop.get("headers", [])),
+        })
+    return {"response_headers": headers(payload.get("headers", [])), "http_hops": hops}
 
 
 def _job_state_to_status(state: str) -> OperationStatus:
@@ -535,6 +560,7 @@ async def run_http_request(
     }
     truncated = False
     if payload:
+        data.update(_protocol_feedback(payload))
         data.update(
             {
                 "status_code": payload.get("status_code"),

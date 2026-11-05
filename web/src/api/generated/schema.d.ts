@@ -38,6 +38,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/delegations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Delegations */
+        get: operations["list_delegations_api_sessions__session_id__delegations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/session": {
         parameters: {
             query?: never;
@@ -493,6 +510,23 @@ export interface paths {
         };
         /** List Findings */
         get: operations["list_findings_api_sessions__session_id__findings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/graph": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Session Graph */
+        get: operations["get_session_graph_api_sessions__session_id__graph_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1548,6 +1582,76 @@ export interface components {
             /** Source */
             source?: ("explicit" | "plan_inferred") | null;
         };
+        /** DelegationList */
+        DelegationList: {
+            /** Tasks */
+            tasks: components["schemas"]["DelegationRead"][];
+            /**
+             * Runtime
+             * @default pi
+             * @constant
+             */
+            runtime: "pi";
+            /**
+             * Note
+             * @default 新子任务可使用独立 Kali 工作区的六个基础工具及历史证据读取；不支持 Pi 断点续跑。
+             */
+            note: string;
+        };
+        /** DelegationRead */
+        DelegationRead: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Parent Session Id
+             * Format: uuid
+             */
+            parent_session_id: string;
+            /**
+             * Parent Run Id
+             * Format: uuid
+             */
+            parent_run_id: string;
+            /** Parent Tool Call Id */
+            parent_tool_call_id: string;
+            /** Worker Id */
+            worker_id: string | null;
+            /** A2A Task Id */
+            a2a_task_id: string | null;
+            /** Context Id */
+            context_id?: string | null;
+            /** Objective */
+            objective: string;
+            state: components["schemas"]["DelegationState"];
+            /** Remote State */
+            remote_state: string | null;
+            /** Summary */
+            summary: string;
+            /** Result Artifact Id */
+            result_artifact_id: string | null;
+            /** Diagnostic */
+            diagnostic: string | null;
+            /** Cancel Requested */
+            cancel_requested: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * DelegationState
+         * @enum {string}
+         */
+        DelegationState: "intent" | "submitting" | "unknown" | "accepted" | "working" | "cancel_requested" | "completed" | "failed" | "cancelled" | "rejected";
         /** DutyCard */
         DutyCard: {
             /** Delegation Id */
@@ -1750,6 +1854,11 @@ export interface components {
             /** Notes */
             notes?: string[];
         };
+        /**
+         * ExecutionMode
+         * @enum {string}
+         */
+        ExecutionMode: "standard" | "ultra";
         /**
          * ExecutionOperationResponse
          * @description 关闭/取消操作回执。`process_confirmed_exited=false` 时必须显示为"未确认"。
@@ -2451,6 +2560,8 @@ export interface components {
         };
         /** RunSummaryRead */
         RunSummaryRead: {
+            /** @default standard */
+            execution_mode: components["schemas"]["ExecutionMode"];
             /** Id */
             id: string;
             /** Provider Id */
@@ -2546,6 +2657,8 @@ export interface components {
         };
         /** SessionCreate */
         SessionCreate: {
+            /** @default standard */
+            execution_mode: components["schemas"]["ExecutionMode"];
             /**
              * Draft
              * @default false
@@ -2579,6 +2692,8 @@ export interface components {
         };
         /** SessionListItem */
         SessionListItem: {
+            /** @default standard */
+            execution_mode: components["schemas"]["ExecutionMode"];
             /**
              * Id
              * Format: uuid
@@ -2895,6 +3010,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ToolActivityDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_delegations_api_sessions__session_id__delegations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DelegationList"];
                 };
             };
             /** @description Validation Error */
@@ -3813,6 +3959,39 @@ export interface operations {
                 limit?: number;
                 offset?: number;
             };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_session_graph_api_sessions__session_id__graph_get: {
+        parameters: {
+            query?: never;
             header?: never;
             path: {
                 session_id: string;

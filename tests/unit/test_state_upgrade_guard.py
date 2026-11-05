@@ -67,7 +67,9 @@ async def test_runner_refuses_unversioned_checkpoint_before_resuming() -> None:
 def test_business_schema_version_rejects_older_and_future_revisions() -> None:
     expected = expected_business_revisions()
     assert len(expected) == 1
-    assert expected == {"f19a30b742c1"}
+    assert expected == {"e05b731f4d69"}
+    with pytest.raises(BusinessSchemaMismatchError):
+        assert_business_revisions({"b72e409c1a36"}, expected)
     assert_business_revisions(expected, expected)
     with pytest.raises(BusinessSchemaMismatchError, match="业务库 schema 版本不匹配"):
         assert_business_revisions({"older-revision"}, expected)

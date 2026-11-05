@@ -1,0 +1,11 @@
+import type { AgentTool } from '@earendil-works/pi-agent-core';
+type Factory = (cwd: string, options: { operations: object; autoResizeImages?: boolean; exposeSessionEnvironment?: boolean }) => AgentTool;
+export const createReadToolDefinition: Factory;
+export const createWriteToolDefinition: Factory;
+export const createEditToolDefinition: Factory;
+export const createFindToolDefinition: Factory;
+export const createGrepToolDefinition: Factory;
+export const createBashToolDefinition: Factory;
+export function truncateHead(text: string, options?: { maxBytes?: number; maxLines?: number }): { content: string; truncated: boolean };
+export function truncateTail(text: string, options?: { maxBytes?: number; maxLines?: number }): { content: string; truncated: boolean };
+export function truncateLine(text: string): { text: string; wasTruncated: boolean };

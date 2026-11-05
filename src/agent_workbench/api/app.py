@@ -183,6 +183,15 @@ def create_app() -> FastAPI:
     app.include_router(capabilities_router)
     # 执行底座：会话资源 / 输出 / 值班 / 环境（不驱动 Agent，不把 stdout 塞 SSE）
     app.include_router(execution_router)
+    from agent_workbench.api.worker_evidence import router as worker_evidence_router
+
+    app.include_router(worker_evidence_router)
+    from agent_workbench.api.worker_tools import router as worker_tools_router
+
+    app.include_router(worker_tools_router)
+    from agent_workbench.api.worker_collaboration import router as worker_collaboration_router
+
+    app.include_router(worker_collaboration_router)
     from agent_workbench.api.skills import router as skills_router
 
     app.include_router(skills_router)

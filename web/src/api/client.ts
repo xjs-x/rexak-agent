@@ -1,5 +1,8 @@
 import type { components } from "./generated/schema";
 
+export type ExecutionMode = components["schemas"]["ExecutionMode"];
+export type DelegationList = components["schemas"]["DelegationList"];
+
 export type Attachment = components["schemas"]["AttachmentRead"];
 export type AttachmentSlice = components["schemas"]["AttachmentSlice"];
 
@@ -23,6 +26,7 @@ export type RunItem = components["schemas"]["RunSummaryRead"];
 
 export interface Snapshot {
   session: {
+    execution_mode?: ExecutionMode;
     id: string;
     project_id: string | null;
     title: string;
@@ -226,6 +230,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export class ApiClient {
+  delegations(sessionId: string): Promise<DelegationList> {
+    return this.withSessionRetry(() => request(`/sessions/${sessionId}/delegations`));
+  }
   skills(query = "", offset = 0): Promise<SkillPage> {
     return request(`/skills?query=${encodeURIComponent(query)}&offset=${offset}&limit=50`);
   }

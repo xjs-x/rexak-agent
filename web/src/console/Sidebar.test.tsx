@@ -6,7 +6,7 @@ import { DeleteSessionDialog, RenameDialog } from "./Dialogs";
 import type { SessionItem } from "../api/client";
 
 afterEach(cleanup);
-const chat: SessionItem = { id: "chat", project_id: null, title: "独立聊天", status: "active",
+const chat: SessionItem = { execution_mode: "standard", id: "chat", project_id: null, title: "独立聊天", status: "active",
   provider_id: "xiaomi", model_name: "mimo-v2.6-pro", created_at: "2026-10-28T00:00:00Z" };
 function sidebar() {
   const callbacks = { onSelectSession: vi.fn(), onNewChat: vi.fn(), onNewProject: vi.fn(), onSearch: vi.fn(),

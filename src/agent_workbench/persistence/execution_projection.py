@@ -40,10 +40,13 @@ async def sync_resource_operation(session: AsyncSession, resource: ExecutionReso
     status = execution_operation_status(
         resource.state, resource.exit_code, resource.termination_reason
     )
+    if terminal and (operation.result_snapshot or {}).get("helper_ok") is False:
+        status = "failed"
     operation.status = status
     operation.updated_at = datetime.now(UTC)
     if terminal:
         operation.result_snapshot = {
+            **(operation.result_snapshot or {}),
             "status": status,
             "data": {
                 "resource_id": str(resource.resource_id),

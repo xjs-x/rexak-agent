@@ -202,6 +202,8 @@ class AgentGraphState(LegacyProtocolState):
     # --- 身份 ---
     session_id: NotRequired[str]
     active_run_id: NotRequired[str]
+    #: Additive checkpoint delivery cursor; committed atomically with finding messages.
+    collaboration_cursor: NotRequired[dict[str, Any]]
     segment_index: NotRequired[int]
 
     # --- 目标与计划 ---

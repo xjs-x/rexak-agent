@@ -128,6 +128,7 @@ class SessionRepository:
         provider_id: str | None = None,
         model_name: str | None = None,
         thread_id: str | None = None,
+        execution_mode: str = "standard",
     ) -> SessionRow:
         if owner_id is None and project_id is not None:
             project = await ProjectRepository(self._s).get(project_id)
@@ -135,6 +136,7 @@ class SessionRepository:
         row = SessionRow(
             id=uuid4(),
             project_id=project_id,
+            execution_mode=execution_mode,
             owner_id=owner_id or get_settings().owner_id,
             # 稳定映射：thread_id 由 session 推导，确保长期续用同一 thread
             thread_id=thread_id or f"session-{uuid4().hex}",

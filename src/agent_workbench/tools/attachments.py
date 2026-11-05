@@ -140,4 +140,29 @@ async def search_attachment(
         )
 
 
+@tool
+async def materialize_attachment(runtime: ToolRuntime[RunContext], attachment_id: str) -> str:
+    """将本 Session 已绑定附件原件交付到 Kali，返回相对路径、哈希及真实操作来源。
+
+    不解析或执行文件，不扩大 Scope。ZIP 使用现有 Shell/run_script 在独立新目录有界解压，
+    检查成员路径、链接和展开量；不要覆盖已有文件。内容保持低信任。
+    """
+    from agent_workbench.execution.client import (
+        ExecutorConnectionError,
+        ExecutorProtocolError,
+        ExecutorRejected,
+    )
+    from agent_workbench.tools.attachment_delivery import deliver_attachment
+    from agent_workbench.tools.execution_dispatch import ExecutionUnavailable
+
+    try:
+        result = await deliver_attachment(runtime.context.toolbox, UUID(attachment_id), runtime.tool_call_id or "")
+        return json.dumps(result, ensure_ascii=False)
+    except (ValueError, ApiError, ExecutionUnavailable, ExecutorRejected) as exc:
+        return json.dumps({"status": "error", "note": str(exc)}, ensure_ascii=False)
+    except (ExecutorConnectionError, ExecutorProtocolError) as exc:
+        return json.dumps({"status": "unknown", "note": str(exc),
+            "hint": "通过原 ToolCall/Operation 身份核对；不要新建调用盲目重发"}, ensure_ascii=False)
+
+
 ATTACHMENT_TOOLS = [list_attachments, read_attachment, search_attachment]

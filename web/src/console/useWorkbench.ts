@@ -3,6 +3,7 @@ import {
   api,
   ApiRequestError,
   type AgentEvent,
+  type ExecutionMode,
   type ConversationEntry,
   type FindingItem,
   type LeadItem,
@@ -73,6 +74,8 @@ export interface DeleteResult {
 }
 
 export interface WorkbenchApi {
+  executionMode: ExecutionMode;
+  setExecutionMode: (mode: ExecutionMode) => void;
   ready: boolean;
   attachmentsEnabled: boolean;
   bootError: string;
@@ -197,6 +200,7 @@ export function useWorkbench(): WorkbenchApi {
   const [standalone, setStandalone] = useState<SessionItem[]>([]);
   const [projects, setProjects] = useState<ProjectGroup[]>([]);
   const [sessionId, setSessionId] = useState("");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("standard");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [pendingProjectId, setPendingProjectId] = useState<string | null>(null);
   const [session, setSession] = useState<Snapshot["session"] | null>(null);
@@ -709,6 +713,7 @@ export function useWorkbench(): WorkbenchApi {
   const newChat = useCallback(
     (projectId?: string | null) => {
       preferredSessionRef.current = "";
+      setExecutionMode("standard");
       setSessionId("");
       setPendingProjectId(projectId ?? null);
       setSelectedProjectId(projectId ?? "");
@@ -771,12 +776,13 @@ export function useWorkbench(): WorkbenchApi {
     const projectId = await ensureProjectId();
     const profile = modelSettings?.profiles.find((item) => `${item.provider_id}/${item.model_name}` === selectedModelKey);
     const created = await api.createSession(projectId, {
+      execution_mode: executionMode,
       project_id: projectId, title: "附件草稿", initial_objective: "", draft: true,
       provider_id: profile?.provider_id, model_name: profile?.model_name,
     });
     await refreshProject(projectId);
     return created.session.id;
-  }, [ensureProjectId, modelSettings, refreshProject, selectedModelKey, sessionId]);
+  }, [ensureProjectId, executionMode, modelSettings, refreshProject, selectedModelKey, sessionId]);
 
   const send = useCallback(
     async (text: string, attachments?: string[], attachmentSession?: string, messageKey?: string) => {
@@ -823,6 +829,7 @@ export function useWorkbench(): WorkbenchApi {
         }
         const projectId = await ensureProjectId();
         const created = await api.createSession(projectId, {
+          execution_mode: executionMode,
           project_id: projectId,
           title: content.slice(0, 30) || "新测试任务",
           initial_objective: content,
@@ -844,7 +851,7 @@ export function useWorkbench(): WorkbenchApi {
         setBusy(false);
       }
     },
-    [busy, ensureProjectId, modelLocked, modelSettings, refreshProject, selectedModelKey, sessionId],
+    [busy, ensureProjectId, executionMode, modelLocked, modelSettings, refreshProject, selectedModelKey, sessionId],
   );
 
   const control = useCallback(
@@ -983,6 +990,8 @@ export function useWorkbench(): WorkbenchApi {
     notice,
     modelSettings,
     modelOptions,
+    executionMode,
+    setExecutionMode,
     selectedModelKey,
     currentModelKey,
     modelLocked,

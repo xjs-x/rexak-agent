@@ -13,6 +13,7 @@ from agent_workbench.contracts.errors import ApiError
 from agent_workbench.persistence.repositories import ExecutionResourceRepository
 from agent_workbench.persistence.tables import (
     APP_METADATA,
+    AgentDelegationRow,
     ArtifactRow,
     AttachmentAnalysisRow,
     AttachmentRow,
@@ -36,6 +37,12 @@ async def delete_chat(db: AsyncSession, session_id: UUID, settings: Settings) ->
         raise ApiError(ErrorCode.NOT_FOUND, "对话不存在")
     runs = list((await db.scalars(select(RunRow).where(
         RunRow.session_id == session_id).with_for_update())).all())
+    unsettled = await db.scalar(select(AgentDelegationRow.id).where(
+        AgentDelegationRow.parent_session_id == session_id,
+        AgentDelegationRow.state.not_in(["completed", "failed", "cancelled", "rejected"]),
+    ).limit(1))
+    if unsettled:
+        raise ApiError(ErrorCode.CONFLICT, "存在未决 Ultra 子任务；必须先核对停止状态再删除")
     resources = await ExecutionResourceRepository(db).active_for_session(session_id)
     operations = select(ToolOperationRow.operation_id).where(ToolOperationRow.session_id == session_id)
     jobs = list((await db.scalars(select(ToolJobRow).where(

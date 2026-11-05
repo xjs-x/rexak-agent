@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type AgentEvent,
+  type ExecutionMode,
   type ConversationEntry,
   type RunItem,
   type ToolActivityDetail,
@@ -10,6 +11,7 @@ import {
   type WeaknessItem,
 } from "../api/client";
 import { Icon } from "./Icon";
+import { ExecutionModeSelect } from "./Ultra";
 import { AttachmentCards, PendingAttachments, useAttachments, formatSize, type AttachmentSend } from "./Attachments";
 import { MarkdownText } from "./Markdown";
 import type { ModelOption } from "./useWorkbench";
@@ -58,6 +60,8 @@ function buildTimeline(conversation: ConversationEntry[], tools: ToolActivityIte
 
 /* ---------------- 输入框 ---------------- */
 export function Composer({
+  executionMode = "standard",
+  onExecutionModeChange,
   attachmentsEnabled = false,
   sessionId = "",
   onPrepareAttachments,
@@ -77,6 +81,8 @@ export function Composer({
   onToast,
   seed,
 }: {
+  executionMode?: ExecutionMode;
+  onExecutionModeChange?: (mode: ExecutionMode) => void;
   attachmentsEnabled?: boolean;
   sessionId?: string;
   onPrepareAttachments?: () => Promise<string>;
@@ -101,7 +107,7 @@ export function Composer({
   const [modelMenu, setModelMenu] = useState(false);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const queue = useAttachments(sessionId, onPrepareAttachments, attachmentsEnabled);
+  const queue = useAttachments(sessionId, onPrepareAttachments, attachmentsEnabled, executionMode);
   const submitting = useRef(false);
   const pendingMessage = useRef<{ signature: string; key: string } | null>(null);
   const current = models.find((model) => model.key === modelKey) ?? models[0];
@@ -252,6 +258,7 @@ export function Composer({
         }}
       />
       <div className="composer-bar">
+        {onExecutionModeChange && <ExecutionModeSelect value={executionMode} onChange={onExecutionModeChange} disabled={busy || disabled || queue.files.length > 0} />}
         <button
           type="button"
           className="attach"

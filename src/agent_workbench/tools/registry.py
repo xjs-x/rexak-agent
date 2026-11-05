@@ -20,7 +20,7 @@ from typing import Any
 
 from agent_workbench.config.settings import Settings, get_settings
 from agent_workbench.contracts.tool import ExecutorCapabilities
-from agent_workbench.tools.attachments import ATTACHMENT_TOOLS
+from agent_workbench.tools.attachments import ATTACHMENT_TOOLS, materialize_attachment
 from agent_workbench.tools.binary import BINARY_TOOLS
 from agent_workbench.tools.browser import BROWSER_TOOLS
 from agent_workbench.tools.commands import COMMAND_TOOLS
@@ -46,6 +46,7 @@ from agent_workbench.tools.verification import VERIFICATION_TOOLS
 class ToolSelection:
     """一次 run 的工具选择。reason 用于把"为什么关掉某组"写进诊断。"""
 
+    ultra: bool = False
     http: bool = True
     #: 浏览器工具。真实可用性由 Executor 的能力预检决定；不可用时执行岛会返回
     #: `browser_unavailable`，控制端据此给出确定失败，而不是假装成功。
@@ -76,6 +77,7 @@ class ToolSelection:
 
     def to_manifest(self) -> dict[str, Any]:
         return {
+            **({"ultra": True} if self.ultra else {}),
             "http": self.http,
             "browser": self.browser,
             "files": self.files,
@@ -196,7 +198,13 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
     """按选择装配工具列表。"""
     chosen = selection or default_selection()
     tools: list[Any] = []
+    if chosen.ultra:
+        from agent_workbench.tools.delegation import DELEGATION_TOOLS
+
+        tools.extend(DELEGATION_TOOLS)
     tools.extend(ATTACHMENT_TOOLS)
+    if chosen.command:
+        tools.append(materialize_attachment)
     tools.extend(BINARY_TOOLS)
     if chosen.http:
         tools.extend(HTTP_TOOLS)

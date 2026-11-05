@@ -1,3 +1,4 @@
+import { DelegationPanel } from "./console/Ultra";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
@@ -283,6 +284,7 @@ export default function App() {
           )}
 
           <div className="stage">
+            {wb.session?.execution_mode === "ultra" && <DelegationPanel sessionId={wb.sessionId} mainStatus={wb.run?.status ?? "未启动"} />}
             {!wb.sessionId && view === "chat" ? (
               <section className="view empty-view">
                 <div className="empty-wrap">
@@ -296,6 +298,8 @@ export default function App() {
                   <p className="empty-sub">描述目标或指令，我先给计划，再按你授权的范围执行。</p>
                   <div className="composer-wrap">
                     <Composer
+                      executionMode={wb.executionMode}
+                      onExecutionModeChange={wb.setExecutionMode}
                       attachmentsEnabled={wb.attachmentsEnabled}
                       sessionId={wb.sessionId}
                       onPrepareAttachments={wb.prepareAttachmentSession}

@@ -214,6 +214,17 @@ async def submit_control(
     )
 
     if result.created:
+        if kind in URGENT_KINDS and (run.config_snapshot or {}).get("execution_mode", "standard") == "ultra":
+            from sqlalchemy import update
+
+            from agent_workbench.contracts.delegation import TERMINAL_DELEGATIONS
+            from agent_workbench.persistence.tables import AgentDelegationRow
+
+            # Durable stop intent survives a quick pause/resume and control-plane restart.
+            await session.execute(update(AgentDelegationRow).where(
+                AgentDelegationRow.parent_run_id == run.id,
+                AgentDelegationRow.state.not_in(TERMINAL_DELEGATIONS),
+            ).values(cancel_requested=True, state="cancel_requested"))
         await append_event(
             session,
             session_id=run.session_id,

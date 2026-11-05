@@ -2,6 +2,53 @@
 
 当前公开交付结果见 [v1.0 验收摘要](validation-v1.md)。本页按时间保留各阶段记录，历史部署状态与测试范围不代表后续状态。
 
+## 2026-11-05：CTF 通用附件交付
+
+已实现 materialize_attachment，将当前 Session 已绑定原件流式交付到 Kali 固定输入目录；delegate_task 可选 attachment_ids，使用同一服务向各 Worker 独立目录交付，完成后才提交 A2A。沿用原 Operation/fence/权限与证据边界，不增加 ZIP 专用工具。合成 Flask ZIP 经真实 Kali Main 及两个 Worker 的 bash/read/grep/find 文件后端验证；A2A 模型启动用确定性替身，不代表付费模型自主表现。全量回归 1148 passed / 4 skipped；全量启动后的边界补充由最终 18 项定向验证覆盖。类型、编码、协议生成和构建通过，本次修改文件 Ruff 通过；全仓仍有 57 项历史实验问题。原桌面入口和 Kali 25 个已安装文件哈希已验收，旧任务/数据保持，未访问在线 CTF 或调用付费模型。详见[实施报告](../reports/ctf-archive-attachment-implementation.md)。
+
+## 2026-11-05：Ultra 桌面启动补修
+
+修复原桌面入口未托管 Ultra Worker：配置存在时在 Runner 前补启并核验鉴权、运行身份和 A2A Card，统一监测和清理；明确区分 Worker 与 Kali 基础设施错误。维护启动可选择不续跑旧任务。原入口已实测启动并复用 API、Runner 和 Worker，Kali 24 文件哈希一致、保留原进程，旧任务和模型调用计数保持。全量 unit/integration 1123 passed / 3 skipped，最终启动专项 33 passed（覆盖全量开始后补充的边界，不累加）；类型、编码、本次修改文件格式检查及前端/Worker 构建通过。全仓格式检查仍有历史 experiments 目录 57 项问题。未发起真实模型或靶场实验，详见[修复报告](../reports/ultra-startup-repair-20261105/repair-report.md)。
+
+## 2026-11-04：Ultra Goal 第三阶段
+
+新 Worker 通过控制端和原 Operation/fence 接入 read/bash/edit/write/grep/find，保留两个 Stage 2 证据工具。窄复用官方 Pi 1.5.0 工具源码/Operations，没有引入完整 Coding Agent 会话运行时。每个 Worker 使用独立 cwd、Home、临时目录和操作身份；unknown 不自动重发，取消须核对 Pi 和 Executor 两端停止。
+
+完整隔离回归 1077 passed / 3 skipped / 0 failed，包含 Node 26 项；前端 69 项及构建通过。完整回归后的依赖路径/截断/环境隔离收尾由 Python 5 项、Node 6 项及环境单测 3 项定向验证，不再次跑全量，数量不能累加。Kali 六工具无害烟测及默认环境隔离通过，没有模型/CTF 效果实验。部署、暂停数据保留、精确测试边界和 trusted 执行限制见 [实施报告](../reports/ultra-goal-stage3/implementation-report.md) 和 [decision 0022](decisions/0022-ultra-pi-executor-tools.md)。
+
+## 2026-11-04：Ultra Goal 第二阶段
+
+Worker 增加通过控制端的 Session 证据目录与按需分页读取，保留来源、范围和稳定交付收据。
+Main 对真实读取引用进行收据/CAS/来源校验，合法证据不自动升级为 confirmed。
+Node 独占测试库 21 项通过，证据边界最终 13 项通过，前端 69 项及构建/类型/编码检查通过。
+首轮完整回归 1068 passed / 2 failed / 3 skipped；两项失败已包含在定向复验的通过用例中。
+第二轮全量按用户要求停止，不能宣称最终版本全量零失败。一次真实百炼任务完成 4 次模型调用、两份历史证据读取和 A2A 回收。
+日常库已增量迁移，两个暂停任务保持，Kali 未修改。范围与剩余限制见 [实施报告](../reports/ultra-goal-stage2/implementation-report.md) 和 [decision 0021](decisions/0021-ultra-session-evidence.md)。
+
+## 2026-11-04：Ultra Goal 第一阶段
+
+接入 Pi 原生 OpenAI-compatible Provider，保留 Mock；Worker 使用独立加密模型快照，未增加模型选择器。
+增加任务背景、可选完成要求、确定性工件来源快照及上下文身份；不自动读取历史或恢复 Pi 上下文。
+上一轮完整回归 1045 passed / 3 skipped；本阶段定向联调及边界测试通过。
+一项真实百炼 DeepSeek 任务完成 3 次模型调用、2 次 Mock 工具调用和 A2A 结果回收。
+仍未接入 Kali 工具、实时通知、上下文续用或多 Agent 任务图；详见 [实施报告](../reports/ultra-goal-stage1/implementation-report.md) 和 [decision 0020](decisions/0020-ultra-goal-provider-handoff.md)。
+
+## 2026-11-03：Ultra 第一阶段审查补修
+
+修复取消启动竞态、SDK 提前终态、恢复后的旧写入、Worker 故障阻塞主取消，以及两处取消/对账饥饿；
+Mock 摘要不再回显目标。18 个不同 Python 定向用例最终通过，Node 9 项通过，未重跑全量。
+新 Worker 已重启加载，原桌面入口 API-only 与 Kali 哈希/身份核对完成，两个暂停 Run 保持。
+详见 [补修报告](../reports/ultra-review-fixes/repair-report.md)，其状态语义取代下方首轮报告中的对应已知问题。
+
+## 2026-11-03：Ultra / A2A / Pi 第一阶段
+
+新增正式 Standard / Ultra 创建选项与数据库模式快照；Ultra 在原 create_agent / Runner 中动态委派，
+使用真实 A2A 1.0 Python/Node SDK 和独立 Pi Agent Loop。子 Agent 当前仅 Mock 模型与工具，真实 Executor 适配禁用。
+完整回归记录 1039 passed / 3 skipped，定向联调 29 passed，前端 69 passed；最后小改动按用户要求未重跑测试。
+日常库已备份后增量迁移，历史记录和 checkpoint 指纹保持；原桌面入口 API-only 与 Kali 哈希/身份/能力已核对。
+日常完整 Runner 未主动启动；独立 Mock Worker 已配置运行，没有安装开机常驻服务。
+能力、测试边界和 Astra 专项输入以 [交付报告](../reports/ultra-stage1/implementation-report.md) 为准。
+
 ## 2026-10-30：v1.0 工程收尾
 
 双图已接真实只读 API，支持手动刷新与 owner 隔离。旧 passive/Shadow/Progress 运行路径和专用配置已删除，
@@ -420,3 +467,13 @@ Earth 自然目标测试尚未完成：10 次成功 HTTP 操作和 25 个哈希�
 工程验证：全量765 passed、2 skipped、1 deselected；最后事件保留保护补丁及报告路径定向25 passed（与全量重叠，不相加）。真实 PostgreSQL、官方图、Saver重连、摘要中间件及脚本模型验证协议；不代表真实模型图维护质量。详见 [第三阶段交付报告](../reports/session-dual-graph-implementation-2026-10-23.md)。真实模型和靶场效果 NOT_RUN，由用户验收。
 
 本日后续有限核对修复：默认 B，每五个工作工具决策轮次提供最多两次额外核对请求；持久计数、结构错误修正、分页过滤及 page_id 连续确认、State→State 反馈和首次配置间隔已实现。定向 73 passed，覆盖官方 create_agent、PostgreSQL/Segment 重连、自然结束和暂停取消优先；不作为真实模型效果证明。原桌面仅核对入口链及 API-only 新进程，未启动 Runner；Kali 23 文件哈希一致，保留原实例。见[本轮实施与限制](../reports/dual-graph-bounded-sync-implementation-2026-10-23.md)。
+
+
+## 2026-11-04：Ultra Goal 第五阶段
+
+新增已完成 Worker 的显式消息历史续用：新委派拥有独立身份，缺失/损坏/跨 Session/超限历史明确拒绝。Stage 4 实时协作保留；Main 提示覆盖目标判断、取消及基于真实证据的复盘。独立 Linux Executor 的合成闭环已执行通过；可控模型测试不代表真实 CTF 达成率。精确源码、回归及部署状态见 [实施报告](../reports/ultra-goal-stage5/implementation-report.md) 和 [decision 0024](decisions/0024-ultra-worker-history-ctf-closure.md)。
+
+
+## 2026-11-04：Ultra Goal 最终审查五项 P1 修复
+
+已定向修复历史 HTTP 头凭据、NUL 阻断终态、工具明确拒绝误判未知、Main 自然 END 清理时序及补充消息乱序。兼容 54 项、故障窗口补验 9 项、实际 create_agent END 补验 3 项分别通过，未重跑最终全量。部署与数据保留已核对；具备用户开展小范围真实 CTF 测试的工程条件，真实效果未验证。见 [修复报告](../reports/ultra-goal-final-review-fixes/repair-report.md)。

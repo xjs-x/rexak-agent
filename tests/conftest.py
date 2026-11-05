@@ -31,6 +31,8 @@ configure_event_loop_policy()
 
 @pytest.fixture(autouse=True)
 def _isolated_model_configuration(tmp_path, monkeypatch):
+    # Legacy Mock Worker suites keep their Stage 1/2 toolset; Stage 3 explicitly opts in with a Fake Executor.
+    monkeypatch.setenv("WORKBENCH_ULTRA_WORKER_EXECUTION_ENABLED", "false")
     # No test may read or overwrite the user's persisted model preferences or API keys.
     from agent_workbench.config import model_settings
 
@@ -64,7 +66,7 @@ def _isolated_test_environment(request):
     admin_url = base_url.set(drivername="postgresql", database="postgres")
     test_url = base_url.set(database=database_name).render_as_string(hide_password=False)
     previous = {
-        key: os.environ.get(key) for key in ("WORKBENCH_DATABASE_URL", "WORKBENCH_DATA_ROOT")
+        key: os.environ.get(key) for key in ("WORKBENCH_DATABASE_URL", "WORKBENCH_DATA_ROOT", "WORKBENCH_ULTRA_WORKER_EXECUTION_ENABLED")
     }
     created = False
     try:
@@ -78,6 +80,7 @@ def _isolated_test_environment(request):
         with tempfile.TemporaryDirectory(prefix="workbench-test-data-") as data_root:
             os.environ["WORKBENCH_DATABASE_URL"] = test_url
             os.environ["WORKBENCH_DATA_ROOT"] = data_root
+            os.environ["WORKBENCH_ULTRA_WORKER_EXECUTION_ENABLED"] = "false"
             get_settings.cache_clear()
             reset_database_for_tests()
             initialized = subprocess.run(
