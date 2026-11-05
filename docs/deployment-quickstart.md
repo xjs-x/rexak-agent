@@ -4,27 +4,42 @@
 
 ## 首次安装
 
-准备 Git、uv、Docker Desktop、Node.js/pnpm，以及具备 SSH、Python 3.12/3.13、venv 和 Chromium 的 Kali 后：
+准备 Git、uv、Docker Desktop、Node.js 22.19 或更新版本、与 `web/package.json` 匹配的 pnpm，以及具备 SSH、Python 3.12/3.13、venv 和 Chromium 的 Kali 后：
 
 ```powershell
 uv sync --frozen --all-packages --group dev
-uv run python scripts/setup_workbench.py configure --executor-host <自己的Kali地址> --executor-user <SSH用户名>
+# 将示例 IP 和用户替换为自己的 Kali
+uv run python scripts/setup_workbench.py configure --executor-host 192.168.56.101 --executor-user kali
 uv run python scripts/setup_workbench.py install
 ```
 
-configure 只新建配置和独立令牌，不覆盖旧文件；install 完成本机数据库/前端及 Kali 初始化，不启动模型任务。SSH 准备步骤见[完整指南](team-setup.md)。
+configure 只新建配置和独立令牌，不覆盖旧文件；install 完成本机数据库/前端及 Kali 初始化，不启动模型任务。这是 Standard 的首次安装，`install` 不安装或配置 Ultra Pi Worker。SSH 准备步骤见[完整指南](team-setup.md)。
 
 ## 日常启动
 
-保持 Docker Desktop 和 Kali 运行，双击 `start-workbench.cmd`。已有桌面 **Rexak Agent**快捷方式可继续使用。模型和 Key 在 Web“模型设置”保存，不在终端输入。
+保持 Docker Desktop 和 Kali 运行，双击 `start-workbench.cmd`。已有桌面 **Rexak Agent** 快捷方式可继续使用。模型和 Key 在 Web“模型设置”保存，不在终端输入。配置了 Ultra Worker 时，入口会在 Runner 前启动并检查 Worker；服务不可用时明确报错。
 
-控制台：<http://127.0.0.1:8770/console/>。保留启动窗口，按 `Ctrl+C`停止本次 API 和 Runner；数据库和 Kali Executor 保留运行。
+控制台：<http://127.0.0.1:8770/console/>。保留启动窗口，按 `Ctrl+C` 停止本次 API、Runner 和由入口启动的 Worker；数据库和 Kali Executor 保留运行。
 
 只检查环境，不启动 API/Runner：
 
 ```powershell
 uv run python scripts/start_workbench.py --check-only
 ```
+
+## 启用 Ultra
+
+先完成首次安装，启动 Standard 控制台并保存 Main 所需的模型设置和 Key，再停止启动窗口。在仓库根目录安装 Worker 依赖、构建服务并创建独立配置：
+
+```powershell
+npm ci --prefix worker
+npm run build --prefix worker
+uv run python scripts/start_ultra_worker.py --configure
+uv run python scripts/start_ultra_worker.py --configure-model --provider bailian --model deepseek-v4.1-flash
+.\start-workbench.cmd
+```
+
+示例的供应商和模型需按自己已保存的设置替换；`--configure-model` 需要对应供应商的 Key 已在 Web 中保存。`--configure` 创建仅访问 `ultra_worker` 台账的数据库角色和本机加密服务凭据，已有配置会保留。Worker 模型配置是独立快照；Main 设置变化后需重新运行 `--configure-model` 并重启。未配置该快照时，Worker 使用 Mock，不用于真实模型测试。启动入口使用本机回环端口检查 Worker 的鉴权健康状态和 A2A 身份，日志在 `logs/launcher/worker.log`。
 
 ## 更新代码
 
@@ -37,6 +52,15 @@ pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
 uv run workbench db-init
 ```
+
+已启用 Ultra 的环境还需在停止旧启动窗口后更新 Worker 的本机依赖和构建产物，再启动新版本：
+
+```powershell
+npm ci --prefix worker
+npm run build --prefix worker
+```
+
+保留原 Worker 服务凭据和独立模型快照；需要更新 Worker 使用的供应商、模型参数或 Key 时，重新运行 `--configure-model` 并重启。旧 API 或 Worker 进程仍在运行时，源码和构建产物更新不表示它们已加载新版。
 
 Executor 有变化时构建并部署；脚本保留配置与数据，核对文件哈希后重启。有活动任务时停止更新：
 

@@ -6,7 +6,7 @@
 
 ## 1. 准备环境
 
-Windows 先准备 Git、uv、Docker Desktop、OpenSSH 客户端、Node.js 22 LTS，以及与 `web/package.json` 的 `packageManager` 一致的 pnpm。Python 3.12 由 uv 按 `.python-version`管理。Docker Desktop 和 Kali 需要运行，Windows 必须能访问 Kali 的 SSH 端口。
+Windows 先准备 Git、uv、Docker Desktop、OpenSSH 客户端、Node.js 22.19 或更新版本，以及与 `web/package.json` 的 `packageManager` 一致的 pnpm。Python 3.12 由 uv 按 `.python-version` 管理。Docker Desktop 和 Kali 需要运行，Windows 必须能访问 Kali 的 SSH 端口。
 
 ```powershell
 git clone <GitHub仓库地址> rexak-agent
@@ -85,7 +85,7 @@ uv run python scripts/setup_workbench.py configure --executor-host 192.168.56.10
 uv run python scripts/setup_workbench.py install
 ```
 
-脚本依次启动本地 PostgreSQL、迁移数据库、安装并构建前端、构建 Executor wheel、通过 SSH 创建缺失的专用 venv、安装依赖和 wheel、启动及核对 Executor，最后执行启动器 `--check-only`。它不启动 Runner，不调用模型，不访问测试目标。
+脚本依次启动本地 PostgreSQL、迁移数据库、安装并构建前端、构建 Executor wheel、通过 SSH 创建缺失的专用 venv、安装依赖和 wheel、启动及核对 Executor，最后执行启动器 `--check-only`。它完成 Standard 安装；如需 Ultra，还要按[部署指南](deployment-quickstart.md#启用-ultra)安装并配置 Pi Worker。它不启动 Runner，不调用模型，不访问测试目标。
 
 安装器在**指定 Kali**启用 `trusted`命令执行，不逐条审批命令；这不是系统级网络隔离。模型 Key 和数据库凭据不会上传给 Executor。Kali 需要能从配置的包源下载 Python 依赖，这不是完全离线安装。浏览器使用已安装的系统 Chromium。
 

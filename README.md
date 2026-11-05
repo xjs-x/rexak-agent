@@ -145,19 +145,19 @@ flowchart TB
 
 ## 快速开始
 
-当前验收部署路径是 **Windows 控制端 + 独立 Kali Executor**。需要 Git、uv、Docker Desktop、Node.js 22 LTS、pnpm **11.22.0**；Kali 需 SSH、Python **3.12 或 3.13**、venv 和 Chromium。先准备密钥登录并核对 SSH 主机指纹，详见[新成员指南](docs/team-setup.md)。
+当前验收部署路径是 **Windows 控制端 + 独立 Kali Executor**。需要 Git、uv、Docker Desktop、Node.js **22.19 或更新版本**、pnpm **11.22.0**；Kali 需 SSH、Python **3.12 或 3.13**、venv 和 Chromium。先准备密钥登录并核对 SSH 主机指纹，详见[新成员指南](docs/team-setup.md)。
 
 ### 1. 获取代码与配置
 
-v1.0 本次交付位于 `codex/implementation-v1` 分支：
+公开部署从默认 `master` 分支获取代码：
 
 ```powershell
-git clone --branch codex/implementation-v1 https://github.com/xjs-x/rexak-agent.git
+git clone https://github.com/xjs-x/rexak-agent.git
 cd rexak-agent
 uv sync --frozen --all-packages --group dev
 
-# 替换为自己的 Kali 主机与 SSH 用户；配置器生成独立令牌
-uv run python scripts/setup_workbench.py configure --executor-host <KALI_HOST> --executor-user <SSH_USER>
+# 将示例 IP 和用户替换为自己的 Kali；配置器生成独立令牌
+uv run python scripts/setup_workbench.py configure --executor-host 192.168.56.101 --executor-user kali
 ```
 
 配置器从 [.env.example](.env.example) 创建个人 `.env`，已有文件时拒绝覆盖。连接、路径与授权令牌通过环境配置，不提交 `.env`。模型供应商、端点和 Key 在 Web「模型设置」中保存。
@@ -170,7 +170,7 @@ uv run python scripts/setup_workbench.py configure --executor-host <KALI_HOST> -
 uv run python scripts/setup_workbench.py install
 ```
 
-安装器依次执行 `docker compose up -d --wait postgres`、`workbench db-init`、前端依赖安装与构建，再构建、部署 Executor，最后检查环境；不创建测试任务。它在指定 Kali 启用 `trusted` 模式，需使用专门的授权测试环境。详细过程与更新方法见[部署说明](docs/deployment-quickstart.md)。
+安装器依次执行 `docker compose up -d --wait postgres`、`workbench db-init`、前端依赖安装与构建，再构建、部署 Executor，最后检查环境；不创建测试任务。它在指定 Kali 启用 `trusted` 模式，需使用专门的授权测试环境。此步骤完成 **Standard** 部署；Ultra 还需单独安装和配置 Pi Worker。详细过程与更新方法见[部署说明](docs/deployment-quickstart.md)。
 
 ### 3. 启动与使用
 
@@ -178,7 +178,21 @@ uv run python scripts/setup_workbench.py install
 .\start-workbench.cmd
 ```
 
-统一入口启动 FastAPI 与独立 Runner，访问 **[http://127.0.0.1:8770/console/](http://127.0.0.1:8770/console/)**。已有桌面 **Rexak Agent** 快捷方式继续使用同一脚本。关闭网页不停止任务，在启动窗口按 `Ctrl+C` 停止本次 API / Runner。
+统一入口启动 FastAPI 与独立 Runner，访问 **[http://127.0.0.1:8770/console/](http://127.0.0.1:8770/console/)**。已有桌面 **Rexak Agent** 快捷方式继续使用同一脚本。配置了 Ultra Worker 时，此入口也会启动并检查 Worker。关闭网页不停止任务，在启动窗口按 `Ctrl+C` 停止本次服务。
+
+### 4. 启用 Ultra（可选）
+
+先完成上述安装，启动控制台并在「模型设置」保存所用供应商的模型 Key，然后停止启动窗口。在仓库根目录运行：
+
+```powershell
+npm ci --prefix worker
+npm run build --prefix worker
+uv run python scripts/start_ultra_worker.py --configure
+uv run python scripts/start_ultra_worker.py --configure-model --provider bailian --model deepseek-v4.1-flash
+.\start-workbench.cmd
+```
+
+将示例中的 `--provider` 和 `--model` 换成已配置且受支持的供应商及模型。`--configure` 创建 Worker 专用数据库角色和本机加密服务凭据，不覆盖已有配置；`--configure-model` 从当前已保存的模型设置生成独立加密快照。后续修改 Main 的模型设置不会自动更新 Worker 快照，需要显式重新运行 `--configure-model` 并重启。未配置独立模型时，Worker 使用 Mock，不能作为真实目标测试的模型效果。Ultra Worker 监听本机回环地址，按需经控制端使用 Kali 工具；[详细步骤](docs/deployment-quickstart.md#启用-ultra)。
 
 首次使用：配置模型 → 新建聊天 → 给出目标、授权范围和测试要求 → 查看工具结果及状态 → 按需暂停、继续或取消 → 在「图谱」读取并手动刷新双图。取消已受理不等于远端进程已退出，仍应检查资源状态。
 
