@@ -2,6 +2,10 @@
 
 当前公开交付结果见 [v1.0 验收摘要](validation-v1.md)。本页按时间保留各阶段记录，历史部署状态与测试范围不代表后续状态。
 
+## 2026-11-06：TSecBench 代理直连修复
+
+切换热点后 Windows VPN 和 Kali 经 VMware NAT 的健康访问通过，平台取题为 63 题 / 74 flag。修复 SDK 继承 Windows 系统代理导致内网健康检查返回 502：评测入口显式直连，不改 Windows 全局代理。按用户要求为 Kali 普通用户/root 增加 shell 直连配置并保留备份。专项 43 passed；完整 unit/integration 1136 passed / 4 skipped，类型、产品代码 Ruff、编码及前端/Worker 构建通过；全仓历史实验目录仍有 57 项 Ruff 问题。原桌面入口 API-only 核验通过，Kali 25 文件哈希和进程身份保持、8 个未结束任务保持。未启动真实靶场/模型、未提交 flag，目标可达性及正式评测效果尚未验证。详见[直连记录](../reports/tsecbench-proxy-direct-20261106.md)。
+
 ## 2026-11-06：TSecBench v1 本地接入准备
 
 评测单题入口增加显式 Standard / Ultra 选择，复用现有 Session API 和 Runner，选择写入评测记录。当前仍仅单题入口，整套题集自动调度未实现；未启动平台靶场、调用真实模型或提交 flag。完整 unit/integration 1134 passed / 4 skipped，全量启动后接入改动由最终 42 项专项覆盖；类型、产品源码 Ruff、编码和前端/Worker 构建通过，全仓另有历史 experiments 目录 57 项 Ruff 问题。原桌面入口 API-only 启动及 Ultra Worker 检查通过，Kali 25 文件哈希一致并保留原进程，8 个未结束任务保持。详见[准备记录](../reports/tsecbench-v1-preparation-20261106.md)和[接入说明](tsecbench-v1-local-evaluation.md)。

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import importlib
 import json
 import sys
 from types import ModuleType
@@ -210,6 +212,47 @@ async def test_sdk_client_maps_challenge_and_start(monkeypatch):
     assert instance.kwargs["token"] == "token-value"
     assert instance.kwargs["auto_check_vpn"] is True
     assert ("start", "web-001") in instance.calls
+
+
+async def test_sdk_vpn_and_platform_bypass_unreachable_proxy(monkeypatch):
+    sdk = pytest.importorskip("tsec_benchmark")
+    sdk_client = importlib.import_module("tsec_benchmark.client")
+
+    async def respond(reader, writer):
+        request = await reader.readuntil(b"\r\n\r\n")
+        body = (
+            b"[]" if b"/openapi/v1/challenges " in request else
+            b'{"status":"ok","client_ip":"127.0.0.1","time":"test"}'
+        )
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(respond, "127.0.0.1", 0)
+    url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(name, "http://127.0.0.1:1")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setattr(sdk_client, "_VPN_HEALTHCHECK_URL", url)
+    monkeypatch.setattr(platform_module, "_sdk_module", sdk)
+    client = SdkPlatformClient(_config().model_copy(update={"base_url": url}))
+    try:
+        async with httpx.AsyncClient(timeout=2) as proxied:
+            with pytest.raises(httpx.TransportError):
+                await proxied.get(url)
+        await client.open()
+        assert (await client.check_vpn()).ok
+        assert await client.list_challenges() == []
+    finally:
+        await client.close()
+        server.close()
+        await server.wait_closed()
 
 
 async def test_sdk_open_translates_vpn_failure(monkeypatch):

@@ -73,6 +73,28 @@ uv run --extra benchmark workbench tsec run <unique_code> --execution-mode ultra
 平台 Token 只供评测适配器使用；模型密钥继续由现有本机模型设置管理，不下发 Kali。
 VPN 文件可能包含私钥，不提交 Git，不写入公开报告或镜像。
 
+## 2026-11-06 网络实测补充
+
+切换手机热点后，Windows OpenVPN 自动完成握手；Kali 不建立独立 tun 接口，
+通过 VMware NAT 和 Windows VPN 出口即可直连健康地址。两端健康检查通过，
+取题仍为 63 题 / 74 个 flag、全部未作答。此证据仅覆盖健康地址和取题，
+实际题目地址仍由启动后的 Kali 目标探针核验，不能据此宣称所有靶场可达。
+
+另发现 Windows 系统代理会使 SDK 的 VPN 健康请求返回 502。
+适配器现在显式传入不读取代理环境的 HTTP transport，VPN 和平台请求均直连，
+不修改 Windows 全局代理。回归用本地 HTTP 服务和不可达代理验证这条边界。
+
+按用户要求，Kali 普通用户和 root 的 shell 启动文件会加载
+`/etc/profile.d/rexak-direct-network.sh`：清除 HTTP / HTTPS / ALL / FTP 代理变量，
+并设置 `NO_PROXY=*`、`no_proxy=*`。原启动文件均已备份。
+该设置对新终端自动生效；已打开的终端执行以下命令立即加载：
+
+```bash
+source /etc/profile.d/rexak-direct-network.sh
+```
+
+直连设置不改变 Linux 默认路由，也不重启 Executor；现有进程的环境不会被 shell 文件追溯修改。
+
 ## 官方来源
 
 - [平台及三种接入入口](https://tsecbench.zc.tencent.com/)

@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Protocol
 
+import httpx
+
 from agent_workbench.tsecbench.config import BenchmarkConfig
 
 
@@ -145,6 +147,9 @@ class SdkPlatformClient:
             token=config.token,
             timeout=config.api_timeout,
             auto_check_vpn=self._auto_check_vpn,
+            # SDK 默认信任系统代理，Windows 注册表代理也会接管 VPN 内网。
+            # 显式 transport 禁用 SDK 的代理自动发现，不修改全局网络设置。
+            transport=httpx.AsyncHTTPTransport(trust_env=False),
         )
         try:
             await client.__aenter__()
