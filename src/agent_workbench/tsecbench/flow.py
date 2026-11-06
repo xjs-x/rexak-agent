@@ -134,6 +134,7 @@ class SingleChallengeFlow:
         clock: ClockFn = time.monotonic,
         echo: Callable[[str], None] = print,
         runner_factory: Callable[[str], SpawnedRunner] | None = None,
+        on_run_created: Callable[[str, str], None] | None = None,
     ) -> None:
         self._config = config
         self._platform = platform
@@ -146,6 +147,7 @@ class SingleChallengeFlow:
         self._echo = echo
         self._runner_factory = runner_factory or self._spawn_runner
         self._runner: SpawnedRunner | None = None
+        self._on_run_created = on_run_created
 
     # ------------------------------------------------------------------ #
     # 主流程
@@ -242,6 +244,8 @@ class SingleChallengeFlow:
             )
             outcome.session_id = str(created["session"]["id"])
             outcome.run_id = str(created["run"]["id"])
+            if self._on_run_created is not None:
+                self._on_run_created(outcome.session_id, outcome.run_id)
             self._echo(
                 f"已创建 Run {outcome.run_id}（session {outcome.session_id}），开始等待执行。"
             )

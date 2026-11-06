@@ -241,6 +241,7 @@ def _flow(
     options: FlowOptions | None = None,
     probe=_reachable,
     runner_factory: FakeRunnerFactory | None = None,
+    on_run_created=None,
 ) -> SingleChallengeFlow:
     clock = FakeClock()
     return SingleChallengeFlow(
@@ -261,6 +262,7 @@ def _flow(
         clock=clock,
         echo=lambda _message: None,
         runner_factory=runner_factory,
+        on_run_created=on_run_created,
     )
 
 
@@ -282,9 +284,12 @@ async def test_flow_completes_with_multiple_flags_and_masks_record(tmp_path):
     )
     api = FakeApi(["completed"], final_text="找到：\nflag{alpha_secret}\nflag{beta_secret}\n")
 
-    outcome = await _flow(platform, api, tmp_path).run()
+    created = []
+    outcome = await _flow(platform, api, tmp_path,
+                          on_run_created=lambda session, run: created.append((session, run))).run()
 
     assert outcome.outcome == "completed"
+    assert created == [("session-1", "run-1")]
     assert outcome.settled is True
     assert outcome.run_status == "completed"
     assert len(outcome.submissions) == 2
