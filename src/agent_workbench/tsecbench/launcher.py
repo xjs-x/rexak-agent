@@ -358,7 +358,7 @@ class ConsoleProcess:
                 if not await self._worker_ready(config):
                     raise RuntimeError("现有控制台缺少 Ultra Worker，请从原启动窗口重新启动。")
                 return
-            except httpx.ConnectError:
+            except (httpx.ConnectError, httpx.ConnectTimeout):
                 pass
         if self.child is not None and self.child.poll() is None:
             raise RuntimeError("控制台正在启动，请稍后重试。")

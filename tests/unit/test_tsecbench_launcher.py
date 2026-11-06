@@ -24,6 +24,31 @@ from agent_workbench.tsecbench.launcher import (
 from agent_workbench.tsecbench.platform import ChallengeInfo
 
 
+async def test_console_timeout_on_absent_api_still_requests_guarded_startup(tmp_path, monkeypatch):
+    import httpx
+
+    from agent_workbench.tsecbench import launcher
+
+    actual_client = httpx.AsyncClient
+
+    def unavailable(request):
+        raise httpx.ConnectTimeout("local listener unavailable", request=request)
+
+    monkeypatch.setattr(
+        launcher.httpx,
+        "AsyncClient",
+        lambda **kwargs: actual_client(**kwargs, transport=httpx.MockTransport(unavailable)),
+    )
+
+    def spawn(args, **_kwargs):
+        assert "--api-only" in args
+        raise RuntimeError("guarded startup requested")
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", spawn)
+    with pytest.raises(RuntimeError, match="guarded startup requested"):
+        await launcher.ConsoleProcess().start(BenchmarkConfig(env_file=str(tmp_path / "test.env")))
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows OpenVPN command interface")
 def test_missing_gui_rescan_failure_and_retry_do_not_block_connect(tmp_path, monkeypatch):
     from agent_workbench.tsecbench import launcher

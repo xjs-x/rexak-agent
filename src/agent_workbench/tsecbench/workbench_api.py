@@ -85,6 +85,7 @@ class HttpWorkbenchApi:
             headers={ACCESS_HEADER: config.api_token},
             timeout=config.api_timeout,
             transport=transport,
+            trust_env=False,
         )
 
     async def __aenter__(self) -> HttpWorkbenchApi:

@@ -249,6 +249,8 @@ async def test_sdk_vpn_and_platform_bypass_unreachable_proxy(monkeypatch):
         await client.open()
         assert (await client.check_vpn()).ok
         assert await client.list_challenges() == []
+        async with HttpWorkbenchApi(_config().model_copy(update={"api_base_url": url})) as api:
+            assert (await api.health())["status"] == "ok"
     finally:
         await client.close()
         server.close()
