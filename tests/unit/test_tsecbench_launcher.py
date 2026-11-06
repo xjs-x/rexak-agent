@@ -49,6 +49,53 @@ async def test_console_timeout_on_absent_api_still_requests_guarded_startup(tmp_
         await launcher.ConsoleProcess().start(BenchmarkConfig(env_file=str(tmp_path / "test.env")))
 
 
+def test_launcher_cancel_targets_current_run_and_stops_future_questions(monkeypatch):
+    import scripts.start_tsecbench as ui
+
+    from agent_workbench.tsecbench import workbench_api
+
+    cancelled = []
+
+    class Api:
+        def __init__(self, _config):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def cancel_run(self, run):
+            cancelled.append(run)
+
+    monkeypatch.setattr(workbench_api, "HttpWorkbenchApi", Api)
+    monkeypatch.setattr(ui.threading, "Thread", lambda target, **_k: SimpleNamespace(start=target))
+    window: Any = ui.EvaluationWindow.__new__(ui.EvaluationWindow)
+    window.stop = threading.Event()
+    window.cancel_button = SimpleNamespace(configure=lambda **_k: None)
+    window.status = SimpleNamespace(set=lambda _v: None)
+    window.current_run = "current-run"
+    window.config = BenchmarkConfig()
+    window.emit = lambda *_args: None
+    window.cancel_current()
+    assert window.stop.is_set() and window.cancel_requested
+    assert cancelled == ["current-run"]
+
+
+def test_window_close_requests_cancellation_and_waits_for_cleanup(monkeypatch):
+    import scripts.start_tsecbench as ui
+
+    monkeypatch.setattr(ui.messagebox, "askyesno", lambda *_a, **_k: True)
+    window: Any = ui.EvaluationWindow.__new__(ui.EvaluationWindow)
+    window.busy = window.running = True
+    window.root = None
+    calls = []
+    window.cancel_current = lambda: calls.append("cancel")
+    window.close()
+    assert window.exit_after_run and calls == ["cancel"]
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows OpenVPN command interface")
 def test_missing_gui_rescan_failure_and_retry_do_not_block_connect(tmp_path, monkeypatch):
     from agent_workbench.tsecbench import launcher
@@ -111,6 +158,13 @@ def test_new_profiles_preserve_old_credentials_and_vpn(tmp_path):
     assert Path(first.ovpn_path).read_bytes() == source.read_bytes() == original
     assert not Path(first.env_file).read_bytes().startswith(b"\xef\xbb\xbf")
     assert first.execution_mode is ExecutionMode.ULTRA
+    from agent_workbench.tsecbench.launcher import last_profile_fields
+
+    restored = last_profile_fields(root=tmp_path / "private")
+    assert restored["BENCHMARK_TOKEN"] == "second"
+    assert restored["WORKBENCH_TSECBENCH_OVPN"] == second.ovpn_path
+    assert restored["TSECBENCH_EXECUTION_MODE"] == "standard"
+    assert restored["TSECBENCH_MAX_SECONDS"] == "120"
 
 
 @pytest.mark.parametrize(

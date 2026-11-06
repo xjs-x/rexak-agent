@@ -30,6 +30,7 @@ from agent_workbench.tsecbench.launcher import (  # noqa: E402
     evaluate_serial,
     inspect_readiness,
     install_desktop_shortcut,
+    last_profile_fields,
     save_profile,
     validate_inputs,
     wait_windows_vpn,
@@ -43,6 +44,9 @@ class EvaluationWindow:
         self.config: BenchmarkConfig | None = None
         self.rows: list[ChallengeInfo] = []
         self.current_session: str | None = None
+        self.current_run: str | None = None
+        self.cancel_requested = False
+        self.exit_after_run = False
         self.busy = False
         self.running = False
         self.closed = False
@@ -76,6 +80,19 @@ class EvaluationWindow:
         self.scope = tk.StringVar(value="单题")
         self.challenge = tk.StringVar()
         self.status = tk.StringVar(value="尚未开始测评。配置和密钥只保存在本机仓库之外。")
+        try:
+            previous = last_profile_fields()
+            if previous:
+                self.base.set(previous.get("BENCHMARK_BASE_URL", self.base.get()))
+                self.token.set(previous.get("BENCHMARK_TOKEN", ""))
+                self.vpn.set(previous.get("WORKBENCH_TSECBENCH_OVPN", ""))
+                self.mode.set(previous.get("TSECBENCH_EXECUTION_MODE", "ultra"))
+                self.minutes.set(f"{float(previous.get('TSECBENCH_MAX_SECONDS', '3600')) / 60:g}")
+                self.status.set(
+                    "已恢复上次配置，尚未开始测评。更换平台任务时请替换 Token 和 VPN 文件。"
+                )
+        except (OSError, ValueError) as exc:
+            self.status.set(f"读取上次配置未完成（{type(exc).__name__}），请手动填写本轮配置。")
 
         fields = ttk.LabelFrame(page, text="本轮平台配置", padding=12)
         fields.pack(fill="x")
@@ -88,7 +105,7 @@ class EvaluationWindow:
         self.controls.append(choose)
         ttk.Label(
             fields,
-            text="Token 每次重新填写。VPN 已连接时可留空；更换任务前请先断开上一轮 VPN。",
+            text="自动恢复上次配置，Token 隐藏显示。更换任务时请替换 Token 和 VPN；已连接本轮 VPN 可跳过连接。",
             style="Hint.TLabel",
         ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
@@ -150,6 +167,10 @@ class EvaluationWindow:
             shortcuts, text="当前题结束后停止", command=self.stop_after_current, state="disabled"
         )
         self.stop_button.pack(side="left", padx=8)
+        self.cancel_button = ttk.Button(
+            shortcuts, text="取消当前题并停止", command=self.cancel_current, state="disabled"
+        )
+        self.cancel_button.pack(side="left", padx=(0, 8))
         shortcut = ttk.Button(shortcuts, text="创建桌面快捷方式", command=self.desktop_shortcut)
         shortcut.pack(side="right")
         self.controls.append(shortcut)
@@ -202,6 +223,7 @@ class EvaluationWindow:
     def invalidate(self, *_args: object) -> None:
         self.config = None
         self.current_session = None
+        self.current_run = None
         self.rows = []
         self.challenge.set("")
         self.challenge_box.configure(values=[])
@@ -237,6 +259,7 @@ class EvaluationWindow:
         for control in self.controls:
             control.state(["disabled"])
         self.stop_button.configure(state="normal" if running else "disabled")
+        self.cancel_button.configure(state="normal" if running else "disabled")
         self.progress.start(12)
 
         def work() -> None:
@@ -322,6 +345,7 @@ class EvaluationWindow:
         if not messagebox.askyesno("开始本轮评测", detail, parent=self.root):
             return
         self.stop.clear()
+        self.cancel_requested = False
 
         def work() -> None:
             # Recheck after user confirmation; stale lists must never authorize a new target.
@@ -335,6 +359,30 @@ class EvaluationWindow:
         self.stop.set()
         self.status.set("当前题结束后停止。若要取消当前题，请在网页点击取消，启动器会等待收尾。")
         self.stop_button.configure(state="disabled")
+
+    def cancel_current(self) -> None:
+        self.stop.set()
+        self.cancel_requested = True
+        self.cancel_button.configure(state="disabled")
+        self.status.set("正在取消当前题并核对远端停止；不会再安排下一题。")
+        if self.current_run and self.config:
+            run_id, config = self.current_run, self.config
+
+            async def request() -> None:
+                from agent_workbench.tsecbench.workbench_api import HttpWorkbenchApi
+
+                async with HttpWorkbenchApi(config) as api:
+                    await api.cancel_run(run_id)
+
+            def work() -> None:
+                try:
+                    asyncio.run(request())
+                    self.emit("log", "当前题取消请求已受理，正在等待任务和靶场收尾。")
+                except Exception as exc:
+                    self.emit("error", f"取消请求失败：{type(exc).__name__}；可在网页重试取消。")
+                    self.emit("cancel_retry", None)
+
+            threading.Thread(target=work, daemon=False).start()
 
     def open_console(self) -> None:
         try:
@@ -387,13 +435,23 @@ class EvaluationWindow:
                 elif kind == "session":
                     session, _run = value  # type: ignore[misc]
                     self.current_session = session
+                    self.current_run = _run
                     self.status.set("当前题已创建。点击“查看当前做题过程”打开对应网页。")
+                    if self.cancel_requested:
+                        self.cancel_current()
+                elif kind == "cancel_retry":
+                    if self.running:
+                        self.cancel_button.configure(state="normal")
                 elif kind == "done":
                     self.busy = self.running = False
                     self.progress.stop()
                     for control in self.controls:
                         control.state(["!disabled"])
                     self.stop_button.configure(state="disabled")
+                    self.cancel_button.configure(state="disabled")
+                    self.current_run = None
+                    if self.exit_after_run:
+                        self.root.after(100, self.close)
         except queue.Empty:
             pass
         if not self.closed:
@@ -402,12 +460,13 @@ class EvaluationWindow:
     def close(self) -> None:
         if self.busy:
             if self.running:
-                self.stop_after_current()
-                messagebox.showinfo(
-                    "正在等待当前题收尾",
-                    "已停止安排后续题目。请在网页取消当前题或等待结束后关闭。",
+                if messagebox.askyesno(
+                    "结束本轮评测",
+                    "取消当前题并停止后续题目，等待安全收尾后关闭窗口？",
                     parent=self.root,
-                )
+                ):
+                    self.exit_after_run = True
+                    self.cancel_current()
             else:
                 messagebox.showinfo("正在处理", "请等待当前准备操作结束后关闭。", parent=self.root)
             return

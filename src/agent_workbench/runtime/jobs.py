@@ -48,6 +48,7 @@ from agent_workbench.observability.logging import get_logger
 from agent_workbench.persistence.db import Database
 from agent_workbench.persistence.repositories import (
     CommandRepository,
+    ExecutionResourceRepository,
     ToolJobRepository,
 )
 from agent_workbench.persistence.tables import (
@@ -275,9 +276,23 @@ async def probe_and_wake(
                         resource = await session.get(ExecutionResourceRow, row.job_id)
                     if resource is not None:
                         view = await client.execution_resource(str(row.job_id))
-                        state = str(view.get("state") or "unknown")
+                        # Polling must refresh the same resource projection as execution events.
+                        # Dedicated assessment runners intentionally skip the global event cycle.
+                        async with db.transaction() as session:
+                            projected = await ExecutionResourceRepository(session).upsert(
+                                resource_id=resource.resource_id,
+                                session_id=resource.session_id,
+                                executor_id=resource.executor_id,
+                                kind=resource.kind,
+                                state=str(view.get("state") or "unknown"),
+                                interaction_state=str(view.get("interaction_state") or resource.interaction_state),
+                                exit_code=view.get("exit_code"),
+                                termination_reason=view.get("termination_reason"),
+                                output_limit_action=resource.output_limit_action,
+                            )
+                            state, exit_code = projected.state, projected.exit_code
                         if state in {"exited", "closed"}:
-                            state = "succeeded" if view.get("exit_code") == 0 else "failed"
+                            state = "succeeded" if exit_code == 0 else "failed"
                         return row, state, ""
                     snapshot = await client.get_job(row.job_id)
                     return row, execution_job_state(snapshot), ""

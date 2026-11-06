@@ -19,6 +19,7 @@ from uuid import uuid4
 
 import asyncssh
 import httpx
+from dotenv import dotenv_values
 
 from agent_workbench.config.settings import REPO_ROOT, get_settings
 from agent_workbench.contracts.delegation import ExecutionMode
@@ -30,6 +31,27 @@ from agent_workbench.tsecbench.platform import ChallengeInfo, SdkPlatformClient
 from agent_workbench.tsecbench.workbench_api import HttpWorkbenchApi
 
 Emit = Callable[[str, object], None]
+
+
+def last_profile_fields(*, root: Path | None = None) -> dict[str, str]:
+    """Restore the last private form; never log its secret values or start work."""
+    files = list((root or private_home() / "profiles").glob("*/tsecbench.env"))
+    if not files:
+        return {}
+    values = dotenv_values(max(files, key=lambda path: path.stat().st_mtime), encoding="utf-8")
+    return {
+        key: value
+        for key, value in values.items()
+        if value is not None
+        and key
+        in {
+            "BENCHMARK_BASE_URL",
+            "BENCHMARK_TOKEN",
+            "WORKBENCH_TSECBENCH_OVPN",
+            "TSECBENCH_EXECUTION_MODE",
+            "TSECBENCH_MAX_SECONDS",
+        }
+    }
 
 
 def restrict_path(path: Path, *, directory: bool = False) -> None:
@@ -140,6 +162,7 @@ def save_profile(
         restrict_path(destination)
     env_file = folder / "tsecbench.env"
     values = {"BENCHMARK_BASE_URL": base_url, "BENCHMARK_TOKEN": token}
+    values.update({"TSECBENCH_EXECUTION_MODE": mode.value, "TSECBENCH_MAX_SECONDS": str(seconds)})
     if destination:
         values["WORKBENCH_TSECBENCH_OVPN"] = str(destination)
     env_file.write_text(
@@ -177,7 +200,9 @@ def connect_windows_vpn(config: BenchmarkConfig) -> str:
     folder.mkdir(parents=True, exist_ok=True)
     name = "rexak-eval-" + source.parent.name
     target = folder / f"{name}.ovpn"
-    content = raw.decode("utf-8-sig").replace("\r\n", "\n") + "\npull-filter ignore redirect-gateway\n"
+    content = (
+        raw.decode("utf-8-sig").replace("\r\n", "\n") + "\npull-filter ignore redirect-gateway\n"
+    )
     if target.exists() and target.read_text(encoding="utf-8") != content:
         raise RuntimeError("同名 VPN 配置内容不同，已保留原文件；请重新选择本轮配置。")
     # Preserve the downloaded original. Only the dedicated client copy is extended.
