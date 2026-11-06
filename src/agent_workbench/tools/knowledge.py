@@ -229,9 +229,9 @@ async def propose_memory(
 
     memory = MemoryStore(store, toolbox.settings, session_id=toolbox.session_id)
     if refs:
-        from agent_workbench.tools.task import _verify_artifacts_exist
+        from agent_workbench.tools.artifact_refs import verify_artifacts_exist
 
-        await _verify_artifacts_exist(toolbox, refs)
+        await verify_artifacts_exist(toolbox, refs)
     entry = await memory.propose(
         project_id=row.id,
         memory_type=memory_type,
@@ -282,9 +282,9 @@ async def record_memory_usage(
     refs = coerce_str_list(evidence_refs_json, "evidence_refs_json")
     if outcome in {"helpful", "failed"} and not refs:
         raise ValueError("有效/失败反馈需要实际测试工件")
-    from agent_workbench.tools.task import _verify_artifacts_exist
+    from agent_workbench.tools.artifact_refs import verify_artifacts_exist
 
-    await _verify_artifacts_exist(toolbox, refs)
+    await verify_artifacts_exist(toolbox, refs)
     memory = MemoryStore(runtime.store, toolbox.settings, session_id=toolbox.session_id)
     from agent_workbench.persistence.tables import SessionRow
 

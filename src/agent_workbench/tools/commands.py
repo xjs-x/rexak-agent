@@ -298,7 +298,10 @@ async def run_command(
     description: str = "",
     completion_role: Literal["work", "resource"] = "work",
 ) -> str:
-    """在执行岛运行一条命令（独立命令；需要连续输入请用 shell_open 持久终端）。
+    """
+    在独立执行岛中运行命令，适用于调用kali内的安全工具、执行程序、分析目标文件、编译代码，以及开展需要命令行环境的测试。
+    可根据当前任务自主选择合适的系统工具与命令组合。对于需要持续运行的程序，可以使用 background；需要持续交互输入时，使用 shell_open 持久终端。
+    每次调用是独立命令，不自动继承上一条命令的 Shell 状态。返回实际执行状态、输出及相关资源引用；等待到期不代表程序已经结束。
 
     Args:
         command: shell 文本（支持管道、重定向、多行与 heredoc）。与 argv 二选一。
@@ -364,7 +367,11 @@ async def run_script(
     description: str = "",
     completion_role: Literal["work", "resource"] = "work",
 ) -> str:
-    """运行脚本（code 内联或工作区内的 path 快照），参数经 stdin JSON 传递。
+    """
+    在执行岛中运行 Python、Shell 或 Node 脚本，适用于自定义数据分析、算法实现、Payload 构造、程序行为验证及多步骤自动化测试。
+    当现有命令难以直接解决问题，或需要将多个分析步骤组织成可重复执行的逻辑时，可以自主编写脚本推进当前目标。
+    支持通过 code 提供内联脚本，或通过 path 运行工作区内脚本的固定快照；两者互斥。params_json 通过标准输入传递 JSON 参数，不拼接进代码。
+    脚本执行结果、版本和输出可追溯。根据实际反馈继续修改分析思路或脚本实现。
 
     Args:
         language: python、shell 或 node。

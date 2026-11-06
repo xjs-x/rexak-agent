@@ -361,7 +361,8 @@ async def test_api_reads_paginated_final_answer():
     assert artifact == "artifact-1"
 
 
-async def test_api_create_session_payload_carries_scope_and_policy():
+@pytest.mark.parametrize("mode", ["standard", "ultra"])
+async def test_api_create_session_payload_carries_scope_and_policy(mode):
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -373,7 +374,8 @@ async def test_api_create_session_payload_carries_scope_and_policy():
             )
         raise AssertionError(request.url.path)
 
-    api = _api(handler)
+    config = BenchmarkConfig(**{**_config().model_dump(), "execution_mode": mode})
+    api = HttpWorkbenchApi(config, transport=httpx.MockTransport(handler))
     try:
         data = await api.create_session_and_run(
             project_id="p1",
@@ -389,6 +391,7 @@ async def test_api_create_session_payload_carries_scope_and_policy():
     assert captured["scope"]["mode"] == "scoped"
     assert captured["policy"] == {"revision": 1}
     assert captured["initial_objective"] == "o"
+    assert captured["execution_mode"] == mode
 
 
 async def test_api_cancel_uses_idempotency_key():

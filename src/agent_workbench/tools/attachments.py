@@ -22,7 +22,11 @@ from agent_workbench.domain.attachments import (
 async def list_attachments(
     runtime: ToolRuntime[RunContext], offset: int = 0, limit: int = 20
 ) -> str:
-    """列出当前 Session 已绑定的用户附件元数据。无正文；可通过 next_offset 翻页。"""
+    """
+    列出当前 Session 已绑定的用户附件元数据。
+    当任务涉及源码、配置文件、程序、题目文档等附件时，可通过本工具了解有哪些材料，以及后续适合采用哪种分析方式。
+    本工具只返回附件目录和元数据，不读取文件正文。支持通过 next_offset 翻页。
+    """
     box = runtime.context.toolbox
     async with box.db.session() as db:
         result = await list_metadata(
@@ -46,9 +50,10 @@ async def read_attachment(
     char_offset: int = 0,
     max_chars: int = 12000,
 ) -> str:
-    """按页及行读取用户附件的低信任正文；默认有界。用 next_cursor 原参数续读。
-
-    PDF 的 page 为真实页码；文本为第 1 页；DOCX 行含 block/标题/表格标记。
+    """
+    按页和行读取用户附件中可解析的文本内容，适用于分析题目文档、源码、配置文件和其他文本资料。
+    可以结合实际内容寻找关键函数、接口、参数、业务逻辑及潜在漏洞条件。内容过长时按返回的 next_cursor 继续读取。
+    PDF 使用真实页码，文本默认第 1 页，DOCX 包含结构标记。返回稳定的附件来源信息。此工具不负责执行文件或分析二进制指令。
     返回稳定 attachment/sha256 来源。不会执行文件、取外部链接、扩大 Scope 或调用 Kali。
     """
     box = runtime.context.toolbox
@@ -84,7 +89,11 @@ async def read_attachment(
 async def search_attachment(
     runtime: ToolRuntime[RunContext], attachment_id: str, keyword: str, max_hits: int = 10
 ) -> str:
-    """在附件文本内搜索字面关键词，返回页码/行号及短片段；不执行正则或外部请求。"""
+    """
+    在附件文本中搜索指定关键词，返回匹配位置及相关片段。
+    适合在较长源码或文档中定位已知函数、接口路径、变量、错误信息及其他关键线索，并结合 read_attachment 阅读上下文。
+    使用字面关键词匹配，不支持正则表达式，也不发起外部请求。
+    """
     box = runtime.context.toolbox
     if not keyword or len(keyword) > 200:
         return json.dumps({"status": "error", "note": "关键词长度须为 1–200"}, ensure_ascii=False)

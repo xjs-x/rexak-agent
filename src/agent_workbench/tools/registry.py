@@ -227,7 +227,7 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
     if chosen.templates:
         tools.extend(EXECUTION_TEMPLATE_TOOLS)
     if chosen.task:
-        tools.extend(TASK_TOOLS if chosen.legacy_memory else [TASK_TOOLS[0]])
+        tools.extend(TASK_TOOLS)
     if chosen.graph:
         tools.extend(GRAPH_TOOLS)
     if chosen.knowledge:

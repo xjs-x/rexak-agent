@@ -207,7 +207,9 @@ def recovery_feedback(quality: ResponseQuality) -> str:
     if quality.outcome == "truncated":
         return (
             "上次输出达到长度限制，没有得到完整的工具调用或结论。"
-            "请给出一个完整的下一步调用，或一段简短结论；不要重复更长篇幅的说明。"
+            "保持当前任务目标，结合已有上下文，"
+            "直接给出完整的下一步工具调用或必要结论，"
+            "避免重复冗长的分析。"
         )
     if quality.outcome == "invalid_tool_call":
         return (

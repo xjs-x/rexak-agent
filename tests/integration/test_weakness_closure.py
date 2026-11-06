@@ -8,15 +8,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
 import pytest
-from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import InjectedToolCallId, tool
 from pydantic import Field
@@ -27,7 +26,6 @@ from agent_workbench.agent.middleware.command_guard import CommandGuardMiddlewar
 from agent_workbench.agent.middleware.context_builder import ContextBuilderMiddleware
 from agent_workbench.agent.middleware.tool_dispatch import ToolDispatchMiddleware
 from agent_workbench.agent.middleware.working_context import WorkingContextMiddleware
-from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.contracts.enums import ToolEffectClass
 from agent_workbench.domain.findings import FindingService
 from agent_workbench.evidence.artifacts import ArtifactStore
@@ -35,11 +33,9 @@ from agent_workbench.observability.spans import SpanRecorder
 from agent_workbench.persistence.tables import (
     FindingRow,
     LeadRow,
-    ToolOperationRow,
 )
 from agent_workbench.tools.execution_context import execution_context
 from agent_workbench.tools.operation import OperationRegistry
-from agent_workbench.tools.task import record_lead, update_plan
 from tests.integration.test_request_budget import context_for
 from tests.unit.test_context_budget import profile
 
@@ -153,104 +149,6 @@ def _middleware() -> list[AgentMiddleware[Any, Any]]:
         ContextBuilderMiddleware(profile()),
         ToolDispatchMiddleware(),
     ]
-
-
-async def test_optional_plan_and_lead_associate_execution_without_proof_protocol(
-    database, unique_name
-):
-    context = await context_for(database, unique_name)
-    _prepare_context(context, database)
-    PROBE_CALLS.clear()
-    seen = {}
-
-    def add_plan(messages):
-        lead = _last_tool_payload(messages)["lead"]
-        seen["lead"] = lead["lead_id"]
-        return _call(
-            "update_plan",
-            {
-                "expected_plan_revision": 0,
-                "steps": [
-                    {
-                        "step_id": "s1",
-                        "description": "可选调查",
-                        "status": "in_progress",
-                        "lead_id": lead["lead_id"],
-                    }
-                ],
-            },
-            "plan",
-        )
-
-    model = SteppedModel(
-        steps=[
-            lambda _: _call("record_lead", {"hypothesis": "可选轻量假设"}, "lead"),
-            add_plan,
-            lambda _: _call("probe", {"where": "local"}, "probe"),
-            lambda _: AIMessage(content="已取得本地结果；假设尚未验证"),
-        ]
-    )
-    graph = create_agent(
-        model=model,
-        tools=[record_lead, update_plan, probe],
-        middleware=_middleware(),
-        state_schema=AgentGraphState,
-        context_schema=RunContext,
-    )
-    result = await graph.ainvoke(
-        cast(Any, {"messages": [HumanMessage(content="仅本地工具")]}), context=context
-    )
-    assert result["messages"][-1].text.startswith("已取得")
-    assert result["plan"][0]["status"] == "in_progress"
-    assert "work_assessment" not in result
-    assert PROBE_CALLS[0]["step_id"] == "s1"
-    assert PROBE_CALLS[0]["lead_ids"] == [seen["lead"]]
-    async with database.session() as db:
-        operation = (
-            await db.execute(
-                select(ToolOperationRow).where(
-                    ToolOperationRow.run_id == context.toolbox.run_id,
-                    ToolOperationRow.tool_name == "probe",
-                )
-            )
-        ).scalar_one()
-        assert operation.status == "succeeded" and operation.execution_context["step_id"] == "s1"
-
-
-async def test_candidate_remains_candidate_when_model_finishes_without_verification(
-    database, unique_name
-):
-    from agent_workbench.tools.task import propose_finding
-
-    context = await context_for(database, unique_name)
-    _prepare_context(context, database)
-    model = SteppedModel(
-        steps=[
-            lambda _: _call(
-                "propose_finding", {"title": "未验证候选", "description": "本地记录"}, "candidate"
-            ),
-            lambda _: AIMessage(content="候选未经过独立验证"),
-        ]
-    )
-    graph = create_agent(
-        model=model,
-        tools=[propose_finding],
-        middleware=_middleware(),
-        state_schema=AgentGraphState,
-        context_schema=RunContext,
-    )
-    result = await graph.ainvoke(
-        cast(Any, {"messages": [HumanMessage(content="保存候选并结束")]}), context=context
-    )
-    assert result["messages"][-1].text == "候选未经过独立验证"
-    assert len(model.received) == 2
-    async with database.session() as db:
-        row = (
-            await db.execute(
-                select(FindingRow).where(FindingRow.session_id == context.toolbox.session_id)
-            )
-        ).scalar_one()
-        assert row.status == "candidate"
 
 
 async def test_budget_trimming_does_not_mark_unshown_weakness_as_presented(database, unique_name):

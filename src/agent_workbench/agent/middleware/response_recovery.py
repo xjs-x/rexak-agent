@@ -316,7 +316,10 @@ class ResponseRecoveryMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         )
         token = recovery_scope.set(scope)
         feedback: str | None = (
-            "上一尝试未得到已接受的完整决策，请给出完整下一步或简短结论。" if used else None
+                "上一尝试未形成有效的完整响应。"
+                "请根据当前任务目标和已有结果继续决策，"
+                "给出有效的下一步工具调用或必要结论。"
+                if used else None
         )
         history: list[str] = []
         try:

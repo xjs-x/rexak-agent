@@ -40,9 +40,8 @@ from agent_workbench.models.provider import ModelBinding
 from agent_workbench.models.response_quality import ModelResponseIncomplete
 from agent_workbench.models.xiaomi import XiaomiChatOpenAI
 from agent_workbench.persistence.repositories import ToolOperationRepository
-from agent_workbench.persistence.tables import ModelCallRow, ReportVersionRow, ToolOperationRow
+from agent_workbench.persistence.tables import ModelCallRow, ReportVersionRow
 from agent_workbench.tools.http import HttpRequestArgs, run_http_request
-from agent_workbench.tools.task import _evidence_operation_context, _link_asset
 from tests.integration.test_request_budget import context_for
 from tests.support.scripted_model import ScriptedChatModel
 from tests.unit.test_context_budget import profile
@@ -375,45 +374,3 @@ async def test_executor_failure_is_not_reported_as_target_response(
     assert result.data["error_category"] == category
     assert result.data["delivery_state"] == delivery
     assert str(result.execution_certainty) == certainty
-
-
-async def test_captured_identity_and_method_override_model_labels(database, unique_name):
-    context = await context_for(database, unique_name)
-    source = await _operation(
-        database, context, digest="a" * 64, tool_call_id="source", status="succeeded"
-    )
-    identity = uuid4()
-    async with database.transaction() as db:
-        row = await db.get(ToolOperationRow, source.operation_id)
-        assert row is not None
-        row.execution_context = {
-            "method": "POST",
-            "url": "http://fixture.invalid/",
-            "identity": "anonymous",
-        }
-        # 这里只验证解析来源；真实身份行由既有身份工具负责。
-        captured = SimpleNamespace(
-            operation_id=row.operation_id,
-            session_id=row.session_id,
-            execution_context=row.execution_context,
-            identity_id=identity,
-        )
-
-        class SourceReader:
-            async def get(self, model, key):
-                return captured
-
-        evidence = await _evidence_operation_context(
-            SourceReader(), context.toolbox, [], source_operation_id=str(row.operation_id)
-        )
-        assert evidence["identity_refs"] == [str(identity)]
-        with pytest.raises(ValueError, match="真实采集"):
-            await _link_asset(
-                db,
-                context.toolbox,
-                url="http://fixture.invalid/",
-                explicit_method="GET",
-                identity_refs=[],
-                evidence_context=evidence,
-                notes="synthetic",
-            )

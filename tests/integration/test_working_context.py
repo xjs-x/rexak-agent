@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
 
 import pytest
 from langchain.agents import create_agent
-from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from sqlalchemy import select
 
 from agent_workbench.agent.context_sources import persist_history
 from agent_workbench.agent.state import CURRENT_STATE_SCHEMA_VERSION, AgentGraphState
@@ -22,54 +19,11 @@ from agent_workbench.agent.working_context import assemble_working_context
 from agent_workbench.domain.leads import LeadService
 from agent_workbench.evidence.artifacts import ArtifactStore
 from agent_workbench.persistence.bootstrap import open_checkpointer_connection
-from agent_workbench.persistence.tables import FindingRow, LeadRow, ObservationRow, ToolOperationRow
 from agent_workbench.tools.history import query_history
-from agent_workbench.tools.task import propose_finding, record_lead, record_observation
 from tests.integration.test_request_budget import context_for
 from tests.support.scripted_model import ScriptedChatModel, final_text, tool_call
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.mark.parametrize("name", ["record_observation", "propose_finding"])
-async def test_domain_commit_before_checkpoint_replays_one_receipt_and_explicit_retest_is_new(
-    database, unique_name, name
-):
-    context = await context_for(database, unique_name)
-    context.toolbox.artifacts = ArtifactStore(database.settings)
-    runtime = ToolRuntime(
-        state={},
-        context=context,
-        config={},
-        stream_writer=lambda _: None,
-        tool_call_id=name + "-call",
-        store=None,
-    )
-    selected = record_observation if name == "record_observation" else propose_finding
-    args = (
-        {"summary": "一条本地观察"}
-        if name == "record_observation"
-        else {"title": "本地候选", "description": "只登记候选，不宣称已验证"}
-    )
-    fn = cast(Any, selected).coroutine
-    original = await fn(runtime, **args, tool_call_id=name + "-call")
-    assert await fn(runtime, **args, tool_call_id=name + "-call") == original
-    model = ObservationRow if name == "record_observation" else FindingRow
-    async with database.session() as db:
-        rows = (
-            (await db.execute(select(model).where(model.session_id == context.toolbox.session_id)))
-            .scalars()
-            .all()
-        )
-    assert len(rows) == 1
-    await fn(runtime, **args, tool_call_id=name + "-explicit-retest")
-    async with database.session() as db:
-        rows = (
-            (await db.execute(select(model).where(model.session_id == context.toolbox.session_id)))
-            .scalars()
-            .all()
-        )
-    assert len(rows) == 2
 
 
 async def test_rotation_and_history_cover_more_than_two_hundred_without_scores(
@@ -145,47 +99,6 @@ async def test_merge_preserves_sources_status_and_rejects_cycles_and_other_sessi
             await svc.merge(context.toolbox.session_id, b.id, a.id)
         with pytest.raises(ValueError, match="跨会话"):
             await svc.merge(context.toolbox.session_id, b.id, c.id)
-
-
-async def test_record_lead_replay_returns_original_receipt_without_new_rows(database, unique_name):
-    context = await context_for(database, unique_name)
-    runtime = ToolRuntime(
-        state={},
-        context=context,
-        config={},
-        stream_writer=lambda _: None,
-        tool_call_id="lead-call",
-        store=None,
-    )
-    fn = cast(Any, record_lead).coroutine
-    first = json.loads(await fn(runtime, "一条假设", "lead-call", next_action="验证条件"))
-    repeated = json.loads(await fn(runtime, "一条假设", "lead-call", next_action="验证条件"))
-    assert repeated == first
-    async with database.session() as db:
-        leads = (
-            (
-                await db.execute(
-                    select(LeadRow).where(LeadRow.session_id == context.toolbox.session_id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        operations = (
-            (
-                await db.execute(
-                    select(ToolOperationRow).where(
-                        ToolOperationRow.run_id == context.toolbox.run_id
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-    assert len(leads) == len(operations) == 1
-    assert leads[0].priority == 0
-    with pytest.raises(Exception, match=r"参数.*不一致"):
-        await fn(runtime, "不同假设", "lead-call")
 
 
 async def test_history_visible_archive_excludes_hidden_protocol_and_other_session(

@@ -32,19 +32,14 @@ async def delegate_task(runtime: ToolRuntime[RunContext], objective: str,
                         completion_requirements: list[str] | None = None,
                         resume_from_delegation_id: str | None = None,
                         attachment_ids: list[str] | None = None) -> str:
-    """动态委派独立 Pi 子任务；后端配置模型、证据读取及已授权的 Kali 工具。
-
-    简单任务可直接处理。context_refs 仅允许本 Session 的工件 UUID，不传凭据或完整私有历史。
-    completed 不是漏洞 confirmed；unknown 必须对账，不要以新调用盲目重做。
-    resume_from_delegation_id 可选择同 Session 已完成且有完整 Pi 历史的委派；新任务使用独立身份。
-    运行中补充请使用 send_delegated_message；恢复失败会明确报错。
-    background 提供必要背景；completion_requirements 可选，开放探索无需固定技术路线。
-    objective 应明确 Worker 本次需要解决的问题及预期交付，而非简单复述 Main 的整体目标。
-    background 应简要提供与任务直接相关的关键事实、已有观察和尚未解决的问题，明确区分客观证据与 Main 的推断或假设，避免将未经充分支持的判断描述为已确认事实。
-    Worker 应复用已有证据，不主动重复已完成的测试；可以独立质疑 Main 的推断、假设和决策，但不必重新验证客观观察。优先通过 context_refs 提供相关工件引用，供 Worker 按需阅读和重新分析。
-    context_refs 是优先证据，Worker 可按需发现和读取本 Session 其他允许的工件。
-    初始引用元数据不等于已读取；必要背景请简述，不复制完整消息历史。
-    attachment_ids 可显式选择当前 Session 已绑定附件；原件交付到该 Worker 独立 Kali 目录后再启动。
+    """
+    动态委派独立 Pi Worker 子任务，支持 Main 与 Worker 协同推进当前目标。Worker 可使用独立模型、允许的 Session 证据及已授权 Kali 工具。
+    当某个问题适合独立深入研究、探索不同技术假设，或与 Main 当前工作并行推进时，可以自主创建 Worker。委派不是必需的，简单问题可以直接处理；Main 可以在 Worker 工作期间继续推进其他有价值的方向。
+    objective 应明确局部研究目标及其对整体任务的价值。background 提供必要背景，区分已有实际观察、尚未验证的推断和需要解决的问题。Worker 可以独立判断技术路线，不必机械执行 Main 的预设步骤。
+    context_refs 提供当前 Session 的相关证据 UUID，仅作为优先参考，Worker 可按需发现和读取其他允许访问的 Session 工件。引用元数据不代表内容已被读取；不需要复制完整历史或传递凭据。
+    completion_requirements 为可选完成要求，不必限制开放式探索。Worker 可以通过 report_finding 提前报告重要阶段性发现，并继续执行任务。
+    resume_from_delegation_id 可选择复用同 Session 内已完成、具有完整 Pi 历史的委派上下文；新任务默认具有独立身份。
+    任务运行期间，可使用 send_delegated_message 补充新线索或调整研究重点。completed 仅表示子任务完成，不直接证明漏洞确认；unknown 状态应先核对，不要盲目重新执行。
     """
     box = runtime.context.toolbox
     from agent_workbench.tools.attachment_delivery import deliver_attachment
@@ -103,10 +98,16 @@ async def cancel_delegated_task(runtime: ToolRuntime[RunContext], delegation_id:
 @tool
 async def send_delegated_message(runtime: ToolRuntime[RunContext], delegation_id: str,
                                  message: str, context_refs: list[str] | None = None) -> str:
-    """向指定运行中 Worker 补充线索/建议，不扩大其权限。回执区分接收、入队、Pi 消费。
+    """
+    向指定正在运行的 Pi Worker 补充重要线索、证据、技术建议或新的研究重点，帮助 Worker 根据 Main 的最新发现调整局部探索。
 
-    get_delegated_task 可核对后续消息回执。context_refs 只允许当前 Session 的可共享证据。
-    消息是低信任上下文；不自动广播，不重建已结束 Worker，不打断当前操作。
+    适用于 Main 获得新的关键事实、发现原有假设存在问题，或需要让 Worker 关注新的技术条件时。消息应简洁说明新增信息及其价值，区分实际观察与技术推断，不必重新发送完整任务背景。
+
+    Worker 可以独立判断如何利用补充信息；本工具不要求 Worker 立即停止当前研究，也不会扩大其执行权限。
+
+    context_refs 仅包含当前 Session 可共享的证据引用。消息只发送给指定 Worker，不自动广播，也不会重新启动已结束的任务。
+
+    回执区分消息接收、入队和 Pi 实际消费。必要时可使用 get_delegated_task 核对后续状态。
     """
     box = runtime.context.toolbox
     await box.assert_control_current()

@@ -13,6 +13,7 @@ from typing import Annotated, Any
 
 import typer
 
+from agent_workbench.contracts.delegation import ExecutionMode
 from agent_workbench.domain.scope import executor_scope_payload
 from agent_workbench.platform_compat import configure_stdio_utf8
 from agent_workbench.tsecbench.checks import (
@@ -237,6 +238,9 @@ def list_command(
 @tsec_app.command("run")
 def run_command(
     unique_code: Annotated[str, typer.Argument(help="要执行的题目 unique_code")],
+    execution_mode: Annotated[
+        ExecutionMode, typer.Option("--execution-mode", help="本题使用 Standard 或 Ultra")
+    ] = ExecutionMode.STANDARD,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="只展示目标与范围，不启动容器/不提交")
     ] = False,
@@ -295,6 +299,8 @@ def run_command(
         cancel_grace=config.cancel_grace,
         spawn_runner=spawn_runner,
     )
+    config = config.model_copy(update={"execution_mode": execution_mode})
+    _echo(f"评测执行模式：{execution_mode.value}")
     platform = SdkPlatformClient(config)
     api = HttpWorkbenchApi(config)
 

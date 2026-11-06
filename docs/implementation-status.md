@@ -2,6 +2,10 @@
 
 当前公开交付结果见 [v1.0 验收摘要](validation-v1.md)。本页按时间保留各阶段记录，历史部署状态与测试范围不代表后续状态。
 
+## 2026-11-06：TSecBench v1 本地接入准备
+
+评测单题入口增加显式 Standard / Ultra 选择，复用现有 Session API 和 Runner，选择写入评测记录。当前仍仅单题入口，整套题集自动调度未实现；未启动平台靶场、调用真实模型或提交 flag。完整 unit/integration 1134 passed / 4 skipped，全量启动后接入改动由最终 42 项专项覆盖；类型、产品源码 Ruff、编码和前端/Worker 构建通过，全仓另有历史 experiments 目录 57 项 Ruff 问题。原桌面入口 API-only 启动及 Ultra Worker 检查通过，Kali 25 文件哈希一致并保留原进程，8 个未结束任务保持。详见[准备记录](../reports/tsecbench-v1-preparation-20261106.md)和[接入说明](tsecbench-v1-local-evaluation.md)。
+
 ## 2026-11-05：CTF 通用附件交付
 
 已实现 materialize_attachment，将当前 Session 已绑定原件流式交付到 Kali 固定输入目录；delegate_task 可选 attachment_ids，使用同一服务向各 Worker 独立目录交付，完成后才提交 A2A。沿用原 Operation/fence/权限与证据边界，不增加 ZIP 专用工具。合成 Flask ZIP 经真实 Kali Main 及两个 Worker 的 bash/read/grep/find 文件后端验证；A2A 模型启动用确定性替身，不代表付费模型自主表现。全量回归 1148 passed / 4 skipped；全量启动后的边界补充由最终 18 项定向验证覆盖。类型、编码、协议生成和构建通过，本次修改文件 Ruff 通过；全仓仍有 57 项历史实验问题。原桌面入口和 Kali 25 个已安装文件哈希已验收，旧任务/数据保持，未访问在线 CTF 或调用付费模型。详见[实施报告](../reports/ctf-archive-attachment-implementation.md)。
@@ -266,7 +270,7 @@ PE/ELF 结构与字符串、函数来源、x86/x64 分页反汇编和有限引�
 | 任务 | 状态 | 说明 |
 |---|---|---|
 | assets / leads / findings / verifications / coverage / report_versions 表与 API | 🟡 | 表、领域服务和工具已接入；资产、线索、发现、验证记录、覆盖摘要与报告版本的只读 API 已验证，报告创建/导出 API 已验证；领域记录的写入仍主要经 Agent 工具，未做完整控制台 |
-| 计划/线索工具，目标与计划可修改，保持版本与理由 | ✅ | `update_plan`（写图状态）、`record_lead`（含 `priority_rationale`） |
+| 可选工作计划，保持版本与理由 | ✅ | `update_plan` 写图状态；旧的线索、观察和候选发现登记工具已从模型工具表及 `task.py` 移除，历史领域记录仍可读取。 |
 | 线索优先级考虑影响/证据/可执行性/信息增益 | ✅ | `domain/leads.compute_priority`（四维加权 + 分项可解释） |
 | 覆盖记录明确资产/身份/检查类型；未检查/受阻/阴性/阳性分开 | ✅ | `CoverageService`（组合键去重 + `ratio_definition` 说明分母） |
 | 独立核验器；模型提出发现不直接 confirmed | 🟡 | `verify_public_git_head` 已接入工具注册表：先校验候选的原始 HTTP 工件，再以隔离身份发起新的 GET；代码核对两个操作、响应格式与文件哈希后才写确认记录，并把结论限定为 Git HEAD 引用可读。集成测试覆盖成功、伪证据、重复操作、文件篡改与报告引用；真实小米任务及执行岛端到端复测尚未做，其他漏洞类型仍保持 candidate |

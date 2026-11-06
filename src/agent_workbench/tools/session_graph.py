@@ -19,7 +19,10 @@ from agent_workbench.tools.graph_errors import format_graph_schema_error, render
 
 @tool
 async def get_graph(runtime: ToolRuntime[RunContext], include_pending: bool = True) -> str:
-    """读取当前Session完整双图及版本，默认同时返回最新连续待审页 pending_page。
+    """
+    读取当前 Session 的信息图、攻击状态图及其版本，帮助理解历史发现之间的关系、已观察到的攻击状态和可能值得继续研究的线索。
+    当需要回顾跨阶段的技术关联、调查已有攻击路径或核对图记录时，可以主动使用。图中的历史结论可辅助决策，关键技术判断仍可按需回读对应证据。
+    默认同时返回最新连续待审页 pending_page。后续版本检查与图核对遵循以下协议：
 
     返回当前revision、两图节点/边的持久化ID，以及pending_page内对应版本的page_id。
     图revision变化、page_id失效或没有可用页时，再调用本工具取得有效page_id。
@@ -70,7 +73,7 @@ async def update_graph(
         ),
     ] = None,
 ) -> str | ToolMessage:
-    """增量维护当前 Session 双图；只有携带有效 page_id 才确认本页历史。
+    """增量维护当前 Session 双图；用于保存有价值的信息关联、攻击状态变化及其证据来源,只有携带有效 page_id 才确认本页历史。
 
     每项含 op、graph、data；新增用 temp_id，修改用现有 id（替换该对象的完整语义字段）。
     information 节点 data={label,source_refs}，边={from_id,to_id,relation,status,source_refs}；

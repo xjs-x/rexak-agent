@@ -127,7 +127,7 @@ class ToolDispatchMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         if args is None:
             args = {}
 
-        if tool_name in {"update_plan", "record_lead", "record_observation"}:
+        if tool_name == "update_plan":
             schema = getattr(getattr(request, "tool", None), "tool_call_schema", None)
             if schema is not None:
                 unknown = set(args) - set(schema.model_fields)

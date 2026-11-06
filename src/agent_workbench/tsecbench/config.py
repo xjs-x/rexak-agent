@@ -18,6 +18,7 @@ from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent_workbench.config.settings import get_settings
+from agent_workbench.contracts.delegation import ExecutionMode
 
 #: 私有配置目录（仓库之外）；可用 ``WORKBENCH_TSECBENCH_HOME`` 覆盖。
 PRIVATE_HOME = Path("~/.workbench/tsecbench")
@@ -43,6 +44,7 @@ class BenchmarkConfig(BaseModel):
     base_url: str | None = None
     api_base_url: str = "http://127.0.0.1:8770"
     api_token: str = Field(default="", repr=False, exclude=True)
+    execution_mode: ExecutionMode = ExecutionMode.STANDARD
 
     #: 单题墙钟上限（秒）。这是评测入口的保护，不是 Agent 内部的任务总时长限制。
     max_seconds: float = 3600.0
@@ -75,6 +77,7 @@ class BenchmarkConfig(BaseModel):
             "token_present": self.token_present,
             "token_fingerprint": self.token_fingerprint,
             "api_base_url": self.api_base_url,
+            "execution_mode": self.execution_mode.value,
             "api_token_present": bool(self.api_token) and not self.api_token.startswith("change-me"),
             "env_file": self.env_file,
             "ovpn_path": self.ovpn_path,

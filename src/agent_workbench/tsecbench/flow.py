@@ -739,6 +739,7 @@ class SingleChallengeFlow:
         after = final_challenge or challenge
         return {
             "kind": "tsecbench_challenge_run",
+            "execution_mode": self._config.execution_mode.value,
             "created_at": datetime.now(UTC).isoformat(),
             "outcome": outcome.outcome,
             "settled": outcome.settled,

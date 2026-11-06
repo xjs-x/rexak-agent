@@ -102,64 +102,6 @@ async def test_database_rejects_cross_session_relationship_even_without_service(
             await db.flush()
 
 
-async def test_old_record_lead_receipt_replays_without_new_digest_or_write(database, unique_name):
-    import json
-
-    from agent_workbench.evidence.artifacts import ArtifactStore
-    from agent_workbench.persistence.repositories import compute_request_digest
-    from agent_workbench.tools.task import record_lead
-    from tests.integration.test_chain_planning import _call
-
-    context = await context_for(database, unique_name)
-    context.toolbox.artifacts = ArtifactStore(database.settings)
-    arguments = {
-        "hypothesis": "旧调用",
-        "lead_id": None,
-        "url": None,
-        "identity_refs": [],
-        "evidence_refs": [],
-        "next_action": None,
-        "status": None,
-        "blocked_reason": None,
-        "resume_condition": None,
-        "merge_into_id": None,
-        "observation_summary": None,
-        "source_operation_id": None,
-        "method": None,
-        "impact": None,
-        "evidence_strength": None,
-        "feasibility": None,
-        "information_gain": None,
-    }
-    old_receipt = {"ok": True, "lead": {"lead_id": str(uuid4()), "status": "new"}}
-    async with database.transaction() as db:
-        db.add(
-            ToolOperationRow(
-                operation_id=uuid4(),
-                run_id=context.toolbox.run_id,
-                session_id=context.toolbox.session_id,
-                tool_call_id="legacy-lead",
-                tool_name="record_lead",
-                request_digest=compute_request_digest(
-                    {"tool": "record_lead", "arguments": arguments}
-                ),
-                effect_class="idempotent_write",
-                status="succeeded",
-                result_snapshot=old_receipt,
-            )
-        )
-    assert (
-        json.loads(await _call(record_lead, context, {"hypothesis": "旧调用"}, "legacy-lead"))
-        == old_receipt
-    )
-    async with database.session() as db:
-        assert (
-            await db.execute(
-                select(LeadRow).where(LeadRow.session_id == context.toolbox.session_id)
-            )
-        ).scalars().all() == []
-
-
 @pytest.mark.parametrize(
     "state,conditions",
     [

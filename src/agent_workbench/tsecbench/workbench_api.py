@@ -177,6 +177,7 @@ class HttpWorkbenchApi:
             "project_id": project_id,
             "title": title,
             "initial_objective": objective,
+            "execution_mode": self._config.execution_mode.value,
             "scope": scope,
             "policy": policy,
             "identities": [],

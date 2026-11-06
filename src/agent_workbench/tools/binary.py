@@ -33,10 +33,10 @@ async def invoke(
 
 @tool
 async def binary_profile(runtime: ToolRuntime[RunContext], attachment_id: str) -> str:
-    """先识别当前 Session 已绑定二进制附件的真实 PE/ELF 格式、架构、导入和节区统计。
-
-    只读本地静态分析；不要求 Kali 在线。返回分析来源和局限；不证明漏洞或授权访问文件内地址。
-    可继续用 binary_strings 查询相关字符串，不应一次遍历全部函数。
+    """
+    识别当前 Session 二进制附件的 PE/ELF 格式、目标架构、导入信息及节区结构，帮助确定后续分析方向。
+    根据实际线索，可结合 binary_strings、binary_functions、binary_function 和 binary_references 进一步研究程序逻辑、关键校验及潜在利用条件。
+    本工具执行静态格式分析，不要求 Kali 在线。返回识别结果及分析局限。
     """
     return await invoke(runtime, attachment_id, "profile")
 
