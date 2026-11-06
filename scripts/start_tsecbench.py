@@ -32,6 +32,7 @@ from agent_workbench.tsecbench.launcher import (  # noqa: E402
     install_desktop_shortcut,
     save_profile,
     validate_inputs,
+    wait_windows_vpn,
 )
 from agent_workbench.tsecbench.platform import ChallengeInfo  # noqa: E402
 
@@ -257,15 +258,18 @@ class EvaluationWindow:
 
     def connect(self) -> None:
         def action(config: BenchmarkConfig) -> None:
-            self.launch(
-                "已提交连接请求，请稍后检查 VPN。",
-                lambda: self.emit(
+            def work() -> None:
+                name = connect_windows_vpn(config)
+                self.emit(
                     "log",
                     "已请求 OpenVPN 连接："
-                    + connect_windows_vpn(config)
-                    + "。若客户端出现权限提示，请在本机完成。",
-                ),
-            )
+                    + name
+                    + "，正在等待健康检查。若出现权限提示，请在本机完成。",
+                )
+                wait_windows_vpn()
+                self.emit("log", "Windows VPN 健康检查通过。现在可启动控制台并检查两端网络和题目。")
+
+            self.launch("正在启动 OpenVPN 并等待连接……", work)
 
         self.guarded(action)
 

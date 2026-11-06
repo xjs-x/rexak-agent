@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -21,6 +22,35 @@ from agent_workbench.tsecbench.launcher import (
     validate_vpn,
 )
 from agent_workbench.tsecbench.platform import ChallengeInfo
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows OpenVPN command interface")
+def test_missing_gui_rescan_failure_and_retry_do_not_block_connect(tmp_path, monkeypatch):
+    from agent_workbench.tsecbench import launcher
+
+    home = tmp_path / "user"
+    program_files = tmp_path / "programs"
+    exe = program_files / "OpenVPN/bin/openvpn-gui.exe"
+    exe.parent.mkdir(parents=True)
+    exe.touch()
+    source = tmp_path / "profile/client.ovpn"
+    source.parent.mkdir()
+    source.write_text("client\nremote localhost 9798\n<key>\nx\n</key>\n", encoding="utf-8")
+    monkeypatch.setenv("PROGRAMFILES", str(program_files))
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+    monkeypatch.setattr(launcher, "restrict_path", lambda *_a, **_k: None)
+    monkeypatch.setattr(launcher.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=1))
+    requested = []
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda args, **_k: requested.append(args))
+    cfg = BenchmarkConfig(ovpn_path=str(source))
+    assert launcher.connect_windows_vpn(cfg) == launcher.connect_windows_vpn(cfg)
+    assert len(requested) == 2
+    assert all(args[-3:] == ["--command", "connect", "rexak-eval-profile"] for args in requested)
+    destination = home / "OpenVPN/config/rexak-eval-profile.ovpn"
+    destination.write_text("preserve-different-profile", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="内容不同"):
+        launcher.connect_windows_vpn(cfg)
+    assert destination.read_text(encoding="utf-8") == "preserve-different-profile"
 
 
 def challenge(code: str = "one", **changes: Any) -> ChallengeInfo:

@@ -177,18 +177,42 @@ def connect_windows_vpn(config: BenchmarkConfig) -> str:
     folder.mkdir(parents=True, exist_ok=True)
     name = "rexak-eval-" + source.parent.name
     target = folder / f"{name}.ovpn"
-    if target.exists():
-        raise RuntimeError("本次连接配置已导入；请从 OpenVPN 客户端查看或重新连接。")
+    content = raw.decode("utf-8-sig").replace("\r\n", "\n") + "\npull-filter ignore redirect-gateway\n"
+    if target.exists() and target.read_text(encoding="utf-8") != content:
+        raise RuntimeError("同名 VPN 配置内容不同，已保留原文件；请重新选择本轮配置。")
     # Preserve the downloaded original. Only the dedicated client copy is extended.
-    target.touch(exist_ok=False)
+    target.touch(exist_ok=True)
     restrict_path(target)
-    target.write_text(
-        raw.decode("utf-8-sig") + "\npull-filter ignore redirect-gateway\n", encoding="utf-8"
-    )
+    target.write_text(content, encoding="utf-8")
     flags = subprocess.CREATE_NO_WINDOW
-    subprocess.run([str(program), "--command", "rescan"], check=True, creationflags=flags)
+    # rescan needs an existing GUI. A missing GUI is normal on first use;
+    # connect starts it automatically, unlike rescan.
+    subprocess.run(
+        [str(program), "--command", "rescan"],
+        check=False,
+        capture_output=True,
+        timeout=10,
+        creationflags=flags,
+    )
     subprocess.Popen([str(program), "--command", "connect", name], creationflags=flags)
     return name
+
+
+def wait_windows_vpn(*, seconds: float = 45) -> None:
+    deadline = time.monotonic() + seconds
+    with httpx.Client(trust_env=False, timeout=3) as client:
+        while time.monotonic() < deadline:
+            try:
+                response = client.get("http://10.0.100.58")
+                if response.status_code == 200 and response.json().get("status") == "ok":
+                    return
+            except (httpx.HTTPError, ValueError):
+                pass
+            time.sleep(2)
+    raise RuntimeError(
+        "已请求客户端连接，但 VPN 健康检查仍未通过。请查看 OpenVPN 状态或权限提示；"
+        "若日志为 TLS 超时，检查当前网络是否允许 VPN（此前手机热点可用）。可再次点击连接重试。"
+    )
 
 
 async def kali_vpn_health() -> bool:
