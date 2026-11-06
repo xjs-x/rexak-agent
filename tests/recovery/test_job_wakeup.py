@@ -163,6 +163,24 @@ async def test_pending_jobs_listed_for_waiting_run(database, unique_name) -> Non
     assert [str(item.job_id) for item in pending] == [str(job_id)]
 
 
+async def test_finished_http_unknown_delivery_does_not_block_natural_finish(database, unique_name, monkeypatch):
+    from datetime import UTC, datetime
+    task, run, job_id = await _waiting_run_with_job(database, unique_name)
+    class Client(_StubClient):
+        async def get_job(self, job_id):
+            return JobSnapshot(job_id=job_id, operation_id=uuid.uuid4(), kind="http_request",
+                               state=JobState.UNKNOWN, finished_at=datetime.now(UTC), byte_count=0)
+    _patch(monkeypatch, Client({}))
+    result = await probe_and_wake(database, run_ids=[run.id])
+    assert result["woken"] == [str(run.id)]
+    assert await pending_jobs_for_run(database, run.id) == []
+    async with database.session() as db:
+        job = await db.get(ToolJobRow, job_id)
+        assert job.state == "unknown" and job.sync_status == "uncertain"
+        messages = (await db.execute(select(CommandRow).where(CommandRow.session_id == task.id))).scalars().all()
+        assert "送达结果未知" in messages[0].content
+
+
 @pytest.mark.parametrize("remote_state,expected_job", [("exited", "succeeded"), ("unknown", "unknown")])
 async def test_resource_poll_updates_both_projections_before_wakeup(database, unique_name, monkeypatch,
                                                                   remote_state, expected_job):

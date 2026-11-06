@@ -1464,22 +1464,39 @@ async def cancel_job(job_id: str, request: CancelRequest) -> CancelResponse:
     if record is None:
         raise HTTPException(status_code=404, detail="job 不存在")
 
-    if (
-        record.state in {"succeeded", "failed", "cancelled"}
-        and record.cancel_request_id == request.request_id
-    ):
+    task = state._tasks.get(job_id)
+    finished_http = (record.kind == "http_request" and record.finished_at is not None
+                     and (task is None or task.done()))
+    if record.state in {"succeeded", "failed", "cancelled"} or finished_http:
+        await state.ledger.update(job_id, cancel_requested=1,
+                                  cancel_request_id=request.request_id, cancel_confirmed=1)
         return CancelResponse(
             job_id=job_id,
             request_id=request.request_id,
             state=record.state,
-            process_confirmed_exited=record.state == "cancelled",
-            detail="重复的取消请求；返回同一结论",
+            process_confirmed_exited=True,
+            detail="执行已结束；保留原结果及送达不确定性，不重复终止",
         )
 
-    confirmed, detail = await state.supervisor.cancel(job_id)
+    if record.kind == "http_request" and task is not None:
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5)
+        except asyncio.CancelledError:
+            pass
+        except TimeoutError:
+            pass
+        confirmed = task.done()
+        detail = "HTTP 协程取消已确认" if confirmed else "HTTP 协程仍未确认停止"
+    else:
+        confirmed, detail = await state.supervisor.cancel(job_id)
+    latest = await state.ledger.get(job_id) if confirmed else record
+    completed_state = latest.state if latest is not None else record.state
+    preserve_unknown = (latest is not None and latest.kind == "http_request"
+                        and latest.finished_at is not None and completed_state == "unknown")
     new_state = (
-        record.state
-        if confirmed and record.state in {"succeeded", "failed"}
+        completed_state
+        if confirmed and (completed_state in {"succeeded", "failed"} or preserve_unknown)
         else ("cancelled" if confirmed else "unknown")
     )
     await state.ledger.update(
@@ -1487,6 +1504,7 @@ async def cancel_job(job_id: str, request: CancelRequest) -> CancelResponse:
         state=new_state,
         cancel_requested=1,
         cancel_request_id=request.request_id,
+        cancel_confirmed=int(confirmed),
     )
     state.emit(
         "job.cancel",

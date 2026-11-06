@@ -1885,9 +1885,13 @@ async def list_jobs(
 ) -> dict[str, Any]:
     get_auth().require_session(request)
     from agent_workbench.persistence.db import get_database
+    from agent_workbench.persistence.tables import ToolOperationRow
 
     async with get_database().session() as session:
         rows = await ToolJobRepository(session).list_for_session(session_id)
+        http_operations = set((await session.execute(select(ToolOperationRow.operation_id).where(
+            ToolOperationRow.session_id == session_id, ToolOperationRow.tool_name == "http_request"
+        ))).scalars().all())
     if state_filter:
         rows = [row for row in rows if row.state == state_filter]
     return {
@@ -1900,6 +1904,10 @@ async def list_jobs(
                 "sync_status": row.sync_status,
                 "cancel_requested": row.cancel_requested_at is not None,
                 "cancel_confirmed": row.cancel_confirmed,
+                "execution_finished": (row.state in {"succeeded", "failed", "cancelled"}
+                                       or row.cancel_confirmed
+                                       or (row.operation_id in http_operations and row.executor_finished_at is not None)),
+                "delivery_uncertain": row.state == "unknown",
                 "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
             }
             for row in rows

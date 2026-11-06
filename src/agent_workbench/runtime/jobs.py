@@ -105,6 +105,9 @@ async def pending_jobs_for_run(db: Database, run_id: UUID) -> list[ToolJobRow]:
                     )
                     .where(ToolOperationRow.run_id == run_id)
                     .where(ToolJobRow.state.in_(list(UNRESOLVED_JOB_STATES)))
+                    .where(~((ToolOperationRow.tool_name == "http_request")
+                             & (ToolJobRow.state == "unknown")
+                             & ToolJobRow.executor_finished_at.is_not(None)))
                 )
             )
             .scalars()
@@ -269,7 +272,7 @@ async def probe_and_wake(
     try:
         semaphore = asyncio.Semaphore(PROBE_CONCURRENCY)
 
-        async def _probe(row: ToolJobRow) -> tuple[ToolJobRow, str, str]:
+        async def _probe(row: ToolJobRow) -> tuple[ToolJobRow, str, str, Any]:
             async with semaphore:
                 try:
                     async with db.session() as session:
@@ -293,15 +296,15 @@ async def probe_and_wake(
                             state, exit_code = projected.state, projected.exit_code
                         if state in {"exited", "closed"}:
                             state = "succeeded" if exit_code == 0 else "failed"
-                        return row, state, ""
+                        return row, state, "", None
                     snapshot = await client.get_job(row.job_id)
-                    return row, execution_job_state(snapshot), ""
+                    return row, execution_job_state(snapshot), "", snapshot
                 except ExecutorRejected as exc:
-                    return row, "unknown", f"执行岛无该任务记录（HTTP {exc.status_code}）"
+                    return row, "unknown", f"执行岛无该任务记录（HTTP {exc.status_code}）", None
                 except (ExecutorConnectionError, ExecutorProtocolError) as exc:
-                    return row, "unknown", f"查询失败：{exc}"
+                    return row, "unknown", f"查询失败：{exc}", None
                 except Exception as exc:
-                    return row, "unknown", f"意外错误：{type(exc).__name__}: {exc}"
+                    return row, "unknown", f"意外错误：{type(exc).__name__}: {exc}", None
 
         probed = await asyncio.gather(*(_probe(row) for row in tracked))
     finally:
@@ -323,7 +326,7 @@ async def probe_and_wake(
             ).all()
         )
 
-    for row, state, problem in probed:
+    for row, state, problem, snapshot in probed:
         run_id = run_by_operation.get(row.operation_id)
         if run_id is None:
             continue
@@ -337,13 +340,16 @@ async def probe_and_wake(
                 executor_id=row.executor_id,
                 state=state,
                 sync_status="in_sync" if state in DEFINITE_TERMINAL_STATES else "uncertain",
+                executor_finished_at=snapshot.finished_at if snapshot else None,
             )
 
             operation = await session.get(ToolOperationRow, row.operation_id)
             if operation is not None and operation.status in {"accepted", "running", "unknown"}:
                 operation.status = state
 
-        if state in UNRESOLVED_JOB_STATES:
+        finished_http = (snapshot is not None and str(snapshot.kind) == "http_request"
+                         and snapshot.finished_at is not None)
+        if state in UNRESOLVED_JOB_STATES and not finished_http:
             # 但**唤醒判定**必须另算：还没有确定结论就不能唤醒。
             # `unknown` 尤其重要 —— 它表示"既不能证明完成，也不能证明没发生"，
             # 据它唤醒等于让模型在未知副作用之上继续推进。
@@ -354,7 +360,9 @@ async def probe_and_wake(
                 result.setdefault("unresolved", []).append(str(row.job_id))
             continue
 
-        terminal_by_run.setdefault(run_id, []).append((row.job_id, state))
+        summary_state = ("HTTP执行已结束，送达结果未知；禁止自动重放原请求"
+                         if state == "unknown" else state)
+        terminal_by_run.setdefault(run_id, []).append((row.job_id, summary_state))
         result["terminal"].append(str(row.job_id))
 
     for run_id in waiting:
@@ -446,6 +454,9 @@ async def _wake_run(
                     ToolOperationRow.run_id == run_id,
                     ToolJobRow.state.in_(list(UNRESOLVED_JOB_STATES)),
                 )
+                .where(~((ToolOperationRow.tool_name == "http_request")
+                         & (ToolJobRow.state == "unknown")
+                         & ToolJobRow.executor_finished_at.is_not(None)))
                 .limit(1)
             )
         ).first()

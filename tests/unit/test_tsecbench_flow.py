@@ -389,6 +389,18 @@ async def test_flow_waiting_user_is_cancelled(tmp_path):
     assert platform.close_calls == 1
 
 
+async def test_finished_http_delivery_unknown_does_not_keep_assessment_window_busy(tmp_path):
+    api = FakeApi(["completed"], final_text="flag{recorded_answer}\n", jobs=[{
+        "job_id": "http-job", "state": "unknown", "sync_status": "uncertain",
+        "execution_finished": True, "delivery_uncertain": True,
+    }])
+    platform = FakePlatform(_challenge(flag_count=1),
+                            refresh=_challenge(flag_count=1, correct_flag_count=1, is_completed=True))
+    outcome = await _flow(platform, api, tmp_path).run()
+    assert outcome.settled and not outcome.unresolved_jobs
+    assert outcome.outcome == "completed" and platform.close_calls == 1
+
+
 async def test_flow_records_close_failure_and_manual_hint(tmp_path):
     platform = FakePlatform(_challenge(), close_result=False)
     api = FakeApi(["completed"], final_text="flag{alpha_secret}\n")

@@ -607,6 +607,10 @@ class SingleChallengeFlow:
         unresolved: list[str] = []
         for row in rows:
             state = str(row.get("state") or "")
+            if row.get("execution_finished") is True:
+                if state == "unknown":
+                    self._echo(f"HTTP 作业 {row.get('job_id')} 已结束，目标送达结果仍未知；不重放请求。")
+                continue
             sync = str(row.get("sync_status") or "")
             cancel_confirmed = bool(row.get("cancel_confirmed"))
             if state == "unknown" or sync == "uncertain" or (state in {"accepted", "running"} and not cancel_confirmed):
