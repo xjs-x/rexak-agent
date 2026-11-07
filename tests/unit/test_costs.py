@@ -54,6 +54,12 @@ def test_normalize_keeps_raw_for_reconciliation() -> None:
     assert normalize_usage(raw).raw_usage == raw
 
 
+def test_deepseek_cache_hit_alias_keeps_total_input():
+    usage = normalize_usage({"prompt_tokens": 100, "completion_tokens": 20,
+                             "prompt_cache_hit_tokens": 30})
+    assert usage.input_tokens == 100 and usage.cache_read_tokens == 30
+
+
 def test_absent_usage_is_unknown_not_zero() -> None:
     totals = normalize_usage({})
     assert totals.usage_status is UsageStatus.UNKNOWN

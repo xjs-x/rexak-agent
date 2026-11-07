@@ -106,3 +106,36 @@ class UsageSummary(_Base):
     cache_read_tokens: int = 0
     cache_write_tokens: int | None = None
     reasoning_tokens: int | None = None
+
+
+class AgentTokenSummary(_Base):
+    """Known subtotals; missing usage must not be interpreted as zero."""
+
+    input_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    call_count: int = 0
+    unknown_input_calls: int = 0
+    unknown_cache_calls: int = 0
+    unavailable_delegations: int = 0
+    input_token_basis: Literal["total_including_cache"] = "total_including_cache"
+
+
+class CurrencyUsageRead(_Base):
+    currency: str
+    known_cost: str
+    priced_calls: int
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    reasoning_tokens: int
+
+
+class SessionUsageRead(_Base):
+    call_count: int
+    by_currency: dict[str, CurrencyUsageRead]
+    unpriced_calls: int
+    unknown_usage_calls: int
+    token_totals: dict[str, int | None]
+    by_agent: dict[Literal["main", "worker"], AgentTokenSummary]
+    note: str

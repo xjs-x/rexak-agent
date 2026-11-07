@@ -83,7 +83,7 @@ async def test_existing_unknown_history_conditions_are_low_priority_and_session_
     assert changed["status"] == "changed" and (changed["old_value"], changed["new_value"]) == (1, 2)
     assert evidence["evidence_availability"] == "metadata_only_no_body_read"
     assert "UNTRUSTED_ARTIFACT_SENTINEL" not in serialized
-    assert not any("_host_history_reference" in str(m.content) for m in result["messages"])
+    assert any("_host_history_reference" in str(m.content) for m in result["messages"])
     assert not any(
         "_host_history_reference" in str(m.content)
         for m in model.received[0]

@@ -366,7 +366,7 @@ async def wait_for_resources(
 
 
 @tool("get_execution_environment")
-async def get_execution_environment(runtime: ToolRuntime[RunContext]) -> str:
+async def get_execution_environment(runtime: ToolRuntime[RunContext], tool_names: list[str] | None = None) -> str:
     """读取执行岛环境能力（Linux/Python/shell、解释器、程序、代理/CA 是否配置）。
 
     Returns:
@@ -374,11 +374,13 @@ async def get_execution_environment(runtime: ToolRuntime[RunContext]) -> str:
         缺失项与原因如实列出；环境发现不会自动安装软件。
 
     Notes:
+        tool_names 可补充最多16个程序名称（不是路径或命令），按 PATH 查询并有界探测版本；不全盘扫描。
         任务依赖请在工作区内创建 venv/本地依赖目录并复用；系统级升级属于环境维护。
     """
     toolbox = runtime.context.toolbox
     try:
-        report = await toolbox.executor.execution_environment()
+        report = await toolbox.executor.execution_environment(tool_names) if tool_names else await toolbox.executor.execution_environment()
+        toolbox.execution_environment_snapshot = report
     except Exception as exc:
         return _fail(
             str(ErrorCode.EXECUTOR_UNAVAILABLE), f"执行岛不可达：{type(exc).__name__}"

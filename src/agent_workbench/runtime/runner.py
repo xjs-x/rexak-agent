@@ -975,7 +975,7 @@ class AgentRunner:
         from agent_workbench.config.settings import REPO_ROOT
         from agent_workbench.maintenance.provenance import exporter_fingerprint
 
-        source = await asyncio.to_thread(exporter_fingerprint, REPO_ROOT)
+        source = await asyncio.to_thread(exporter_fingerprint, REPO_ROOT, runtime_only=True)
         captured = {
             key: source.get(key)
             for key in (
@@ -987,6 +987,7 @@ class AgentRunner:
                 "dirty",
                 "hash_method",
                 "hash_scope",
+                "pathspec",
                 "working_tree_consistency",
                 "error_code",
             )

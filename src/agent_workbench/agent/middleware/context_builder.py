@@ -24,6 +24,11 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.context_sources import persist_history
+from agent_workbench.agent.middleware.context_updates import (
+    CONTEXT_UPDATE_RULE,
+    append_update,
+    retain_updates,
+)
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.config.catalog import ProviderProfile
 from agent_workbench.models.context_budget import ensure_fits, estimate_request, message_inventory
@@ -94,8 +99,10 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 )
         base_system = request.system_message
         system_text = base_system.content if base_system is not None else ""
+        update_text = ""
 
         def compose(context_text: str) -> SystemMessage:
+            nonlocal update_text
             if graph_review_scope.get():
                 # 维护请求不复用普通测试 System 文案；实际权限仍由只含图工具的 Schema 限定。
                 system_prefix = "你正在维护当前会话的证据图。这不是安全测试决策回合。"
@@ -121,7 +128,8 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 feedback = system_text if isinstance(system_text, str) and system_text.startswith(
                     "【宿主图维护】"
                 ) else ""
-                return SystemMessage(content=system_prefix + "\n" + feedback + "\n\n" + context_text)
+                update_text = feedback + "\n\n" + context_text
+                return SystemMessage(content=system_prefix + CONTEXT_UPDATE_RULE)
             if ((working_view or {}).get("session_memory") or {}).get(
                 "review_status"
             ) == "closed":
@@ -132,11 +140,10 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             external = getattr(getattr(ctx, "toolbox", None), "skill_context", "")
             if external:
                 context_text += external
+            update_text = "【host_context_update：完整当前状态；整体替代此前同类快照】\n" + context_text
             if isinstance(system_text, list):
-                return SystemMessage(content=[*system_text, {"type": "text", "text": context_text}])
-            if system_text:
-                return SystemMessage(content=f"{system_text}\n\n{context_text}")
-            return SystemMessage(content=context_text)
+                return SystemMessage(content=[*system_text, {"type": "text", "text": CONTEXT_UPDATE_RULE}])
+            return SystemMessage(content=system_text + CONTEXT_UPDATE_RULE)
 
         def compose_view() -> str:
             return _compose_context(state, working_view, scope_block, decision_board)
@@ -157,7 +164,7 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
 
             def estimate():
                 return estimate_request(
-                    selected,
+                    append_update(selected, "host_context_update", update_text)[0],
                     merged,
                     request.tools,
                     profile,
@@ -247,7 +254,7 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             merged = compose(context)
             if profile is not None:
                 budget = estimate_request(
-                    selected,
+                    append_update(selected, "host_context_update", update_text)[0],
                     merged,
                     request.tools,
                     profile,
@@ -257,6 +264,8 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 )
                 ensure_fits(budget)
             manifest = _build_manifest(state, selected, str(merged.content))
+        selected, context_updates = append_update(selected, "host_context_update", update_text)
+        manifest = _build_manifest(state, selected, str(merged.content))
         manifest.update(
             **(
                 {"skills": ctx.toolbox.skill_manifest}
@@ -303,6 +312,8 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     "visible_sha256": hashlib.sha256(visible.encode("utf-8")).hexdigest(),
                     "visible_chars": len(visible),
                     "visible_in_system_message": visible in str(merged.content),
+                    "visible_in_context_update": any(visible in str(m.content) for m in selected
+                        if m.additional_kwargs.get("host_projection") == "host_context_update"),
                     "transport_delivery": "requires_model_call_observation_not_proven_by_manifest",
                 }
                 manifest["system_message_sha256"] = hashlib.sha256(str(merged.content).encode("utf-8")).hexdigest()
@@ -331,7 +342,7 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 await present_page(db, ctx.toolbox, memory["page_id"])
 
         updated = request.override(system_message=merged, messages=selected)
-        return await handler(updated)
+        return retain_updates(await handler(updated), context_updates)
 
 
 def _copy_working(working: Any) -> dict[str, Any] | None:

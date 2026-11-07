@@ -115,11 +115,12 @@ export function createPiWorker(objective: string, options: PiOptions = {}) {
     get outputRefsTruncated() { return remote?.outputRefsTruncated ?? false; },
     get executionUncertain() { return cleanupUncertain || remote?.uncertain === true; }, usage() {
     const known = metrics.length > 0 && metrics.every(m => m.usage_status === 'reported');
-    const sum = (key: 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_write_tokens') => known ? metrics.reduce((v, m) => v + (m[key] ?? 0), 0) : null;
+    const sum = (key: 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_write_tokens') => known && metrics.every(m => m[key] !== null) ? metrics.reduce((v, m) => v + m[key]!, 0) : null;
     return { provider: options.modelConfig?.provider ?? 'rexak-mock', model: options.modelConfig?.model ?? mockModel.id,
       calls: options.modelConfig ? metrics.length : agent.state.messages.filter(m => m.role === 'assistant').length - historicalAssistantCount,
       duration_ms: metrics.reduce((v, m) => v + m.duration_ms, 0),
       usage_status: options.modelConfig ? known ? 'reported' as const : 'unknown' as const : 'mock' as const,
+      input_token_basis: 'total_including_cache' as const,
       input_tokens: sum('input_tokens'), output_tokens: sum('output_tokens'), cache_read_tokens: sum('cache_read_tokens'),
       cache_write_tokens: sum('cache_write_tokens'), failure_reason: [...metrics].reverse().find(m => m.failure_reason)?.failure_reason ?? null };
   }, async run() {

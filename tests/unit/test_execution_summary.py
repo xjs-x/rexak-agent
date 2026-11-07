@@ -61,6 +61,18 @@ def test_summary_preserves_pending_semantics_note():
     assert "事件 3 条" in text
 
 
+def test_empty_output_warning_does_not_falsify_process_exit():
+    from agent_workbench.tools.commands import _result_from_receipt
+
+    result = _result_from_receipt(uuid4(), {
+        "process_state": "exited", "exit_code": 0, "termination_reason": "exited_normally",
+        "resource": {"diagnostics": {"output_validation": "failed"}},
+    })
+    assert result.status == "succeeded"
+    assert result.data["exit_code"] == 0
+    assert "产物检查失败" in result.summary
+
+
 def test_summary_marks_availability_notes():
     receipt = _receipt("resource.exited", payload={"exit_code": None})
     receipt.availability = "truncated"

@@ -175,14 +175,7 @@ export type PriceCatalog = components["schemas"]["PriceCatalog"];
 export type PriceUpdate = components["schemas"]["PriceUpdate"];
 export type PlanRead = components["schemas"]["PlanRead"];
 
-export interface UsageSummary {
-  call_count: number;
-  by_currency: Record<string, { known_cost: string; priced_calls: number }>;
-  unpriced_calls: number;
-  unknown_usage_calls: number;
-  token_totals: Record<string, number | null>;
-  note: string;
-}
+export type UsageSummary = components["schemas"]["SessionUsageRead"];
 
 export interface EventPage {
   events: AgentEvent[];

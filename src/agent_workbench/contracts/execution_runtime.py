@@ -378,6 +378,8 @@ class WatchRule(_Base):
 
 
 class _CommonExecutionArguments(_InputBase):
+    strict_shell: bool = False
+    expected_files: list[str] = Field(default_factory=list, max_length=32)
     skill_ref: dict[str, str] | None = None
     completion_role: Literal["work", "resource"] = "work"
     template_hash: str | None = None
@@ -572,6 +574,9 @@ class OutputPageV2(_Base):
 class ResourceStatusView(_Base):
     """资源状态视图（控制端只读投影的来源）。"""
 
+    execution_context: dict[str, Any] = Field(default_factory=dict)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
     resource_id: str
     session_id: str = ""
     run_id: str = ""
@@ -609,7 +614,10 @@ class ResourceListPage(_Base):
 
 
 class OperationReceipt(_Base):
-    """操作回执。`status` 只表示**本次操作**的状态，不代表被控制程序已结束。"""
+    """操作状态与实际执行上下文；不代表分析成功。"""
+
+    execution_context: dict[str, Any] = Field(default_factory=dict)
+    stderr_output: OutputPageV2 | None = None
 
     schema_version: int = EXECUTION_SCHEMA_VERSION
     operation_id: str
@@ -656,6 +664,7 @@ class ExecutionEventPage(_Base):
 
 
 class ExecutionEnvironmentReport(_Base):
+    observed_at: str = ""
     """环境发现结果。不返回秘密（代理/CA 只报是否配置）。"""
 
     schema_version: int = EXECUTION_SCHEMA_VERSION

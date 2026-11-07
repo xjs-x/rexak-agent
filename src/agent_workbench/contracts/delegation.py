@@ -62,6 +62,8 @@ class WorkerUsage(BaseModel):
     calls: int = Field(ge=0)
     duration_ms: int = Field(ge=0)
     usage_status: Literal["reported", "unknown", "mock"]
+    # Old saved Pi results reported uncached input; never rewrite those artifacts.
+    input_token_basis: Literal["uncached", "total_including_cache"] = "uncached"
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     cache_read_tokens: int | None = Field(default=None, ge=0)

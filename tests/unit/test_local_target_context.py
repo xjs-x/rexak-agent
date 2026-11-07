@@ -135,7 +135,8 @@ async def test_context_exposes_actual_mapping_and_connection_origin() -> None:
     )
     handler = AsyncMock()
     await ContextBuilderMiddleware().awrap_model_call(cast(Any, request), handler)
-    actual = str(handler.call_args.args[0].system_message.content)
+    actual = str(handler.call_args.args[0].messages[-1].content)
+    assert "host.test" not in str(handler.call_args.args[0].system_message.content)
     assert "执行岛" in actual and "host.test" in actual and "8080" in actual
     assert "不得把此条件写成目标未运行" in actual
     assert actual == toolbox.context_manifest["context_projection"] or actual.endswith(

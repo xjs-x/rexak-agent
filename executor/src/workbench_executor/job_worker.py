@@ -377,6 +377,9 @@ class JobWorker:
             "watch_hits": self.matcher.hit_count if self.matcher is not None else 0,
             "watch_rules": self.matcher.rules_state() if self.matcher is not None else [],
         }
+        from workbench_executor.execution_diagnostics import check_outputs
+
+        completion["diagnostics"] = check_outputs(self.spec)
         completion["receipt_hash"] = hashlib.sha256(
             json.dumps(completion, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()

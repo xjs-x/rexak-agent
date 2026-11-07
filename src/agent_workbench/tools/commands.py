@@ -77,6 +77,8 @@ def _result_from_receipt(operation_id: Any, receipt: dict[str, Any]) -> ToolResu
             if exit_code is not None
             else f"任务已结束（{receipt.get('termination_reason') or '原因未知'}）"
         )
+        if ((receipt.get("resource") or {}).get("diagnostics") or {}).get("output_validation") == "failed":
+            summary += " 声明产物检查失败：请读取 resource.diagnostics，不能据此认定分析成功。"
         return ToolResult(
             operation_id=operation_id,
             job_id=_uuid_of(receipt.get("job_id") or receipt.get("resource_id")),
@@ -141,6 +143,10 @@ async def run_execution_kernel(
         validate_arguments(action, arguments)
         caps = await load_capabilities(toolbox)
         require_capability(caps, capability)
+        if arguments.get("strict_shell") or arguments.get("expected_files"):
+            require_capability(caps, "analysis_diagnostics")
+            if toolbox.execution_environment_snapshot is None:
+                toolbox.execution_environment_snapshot = await toolbox.executor.execution_environment()
         await toolbox.assert_control_current()
         operation_id, prepared, _replayed = await prepare_execution_operation(
             toolbox,
@@ -297,6 +303,8 @@ async def run_command(
     output_limit_action: str = "preserve_process",
     description: str = "",
     completion_role: Literal["work", "resource"] = "work",
+    strict_shell: bool = True,
+    expected_files: list[str] | None = None,
 ) -> str:
     """
     在独立执行岛中运行命令，适用于调用kali内的安全工具、执行程序、分析目标文件、编译代码，以及开展需要命令行环境的测试。
@@ -305,6 +313,8 @@ async def run_command(
 
     Args:
         command: shell 文本（支持管道、重定向、多行与 heredoc）。与 argv 二选一。
+        strict_shell: 默认启用 Bash errexit/pipefail，缺少命令、管道失败会停止。预期无匹配请用 if/显式处理退出码；确需原 Shell 语义可设 false。argv 不受此参数影响。
+        expected_files: 可选，声明相对 cwd 的关键产物（最多32个）；结束时核对存在且非空，结果见 resource.diagnostics。不能证明内容正确或新生成。
         argv: 参数数组，**不**经过 shell 拼接，适合带空格/特殊字符的参数。
         cwd: 工作目录（相对本会话工作区；默认工作区根）。
         env: 追加环境变量；独立命令**不继承**上一条命令的 shell 变量。
@@ -333,7 +343,8 @@ async def run_command(
             output_limit_action=output_limit_action,
             description=description,
             workspace_id=str(toolbox.session_id),
-            extra={"completion_role": completion_role},
+            extra={"completion_role": completion_role, "strict_shell": strict_shell,
+                   "expected_files": expected_files or []},
         )
     except ValueError as exc:
         return json_text(
@@ -366,6 +377,8 @@ async def run_script(
     output_limit_action: str = "preserve_process",
     description: str = "",
     completion_role: Literal["work", "resource"] = "work",
+    strict_shell: bool = True,
+    expected_files: list[str] | None = None,
 ) -> str:
     """
     在执行岛中运行 Python、Shell 或 Node 脚本，适用于自定义数据分析、算法实现、Payload 构造、程序行为验证及多步骤自动化测试。
@@ -378,6 +391,8 @@ async def run_script(
         code: 脚本正文；与 path 二选一。会作为版本化脚本落盘后执行。
         path: 工作区内脚本路径；执行端取受理时刻的**只读快照**，不受随后修改影响。
         params_json: 参数 JSON 字符串；作为 stdin 传给脚本（不是拼进代码）。
+        strict_shell: Shell 脚本默认 errexit/pipefail；Python/Node 不受影响。
+        expected_files: 相对 cwd 的关键产物，结束后检查存在且非空，见 resource.diagnostics。
         cwd/ env/ background/ wait_ms/ execution_timeout_seconds/ output_limit_action/ description:
             与 run_command 相同。
 
@@ -401,7 +416,8 @@ async def run_script(
             description=description,
             workspace_id=str(toolbox.session_id),
             extra={"language": language, "code": code, "path": path, "params_json": params_json,
-                   "completion_role": completion_role},
+                   "completion_role": completion_role, "strict_shell": strict_shell,
+                   "expected_files": expected_files or []},
         )
     except ValueError as exc:
         return json_text(

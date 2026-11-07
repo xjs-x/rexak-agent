@@ -112,7 +112,7 @@ class ExecutorClient(Protocol):
 
     async def execution_events(self, *, after: int, limit: int = 200) -> dict[str, Any]: ...
 
-    async def execution_environment(self) -> dict[str, Any]: ...
+    async def execution_environment(self, tool_names: list[str] | None = None) -> dict[str, Any]: ...
 
 
 class HttpExecutorClient:
@@ -433,8 +433,8 @@ class HttpExecutorClient:
             raise ExecutorProtocolError("执行事件返回了无效响应")
         return data
 
-    async def execution_environment(self) -> dict[str, Any]:
-        response = await self._request("GET", "/execution/v1/environment")
+    async def execution_environment(self, tool_names: list[str] | None = None) -> dict[str, Any]:
+        response = await self._request("GET", "/execution/v1/environment", params={"tool_names": tool_names or []})
         self._raise_for_status(response, context="环境发现")
         data = response.json()
         if not isinstance(data, dict):

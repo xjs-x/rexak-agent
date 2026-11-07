@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,11 +36,17 @@ def _probe_version(argv: list[str], *, timeout: float = 3.0) -> str:
         )
     except (OSError, subprocess.SubprocessError):
         return ""
-    raw = (result.stdout or b"").decode("utf-8", errors="replace").strip()
+    if result.returncode != 0:
+        return ""
+    raw = (result.stdout or result.stderr or b"").decode("utf-8", errors="replace").strip()
     return raw.splitlines()[0][:200] if raw else ""
 
 
-def discover_environment(settings: ExecutorSettings, *, workspace_bytes_used: int = 0) -> dict[str, Any]:
+def discover_environment(settings: ExecutorSettings, *, workspace_bytes_used: int = 0,
+                         tool_names: list[str] | None = None) -> dict[str, Any]:
+    if len(tool_names or []) > 16 or any(not re.fullmatch(r"[A-Za-z0-9_+.-]{1,64}", name)
+                                        for name in tool_names or []):
+        raise ValueError("最多16个程序名，只允许名称，不接受路径或 Shell 文本")
     tools: dict[str, str] = {}
     missing: dict[str, str] = {}
 
@@ -47,10 +55,15 @@ def discover_environment(settings: ExecutorSettings, *, workspace_bytes_used: in
         if not path:
             missing[name] = "PATH 中未找到；环境维护流程可安装"
             return
-        version = _probe_version(argv or [path, "--version"])
-        tools[name] = f"{path}" + (f" ({version})" if version else "")
+        flags = {"java": "-version", "javap": "-version", "javac": "-version", "unzip": "-v"}
+        version = _probe_version(argv or [path, flags.get(name, "--version")])
+        tools[name] = f"{path}" + (f" ({version})" if version else " (版本未核实)")
 
-    for name in settings.required_tools:
+    names: list[str] = list(settings.required_tools)
+    names.extend(tool_names or [])
+    names.extend(["java", "javac", "javap", "jar", "jimage", "node", "python3",
+                  "unzip", "zip", "strings", "rg", "gcc", "gdb"])
+    for name in sorted(set(names)):
         record(name)
 
     interpreters: dict[str, str] = {}
@@ -83,6 +96,7 @@ def discover_environment(settings: ExecutorSettings, *, workspace_bytes_used: in
         os_release = platform.platform()
 
     return {
+        "observed_at": datetime.now(UTC).isoformat(),
         "executor_id": settings.executor_id,
         "platform": platform.system().lower(),
         "os_release": os_release,

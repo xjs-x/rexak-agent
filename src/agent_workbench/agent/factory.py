@@ -87,6 +87,7 @@ def loaded_runtime_versions() -> dict[str, Any]:
     """由内存中实际函数生成稳定指纹；范围有界，不冒充整个进程或源码树。"""
     from agent_workbench.agent import history_assistance
     from agent_workbench.agent.decision_memory import build_blackboard
+    from agent_workbench.agent.middleware import context_updates
     from agent_workbench.agent.middleware import history_assistance as history_middleware
     from agent_workbench.contracts.plan import PlanStepPatch
     from agent_workbench.domain.decision_memory import read_snapshot, select_memory
@@ -105,7 +106,7 @@ def loaded_runtime_versions() -> dict[str, Any]:
         WorkingContextMiddleware.abefore_model,
         build_blackboard, read_snapshot, select_memory,
     ]
-    for module in (history_assistance, history_middleware):
+    for module in (history_assistance, history_middleware, context_updates):
         functions.extend(v for v in vars(module).values()
             if inspect.isfunction(v) and v.__module__ == module.__name__)
     functions.extend(v for v in vars(HistoryAssistanceMiddleware).values() if inspect.isfunction(v))
@@ -122,6 +123,7 @@ def loaded_runtime_versions() -> dict[str, Any]:
         components["history_request_binding." + name] = hashlib.sha256(json.dumps(
             _code_constant(function.__code__), sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     payload = {"components": components, "system_prompt": SYSTEM_PROMPT,
+               "context_update_rule": context_updates.CONTEXT_UPDATE_RULE,
                "plan_schema": PlanStepPatch.model_json_schema(), "algorithm": "canonical_code_v2"}
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8"))
     return {"code_version": "loaded-runtime-v2:" + digest.hexdigest()[:40],

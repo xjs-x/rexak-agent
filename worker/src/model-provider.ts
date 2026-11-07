@@ -60,6 +60,7 @@ export function realStream(c: WorkerModelConfig, metrics: ModelCallMetric[], hoo
     const timeout = AbortSignal.timeout(c.timeout_ms);
     const signal = options?.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
     let reported = false, finished = false;
+    let reportedInput: number | null = null, reportedCacheRead: number | null = null, reportedCacheWrite: number | null = null;
     const metric: ModelCallMetric = { sequence, started_at: startedAt, duration_ms: 0, status: 'failed',
       failure_reason: null, input_tokens: null, output_tokens: null, cache_read_tokens: null,
       cache_write_tokens: null, usage_status: 'unknown' };
@@ -76,17 +77,29 @@ export function realStream(c: WorkerModelConfig, metrics: ModelCallMetric[], hoo
         const source = transport(model, context, { signal, apiKey: c.api_key,
           temperature: c.temperature, maxTokens: c.max_tokens, timeoutMs: c.timeout_ms, maxRetries: 0,
           onProviderStreamEvent(chunk) {
-            const raw = chunk as { usage?: { prompt_tokens?: number; completion_tokens?: number } };
-            if (Number.isFinite(raw?.usage?.prompt_tokens) && Number.isFinite(raw?.usage?.completion_tokens)) reported = true;
+            const raw = chunk as { usage?: { prompt_tokens?: number; completion_tokens?: number;
+              prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+              input_token_details?: { cache_read?: number; cache_write?: number };
+              prompt_cache_hit_tokens?: number; cached_tokens?: number } };
+            if (Number.isFinite(raw?.usage?.prompt_tokens) && Number.isFinite(raw?.usage?.completion_tokens)) {
+              reported = true;
+              reportedInput = raw.usage!.prompt_tokens!;
+              const read = raw.usage!.prompt_tokens_details?.cached_tokens ?? raw.usage!.input_token_details?.cache_read
+                ?? raw.usage!.prompt_cache_hit_tokens ?? raw.usage!.cached_tokens;
+              const write = raw.usage!.prompt_tokens_details?.cache_write_tokens ?? raw.usage!.input_token_details?.cache_write;
+              reportedCacheRead = Number.isFinite(read) ? read! : null;
+              reportedCacheWrite = Number.isFinite(write) ? write! : null;
+            }
           },
         });
         for await (const event of source) {
           if (event.type === 'done' || event.type === 'error') {
             const message = event.type === 'done' ? event.message : event.error;
             if (reported) {
-              metric.usage_status = 'reported'; metric.input_tokens = message.usage.input;
-              metric.output_tokens = message.usage.output; metric.cache_read_tokens = message.usage.cacheRead;
-              metric.cache_write_tokens = message.usage.cacheWrite;
+              // Match Main: total provider prompt tokens, including cached tokens.
+              metric.usage_status = 'reported'; metric.input_tokens = reportedInput;
+              metric.output_tokens = message.usage.output; metric.cache_read_tokens = reportedCacheRead;
+              metric.cache_write_tokens = reportedCacheWrite;
             }
             metric.status = event.type === 'done' && message.stopReason !== 'length' ? 'completed' : options?.signal?.aborted ? 'cancelled' : 'failed';
             metric.failure_reason = event.type === 'error' ? failure(message.errorMessage ?? '', !!options?.signal?.aborted, timeout.aborted)

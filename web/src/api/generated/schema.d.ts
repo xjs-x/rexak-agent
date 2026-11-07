@@ -1291,6 +1291,42 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AgentTokenSummary
+         * @description Known subtotals; missing usage must not be interpreted as zero.
+         */
+        AgentTokenSummary: {
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Cache Read Tokens */
+            cache_read_tokens?: number | null;
+            /**
+             * Call Count
+             * @default 0
+             */
+            call_count: number;
+            /**
+             * Unknown Input Calls
+             * @default 0
+             */
+            unknown_input_calls: number;
+            /**
+             * Unknown Cache Calls
+             * @default 0
+             */
+            unknown_cache_calls: number;
+            /**
+             * Unavailable Delegations
+             * @default 0
+             */
+            unavailable_delegations: number;
+            /**
+             * Input Token Basis
+             * @default total_including_cache
+             * @constant
+             */
+            input_token_basis: "total_including_cache";
+        };
+        /**
          * ArtifactPointer
          * @description 工件引用：不可变快照/区间的标识与哈希。
          */
@@ -1564,6 +1600,25 @@ export interface components {
             /** Next Cursor */
             next_cursor: string | null;
         };
+        /** CurrencyUsageRead */
+        CurrencyUsageRead: {
+            /** Currency */
+            currency: string;
+            /** Known Cost */
+            known_cost: string;
+            /** Priced Calls */
+            priced_calls: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Cache Read Tokens */
+            cache_read_tokens: number;
+            /** Cache Write Tokens */
+            cache_write_tokens: number;
+            /** Reasoning Tokens */
+            reasoning_tokens: number;
+        };
         /** CurrentFocusRead */
         CurrentFocusRead: {
             /** Step Id */
@@ -1775,11 +1830,13 @@ export interface components {
          * @enum {string}
          */
         EventType: "skill.activity" | "run.status" | "message.delta" | "message.completed" | "plan.updated" | "focus.updated" | "leads.recalled" | "context.selected" | "segment.yielded" | "snapshot.captured" | "model.response_quality" | "tool.accepted" | "tool.output" | "tool.completed" | "lead.updated" | "finding.updated" | "weakness.changed" | "weakness.presented" | "weakness.reviewed" | "relation.changed" | "condition.review_due" | "completion.review" | "coverage.updated" | "usage.updated" | "memory.compacted" | "input.required" | "report.ready" | "error" | "stream.resync_required" | "stream.heartbeat";
-        /**
-         * ExecutionEnvironmentReport
-         * @description 环境发现结果。不返回秘密（代理/CA 只报是否配置）。
-         */
+        /** ExecutionEnvironmentReport */
         ExecutionEnvironmentReport: {
+            /**
+             * Observed At
+             * @default
+             */
+            observed_at: string;
             /**
              * Schema Version
              * @default 1
@@ -2476,6 +2533,14 @@ export interface components {
          * @description 资源状态视图（控制端只读投影的来源）。
          */
         ResourceStatusView: {
+            /** Execution Context */
+            execution_context?: {
+                [key: string]: unknown;
+            };
+            /** Diagnostics */
+            diagnostics?: {
+                [key: string]: unknown;
+            };
             /** Resource Id */
             resource_id: string;
             /**
@@ -2739,6 +2804,29 @@ export interface components {
             };
             /** Event Cursor */
             event_cursor: number;
+        };
+        /** SessionUsageRead */
+        SessionUsageRead: {
+            /** Call Count */
+            call_count: number;
+            /** By Currency */
+            by_currency: {
+                [key: string]: components["schemas"]["CurrencyUsageRead"];
+            };
+            /** Unpriced Calls */
+            unpriced_calls: number;
+            /** Unknown Usage Calls */
+            unknown_usage_calls: number;
+            /** Token Totals */
+            token_totals: {
+                [key: string]: number | null;
+            };
+            /** By Agent */
+            by_agent: {
+                [key: string]: components["schemas"]["AgentTokenSummary"];
+            };
+            /** Note */
+            note: string;
         };
         /** SkillImport */
         SkillImport: {
@@ -4145,9 +4233,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SessionUsageRead"];
                 };
             };
             /** @description Validation Error */

@@ -164,11 +164,13 @@ async def test_captured_official_payload_matches_persisted_manifest_and_bundle(
     wire = captured[0]
     assert (
         "基础系统提示" in wire["messages"][0]["content"]
-        and "当前任务上下文" in wire["messages"][0]["content"]
+        and "当前任务上下文" not in wire["messages"][0]["content"]
     )
+    assert "当前任务上下文" in wire["messages"][-1]["content"]
     assert wire["tools"][0]["function"]["name"] == "local_echo"
     budget = estimate_request(
-        [HumanMessage(content="检查本地替身", id="u1")],
+        [HumanMessage(content="检查本地替身", id="u1"),
+         AIMessage(content=wire["messages"][-1]["content"])],
         SystemMessage(content=wire["messages"][0]["content"]),
         wire["tools"],
         profile(),
@@ -239,7 +241,7 @@ async def test_latest_large_tool_result_is_archived_without_breaking_pair(databa
 
     await ContextBuilderMiddleware(profile(5000, 500)).awrap_model_call(request, handler)
     selected = seen[0]
-    assert len(selected.messages) == 3
+    assert len(selected.messages) == 4
     assert selected.messages[1].tool_calls[0]["id"] == selected.messages[2].tool_call_id == "c1"
     assert "artifact_id=" in selected.messages[2].content
     assert original.content == "response-part " * 4000

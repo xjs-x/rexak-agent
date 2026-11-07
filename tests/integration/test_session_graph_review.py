@@ -71,7 +71,8 @@ async def test_sync_context_and_natural_end_without_graph_tools(
 
     class Capture(ScriptedChatModel):
         def _generate(self, messages, *args, **kwargs):
-            captured.append(str(messages[0].content))
+            captured.append(str(next(m for m in reversed(messages)
+                if m.additional_kwargs.get("host_projection") == "host_context_update").content))
             return super()._generate(messages, *args, **kwargs)
 
     model = Capture(
@@ -673,12 +674,14 @@ async def test_bounded_review_official_agent_checkpoint_and_segment(
 
         def _generate(self, messages, *args, **kwargs):
             index = len(self.seen_message_counts)
-            captured.append((bool(graph_review_scope.get()), str(messages[0].content)))
+            latest_context = next(m for m in reversed(messages)
+                if m.additional_kwargs.get("host_projection") == "host_context_update")
+            captured.append((bool(graph_review_scope.get()), str(latest_context.content)))
             if graph_review_scope.get():
                 budgets.append(box.context_manifest["budget"])
                 assert box.context_manifest["request_tool_names"] == ["get_graph", "update_graph"]
                 assert box.context_manifest["graph_review_contract"]["page_id"] in str(
-                    messages[0].content
+                    messages[-1].content
                 )
             for call in self.responses[index].tool_calls:
                 if call["name"] == "update_graph":

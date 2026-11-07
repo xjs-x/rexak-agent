@@ -640,6 +640,7 @@ def _execution_capability_details(state: ExecutorState) -> dict[str, Any]:
         "command": "available" if available else "unavailable",
         "input_files": "available" if available else "unavailable",
         "worker_tools": "available" if available else "unavailable",
+        "analysis_diagnostics": "available" if available else "unavailable",
         "script": "available" if available else "unavailable",
         "pty": "available" if pty_ok else "unavailable",
         "screen": "available" if pty_ok else "unavailable",

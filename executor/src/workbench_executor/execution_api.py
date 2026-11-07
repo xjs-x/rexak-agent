@@ -25,7 +25,7 @@ import zipfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -216,6 +216,10 @@ def create_router(get_state: Callable[[], Any], require_token: Callable[..., Any
                     operation_id=operation_id, action=envelope.action, status="succeeded",
                     deduplicated=deduplicated, executed_at=_utcnow(), input_file={
                         **value.model_dump(mode="json"), "relative_path": value.relative_path,
+                        "path_base": "worker_workspace" if value.worker_workspace_id else "session_workspace",
+                        "command_cwd": ".",
+                        "resolved_path": str(target),
+                        "usage_hint": "保留默认 cwd，直接使用 relative_path；不要先切换到 HOME 或全盘查找。",
                         "session_id": envelope.session_id, "operation_id": operation_id,
                         "source": f"attachment:{value.attachment_id}:sha256:{value.sha256}",
                     },
@@ -359,10 +363,15 @@ def create_router(get_state: Callable[[], Any], require_token: Callable[..., Any
                 receipt.exit_code = status.exit_code
                 receipt.termination_reason = status.termination_reason
                 receipt.resource = status
+                receipt.execution_context = status.execution_context
                 receipt.wait_reason = proto.WaitReason.EXITED
                 receipt.note = "任务已到达确定状态；退出码与原因来自执行台账。"
                 try:
                     receipt.output = await _first_page(state, resource_id)
+                    if status.kind != proto.ResourceKind.TERMINAL:
+                        receipt.stderr_output = await state.command_runtime.read_output(
+                            resource_id, stream="stderr", cursor=None, limit=8192
+                        )
                 except Exception:
                     receipt.output = None
                 return receipt
@@ -373,6 +382,7 @@ def create_router(get_state: Callable[[], Any], require_token: Callable[..., Any
                 )
                 if status is not None:
                     receipt.resource = status
+                    receipt.execution_context = status.execution_context
                     receipt.process_state = status.state
                 return receipt
             await asyncio.sleep(SETTLE_POLL_SECONDS)
@@ -553,14 +563,17 @@ def create_router(get_state: Callable[[], Any], require_token: Callable[..., Any
         ).model_dump(mode="json")
 
     @router.get("/environment", dependencies=[Depends(require_token)])
-    async def get_environment() -> dict[str, Any]:
+    async def get_environment(tool_names: Annotated[list[str] | None, Query()] = None) -> dict[str, Any]:
         state = get_state()
         from workbench_executor.execution_environment import discover_environment, workspace_bytes
 
-        report = discover_environment(
-            state.settings,
-            workspace_bytes_used=workspace_bytes(state.settings.workspace_root),
-        )
+        try:
+            report = await asyncio.to_thread(
+                discover_environment, state.settings, tool_names=tool_names,
+                workspace_bytes_used=workspace_bytes(state.settings.workspace_root),
+            )
+        except ValueError as exc:
+            raise _http_error("validation_failed", str(exc), 422) from exc
         return proto.ExecutionEnvironmentReport.model_validate(report).model_dump(mode="json")
 
     return router

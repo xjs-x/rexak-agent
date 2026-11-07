@@ -322,12 +322,14 @@ async def test_official_request_manifest_saver_restore_and_effective_input(
     manifest = box.context_manifest
     projection = manifest["decision_memory"]["projection"]
     visible = json.dumps(projection, ensure_ascii=False)
-    assert visible in captured[0][0].content
+    assert visible not in captured[0][0].content
+    assert visible in captured[0][-1].content
+    assert manifest["decision_memory"]["visible_in_context_update"]
     assert (
         manifest["decision_memory"]["visible_sha256"]
         == hashlib.sha256(visible.encode()).hexdigest()
     )
-    assert captured[0][1:] == before
+    assert captured[0][1:-1] == before
     assert "session_memory" not in manifest["working_context"]
     async with database.session() as db:
         calls = list(

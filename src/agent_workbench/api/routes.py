@@ -33,6 +33,7 @@ from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.exc import IntegrityError
 
 from agent_workbench.agent.state import plan_step_lead_ids
+from agent_workbench.api.assistant_display import assistant_display_text
 from agent_workbench.api.auth import LocalAuth
 from agent_workbench.api.delegations import router as delegations_router
 from agent_workbench.api.redaction import redact_api_value as _redact_api_value
@@ -64,6 +65,7 @@ from agent_workbench.contracts.plan import (
     PlanRead,
     PlanStepRead,
 )
+from agent_workbench.contracts.usage import AgentTokenSummary, SessionUsageRead
 from agent_workbench.domain.findings import FindingService
 from agent_workbench.domain.instruction_scope import scope_from_instructions, sync_instruction_scope
 from agent_workbench.domain.prices import PriceUpdate
@@ -1274,6 +1276,8 @@ async def page_conversation(
                 available = True
             except (ArtifactError, OSError, ValueError):
                 available = False
+        if row["source"] in {"assistant", "result"}:
+            body = assistant_display_text(body)
         entries.append(
             {
                 "id": row["id"],
@@ -1344,6 +1348,7 @@ async def read_conversation_body(
         if not store.exists(artifact.relative_key):
             raise ApiError(ErrorCode.CONFLICT, "模型正文工件文件缺失")
         body = store.render_redacted_view(artifact.relative_key, media_type=artifact.media_type)
+        body = assistant_display_text(body)
     else:
         body = redact_text(row["body"] or "")
     end = offset + limit
@@ -1962,7 +1967,7 @@ async def read_artifact(
     }
 
 
-@router.get("/sessions/{session_id}/usage", tags=["read"])
+@router.get("/sessions/{session_id}/usage", response_model=SessionUsageRead, tags=["read"])
 async def get_usage(
     session_id: UUID,
     request: Request,
@@ -1994,6 +1999,9 @@ async def get_usage(
                 .scalars()
                 .all()
             )
+        from agent_workbench.domain.worker_usage import worker_token_summary
+
+        worker = await worker_token_summary(session, get_settings(), session_id, run_id)
     payloads = [
         {
             "cost_status": row.cost_status,
@@ -2009,7 +2017,16 @@ async def get_usage(
         for row in rows
     ]
     summary = summarize_costs(payloads)
-    return {**summary, "call_count": len(payloads)}
+    main = AgentTokenSummary(
+        input_tokens=summary["token_totals"]["input_tokens"],
+        cache_read_tokens=summary["token_totals"]["cache_read_tokens"],
+        call_count=len(payloads),
+        unknown_input_calls=sum(row.input_tokens is None for row in rows),
+        unknown_cache_calls=sum(row.cache_read_tokens is None for row in rows),
+    )
+    return {**summary, "call_count": len(payloads), "by_agent": {"main": main, "worker": worker},
+            "note": summary["note"] + " 费用及顶部总量为 Main；Worker 单列已同步结果的用量，"
+            "运行中或缺失结果未计入。两端输入均含缓存；缺失字段为未知，已知小计不代表完整总量。"}
 
 
 @router.get("/sessions/{session_id}/model-calls", response_model=ModelCallPage, tags=["read"])

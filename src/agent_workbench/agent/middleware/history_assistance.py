@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import time
 from typing import Any
 
 import structlog
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import AIMessage, ToolMessage
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.decision_memory import build_blackboard
 from agent_workbench.agent.history_assistance import all_tools_paired, encoded, memory_view
+from agent_workbench.agent.middleware.context_updates import append_update, retain_updates
 from agent_workbench.agent.signals import GraphRunAborted, LeaseLostError, StaleResponseError
 from agent_workbench.agent.state import AgentGraphState
 from agent_workbench.config.catalog import ProviderProfile
@@ -26,28 +25,11 @@ CONTROL_SIGNALS = (GraphRunAborted, LeaseLostError, StaleResponseError, asyncio.
 
 
 def reference_messages(messages: list, bundle: dict) -> tuple[list, int]:
-    """只改发送视图，不修改原 message 对象、checkpoint 或业务工具回执。"""
-    view = list(messages)
-    indices = [i for i, m in enumerate(view) if isinstance(m, ToolMessage)]
-    if indices:
-        index = indices[-1]
-        original = view[index]
-        try:
-            content = json.loads(str(original.content))
-        except ValueError:
-            content = None
-        if not isinstance(content, dict) or "_host_history_reference" in content:
-            content = {"original_tool_result": original.content}
-        content["_host_history_reference"] = bundle
-        view[index] = original.model_copy(update={"content": encoded(content)})
-    else:
-        index = len(view)
-        view.append(
-            AIMessage(
-                content=encoded({"_host_history_reference": bundle}),
-                id="host-history-reference:" + hashlib.sha256(encoded(bundle).encode()).hexdigest(),
-            )
-        )
+    """独立追加历史参考，保持已发送工具回执和旧投影不变。"""
+    content = encoded({"_host_history_reference": bundle})
+    view, _ = append_update(messages, "host_history_reference", content)
+    index = next(i for i in range(len(view) - 1, -1, -1)
+                 if view[i].additional_kwargs.get("host_projection") == "host_history_reference")
     return view, index
 
 
@@ -183,7 +165,7 @@ class HistoryAssistanceMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     reflection_bytes=len(encoded(bundle["reflection"]).encode("utf-8")) if "reflection" in bundle else 0,
                     reference_sha256=hashlib.sha256(encoded(bundle).encode()).hexdigest(),
                     reflection="not_available",
-                    delivery="request_view_only_requires_model_observation",
+                    delivery="checkpoint_on_model_success_requires_model_observation",
                     original_tool_messages_unchanged=True,
                     selected_refs=[v["record_ref"] for v in
                         bundle.get("memory", {}).get("execution_evidence", [])],
@@ -217,4 +199,5 @@ class HistoryAssistanceMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         box.history_assistance_manifest = info
         manifest["history_assistance"] = info
         box.context_manifest = manifest
-        return await handler(outgoing)
+        updates = list(outgoing.messages[len(request.messages):])
+        return retain_updates(await handler(outgoing), updates)

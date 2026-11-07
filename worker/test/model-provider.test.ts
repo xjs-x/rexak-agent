@@ -47,7 +47,8 @@ test('native OpenAI-compatible provider performs three turns with mock tools and
   assert.deepEqual(fake.payloads[0].stream_options, { include_usage: true });
   assert.equal(fake.payloads[0].messages[0].role, 'system');
   assert.ok(!JSON.stringify(fake.payloads).includes(config.api_key));
-  assert.equal(worker.usage().input_tokens, 210); assert.equal(worker.usage().cache_read_tokens, 90);
+  assert.equal(worker.usage().input_tokens, 300); assert.equal(worker.usage().cache_read_tokens, 90);
+  assert.equal(worker.usage().input_token_basis, 'total_including_cache');
   assert.equal(worker.usage().output_tokens, 60); assert.equal(worker.usage().usage_status, 'reported');
 });
 test('missing provider usage stays unknown, never free', async () => {
@@ -55,6 +56,24 @@ test('missing provider usage stays unknown, never free', async () => {
   const worker = createPiWorker('fixture', { modelConfig: config, providerTransport: fake.transport });
   await worker.run();
   assert.equal(worker.usage().usage_status, 'unknown'); assert.equal(worker.usage().input_tokens, null);
+});
+test('reported total input does not turn missing cache fields into zero', async () => {
+  const body = streamBody(2).replace(',"prompt_tokens_details":{"cached_tokens":30}', '');
+  const fake = fakeTransport(() => new Response(body, { headers: { 'content-type': 'text/event-stream' } }));
+  const worker = createPiWorker('fixture', { modelConfig: config, providerTransport: fake.transport });
+  await worker.run();
+  assert.equal(worker.usage().input_tokens, 100);
+  assert.equal(worker.usage().cache_read_tokens, null);
+  assert.equal(worker.usage().cache_write_tokens, null);
+});
+test('provider-specific cache read fields share the total-input basis', async () => {
+  const body = streamBody(2).replace('"prompt_tokens_details":{"cached_tokens":30}',
+    '"input_token_details":{"cache_read":30}');
+  const fake = fakeTransport(() => new Response(body, { headers: { 'content-type': 'text/event-stream' } }));
+  const worker = createPiWorker('fixture', { modelConfig: config, providerTransport: fake.transport });
+  await worker.run();
+  assert.equal(worker.usage().input_tokens, 100);
+  assert.equal(worker.usage().cache_read_tokens, 30);
 });
 for (const status of [401, 429]) test(`provider ${status} is sanitized and has no hidden retries`, async () => {
   const reason = status === 401 ? 'provider_authentication_error' : 'provider_rate_limited';

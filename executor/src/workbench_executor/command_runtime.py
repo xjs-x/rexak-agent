@@ -293,6 +293,10 @@ class CommandRuntime:
         cwd = (workspace_root / cwd_raw).resolve() if cwd_raw not in {"", "."} else workspace_root
         if cwd != workspace_root and workspace_root not in cwd.parents:
             raise RuntimeRejected("validation_failed", f"工作目录越界：{cwd_raw}")
+        for name in arguments.get("expected_files", []):
+            target = (cwd / name).resolve()
+            if Path(name).is_absolute() or not target.is_relative_to(workspace_root):
+                raise RuntimeRejected("validation_failed", "expected_files 必须位于本工作区")
 
         job_dir = self.job_dir(job_id)
         argv, script_snapshot = self._resolve_argv(kind, arguments, job_dir, envelope)
@@ -326,6 +330,9 @@ class CommandRuntime:
             "kind": kind,
             "argv": argv,
             "cwd": str(cwd),
+            "workspace_root": str(workspace_root),
+            "strict_shell": bool(arguments.get("strict_shell")),
+            "expected_files": list(arguments.get("expected_files", [])),
             "env": child_env,
             "stdin_text": (arguments.get("params_json") if kind == "script" and arguments.get("params_json") is not None else arguments.get("stdin_text")),
             "execution_timeout_seconds": int(timeout) if timeout else None,
@@ -358,12 +365,17 @@ class CommandRuntime:
             if not command:
                 raise RuntimeRejected("validation_failed", "command 与 argv 必须二选一")
             shell = self._settings.shell_path
+            if arguments.get("strict_shell") and Path(shell).name != "bash":
+                raise RuntimeRejected("dependency_unavailable", "strict_shell 需要配置 Bash；不会静默降级")
             # 非登录、非交互：`-c` 只执行给定文本；不使用 `-l` 读取 profile。
-            return [shell, "-c", command], None
+            flags = ["-e", "-o", "pipefail"] if arguments.get("strict_shell") else []
+            return [shell, *flags, "-c", command], None
 
         if kind == "script":
             language = str(arguments.get("language") or "")
             interpreter = self._interpreter_for(language)
+            if language == "shell" and arguments.get("strict_shell") and Path(interpreter).name != "bash":
+                raise RuntimeRejected("dependency_unavailable", "strict_shell 需要配置 Bash；不会静默降级")
             code = arguments.get("code")
             path = arguments.get("path")
             if (code is not None) == bool(path):
@@ -389,7 +401,8 @@ class CommandRuntime:
                     )
                 content = snapshot.text
             snapshot_path = self.write_script_snapshot(job_dir, content, extension)
-            return [interpreter, snapshot_path], snapshot_path
+            flags = ["-e", "-o", "pipefail"] if language == "shell" and arguments.get("strict_shell") else []
+            return [interpreter, *flags, snapshot_path], snapshot_path
         raise RuntimeRejected("validation_failed", f"未知任务类型：{kind}")
 
     def _interpreter_for(self, language: str) -> str:
@@ -787,6 +800,10 @@ class CommandRuntime:
         return self._status_from_job(record)
 
     def _status_from_job(self, record: Any) -> proto.ResourceStatusView:
+        from workbench_executor.execution_diagnostics import execution_context
+
+        spec = _read_json(self.job_dir(record.job_id) / "spec.json") or {}
+        completion = _read_json(self.job_dir(record.job_id) / "completion.json") or {}
         state = record.state
         mapping = {
             "received": proto.ResourceStatus.STARTING,
@@ -811,6 +828,8 @@ class CommandRuntime:
             else record.byte_count
         )
         return proto.ResourceStatusView(
+            execution_context=execution_context(spec),
+            diagnostics=completion.get("diagnostics", {}),
             resource_id=record.job_id,
             session_id=record.session_id,
             run_id=record.run_id,

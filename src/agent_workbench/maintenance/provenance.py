@@ -8,6 +8,14 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+# 启动身份仅描述生产实现；实验、报告和测试仍由完整导出指纹覆盖。
+RUNTIME_PATHS = (
+    "src", "executor/src", "executor/pyproject.toml", "worker", "web",
+    "scripts", "deploy", "migrations", "pyproject.toml", "uv.lock",
+    "alembic.ini", "compose.yaml", "start-workbench.cmd", "start-evaluation.cmd",
+    ".env.example", ".python-version",
+)
+
 
 def _git(root: Path, *arguments: str) -> bytes:
     return subprocess.run(
@@ -33,10 +41,13 @@ def _tree_hash(entries: list[dict[str, Any]]) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def fingerprint_source(root: Path, *, ref: str = "HEAD") -> dict[str, Any]:
+def fingerprint_source(
+    root: Path, *, ref: str = "HEAD", runtime_only: bool = False
+) -> dict[str, Any]:
     """固定 commit 内容哈希，并单独记录当前工作树；不读取凭据正文。"""
     commit = _git(root, "rev-parse", "--verify", f"{ref}^{{commit}}").decode("ascii").strip()
-    listing = _git(root, "ls-tree", "-r", "-z", commit)
+    pathspec = ("--", *RUNTIME_PATHS) if runtime_only else ()
+    listing = _git(root, "ls-tree", "-r", "-z", commit, *pathspec)
     modes: dict[str, str] = {}
     objects: list[tuple[str, str]] = []
     for record in listing.split(b"\0"):
@@ -70,7 +81,7 @@ def fingerprint_source(root: Path, *, ref: str = "HEAD") -> dict[str, Any]:
             raise ValueError(f"源码 blob 读取不完整：{path}")
         committed.append(_entry(path, modes[path], body))
         position = start + size + 1
-    paths = _git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    paths = _git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z", *pathspec)
     working = []
     for name in sorted(set(paths.decode("utf-8").split("\0")) - {""}):
         if not _included(name):
@@ -88,7 +99,7 @@ def fingerprint_source(root: Path, *, ref: str = "HEAD") -> dict[str, Any]:
     committed.sort(key=lambda item: item["path"])
     lock = next((item["sha256"] for item in committed if item["path"] == "uv.lock"), None)
     current_lock = next((item["sha256"] for item in working if item["path"] == "uv.lock"), None)
-    status = _git(root, "status", "--porcelain=v1", "-z").decode("utf-8").split("\0")
+    status = _git(root, "status", "--porcelain=v1", "-z", *pathspec).decode("utf-8").split("\0")
     changes = []
     index = 0
     while index < len(status):
@@ -114,19 +125,26 @@ def fingerprint_source(root: Path, *, ref: str = "HEAD") -> dict[str, Any]:
         "worktree_changes": changes,
         "raw_content_differs_from_commit": committed != working,
         "hash_method": "sha256_sorted_path_mode_size_content_sha256_v1",
-        "hash_scope": "tracked_and_unignored_files_except_workbuddy_and_local_env",
+        "hash_scope": (
+            "runtime_implementation_pathspec_v1" if runtime_only
+            else "tracked_and_unignored_files_except_workbuddy_and_local_env"
+        ),
+        "pathspec": list(RUNTIME_PATHS) if runtime_only else [],
         "committed_files": committed,
         "working_files": working,
     }
 
 
-def exporter_fingerprint(root: Path) -> dict[str, Any]:
+def exporter_fingerprint(root: Path, *, runtime_only: bool = False) -> dict[str, Any]:
     """安装包或 Git 不可用时显式记录缺失，仍允许导出真实运行证据。"""
     try:
-        return fingerprint_source(root)
+        return fingerprint_source(root, runtime_only=runtime_only)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
         return {
             "status": "unavailable",
             "error_code": type(exc).__name__,
-            "scope": "exporter_source_only_not_runtime_source",
+            "scope": (
+                "runtime_source_files_not_loaded_bytecode" if runtime_only
+                else "exporter_source_only_not_runtime_source"
+            ),
         }

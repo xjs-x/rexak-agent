@@ -285,12 +285,19 @@ export function TaskDrawer({
             {usage && (
               <>
                 <div className="tok">
-                  <div><small>输入 tokens</small><strong>{usage.token_totals.input_tokens ?? "—"}</strong></div>
-                  <div><small>输出 tokens</small><strong>{usage.token_totals.output_tokens ?? "—"}</strong></div>
-                  <div><small>缓存读取</small><strong>{usage.token_totals.cache_read_tokens ?? "—"}</strong></div>
+                  <div><small>Main 输入（含缓存）</small><strong>{usage.token_totals.input_tokens ?? "—"}</strong></div>
+                  <div><small>Main 输出 tokens</small><strong>{usage.token_totals.output_tokens ?? "—"}</strong></div>
+                  <div><small>Main 缓存读取</small><strong>{usage.token_totals.cache_read_tokens ?? "—"}</strong></div>
                   <div><small>推理 tokens</small><strong>{usage.token_totals.reasoning_tokens ?? "—"}</strong></div>
                 </div>
                 <div className="d-sec">
+                  {Object.entries(usage.by_agent).map(([agent, tokens]) => (
+                    <div className="d-row" key={agent}>
+                      <span className="k">{agent === "main" ? "Main" : "Worker"} 用量</span>
+                      <span className="v">输入（含缓存）{tokens.input_tokens ?? "—"} · 缓存读取 {tokens.cache_read_tokens ?? "—"}
+                        {tokens.unknown_input_calls || tokens.unknown_cache_calls || tokens.unavailable_delegations ? " · 含未知用量" : ""}</span>
+                    </div>
+                  ))}
                   <div className="d-row"><span className="k">模型请求</span><span className="v">{usage.call_count}</span></div>
                   {Object.entries(usage.by_currency).map(([currency, value]) => (
                     <div className="d-row" key={currency}>

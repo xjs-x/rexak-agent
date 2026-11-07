@@ -63,6 +63,7 @@ def normalize_usage(raw: dict[str, Any]) -> UsageTotals:
         "cache_read_tokens",
         "cache_read_input_tokens",
         "cached_tokens",
+        "prompt_cache_hit_tokens",
         "prompt_tokens_details.cached_tokens",
     )
     cache_write = pick(

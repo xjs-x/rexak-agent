@@ -47,7 +47,7 @@ async def test_model_text_archived_and_conversation_is_scoped(database, unique_n
         run = await create_run(
             db,
             session_id=sessions[0].id,
-            objective="检查登录页 token=objective-secret",
+            objective="检查登录页 token=objective-secret <think>用户原文</think>",
             provider_id="test",
             model_name="scripted",
             config_snapshot={"created_from_session_create": True},
@@ -74,7 +74,8 @@ async def test_model_text_archived_and_conversation_is_scoped(database, unique_n
         system_message=SystemMessage(content="测试"),
         messages=[],
     )
-    body = "工具检查完成。token=assistant-secret\n" + "细节。" * 500
+    reasoning = "<think>PRIVATE_REASONING_SENTINEL" + "隐藏分析。" * 400 + "</think>"
+    body = reasoning + "工具检查完成。token=assistant-secret\n" + "细节。" * 500
 
     async def handler(_request: Any) -> Any:
         return SimpleNamespace(result=[AIMessage(content=body)])
@@ -90,6 +91,9 @@ async def test_model_text_archived_and_conversation_is_scoped(database, unique_n
         ))).scalar_one()
         assert artifact.session_id == sessions[0].id
         assert artifact.byte_size == len(body.encode("utf-8"))
+        from agent_workbench.evidence.artifacts import ArtifactStore
+
+        assert ArtifactStore(database.settings).read_bytes(artifact.relative_key).decode("utf-8") == body
 
     first, second = (session.id for session in sessions)
     with TestClient(create_app()) as client:
@@ -103,6 +107,9 @@ async def test_model_text_archived_and_conversation_is_scoped(database, unique_n
         assistant = next(item for item in data["entries"] if item["role"] == "assistant")
         assert assistant["has_more"] is True
         assert "assistant-secret" not in str(data)
+        assert "PRIVATE_REASONING_SENTINEL" not in str(data)
+        assert "<think>" not in assistant["preview"]
+        assert assistant["preview"].startswith("工具检查完成。")
         assert client.get(f"/api/sessions/{second}/conversation").json()["entries"] == []
         assert client.get(
             f"/api/sessions/{second}/conversation/assistant/{assistant['id']}/text"
@@ -121,6 +128,7 @@ async def test_model_text_archived_and_conversation_is_scoped(database, unique_n
             offset = payload["next_offset"]
         assert "assistant-secret" not in "".join(parts)
         assert "<redacted>" in "".join(parts)
+        assert "PRIVATE_REASONING_SENTINEL" not in "".join(parts)
         fresh = client.post(
             f"/api/sessions/{first}/messages",
             json={"content": "新补充指令"},
@@ -137,6 +145,7 @@ async def test_model_text_archived_and_conversation_is_scoped(database, unique_n
         assert len(older["entries"]) == 1
         assert older["entries"][0]["source"] == "objective"
         assert "objective-secret" not in str(older)
+        assert "<think>用户原文</think>" in str(older)
         assert client.get(
             f"/api/sessions/{first}/conversation", params={"cursor": "not-a-cursor"}
         ).status_code == 422

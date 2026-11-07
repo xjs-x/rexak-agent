@@ -14,6 +14,7 @@ import { Icon } from "./Icon";
 import { ExecutionModeSelect } from "./Ultra";
 import { AttachmentCards, PendingAttachments, useAttachments, formatSize, type AttachmentSend } from "./Attachments";
 import { MarkdownText } from "./Markdown";
+import { assistantDisplayText } from "./assistantDisplay";
 import type { ModelOption } from "./useWorkbench";
 import {
   canStop,
@@ -365,12 +366,14 @@ function MessageBody({ sessionId, entry }: { sessionId: string; entry: Conversat
       </div>
     );
   }
+  const visibleBody = assistantDisplayText(body || entry.preview);
+  if (!visibleBody && !entry.has_more) return null;
   return (
     <div className="msg">
       <div className="body">
         {entry.role !== "assistant" && <p className="digest-note">角色：{entry.role}</p>}
         {outcome && <div className="chat-notice" style={{ marginBottom: 10 }}>{outcome}；以下仅为已收到的片段。</div>}
-        <MarkdownText text={body || entry.preview} />
+        <MarkdownText text={visibleBody} />
         {entry.has_more && (
           <button className="mini-btn" style={{ marginTop: 10 }} disabled={loading} onClick={() => void load(nextOffset ?? 0)}>
             {loading ? "读取中…" : nextOffset === null ? "展开完整正文" : "继续加载正文"}
@@ -876,6 +879,7 @@ export function ChatView({
         Date.parse(entry.occurred_at) >= Date.parse(assistantStartedAt),
     );
   }, [assistantStartedAt, assistantText, conversation, run]);
+  const liveAssistantText = assistantDisplayText(assistantText);
 
   useEffect(() => {
     stickRef.current = true;
@@ -990,8 +994,8 @@ export function ChatView({
           {liveAssistant && (
             <div className="msg">
               <div className="body">
-                <div style={{ whiteSpace: "pre-wrap" }}>{assistantText}</div>
-                <div className="msg-meta-line"><span>正在接收模型输出…</span></div>
+                {liveAssistantText && <MarkdownText text={liveAssistantText} />}
+                <div className="msg-meta-line"><span>{liveAssistantText ? "正在接收模型输出…" : "模型正在思考…"}</span></div>
               </div>
             </div>
           )}

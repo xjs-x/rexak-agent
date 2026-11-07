@@ -1,6 +1,6 @@
 # 本文件由 scripts/generate_executor_contracts.py 自动生成，禁止手改。
 # 源文件：contracts/execution_runtime.py
-# 源 SHA256：3ad2d044aa457a558e707596afdaada2fe5c8aba7ab452c21a34bf5ad52277dd
+# 源 SHA256：91d4f2283a5583c92fc303ac64d347c2bff1a42b6f324fba1d5e564a51762586
 # 重新生成：uv run python scripts/generate_executor_contracts.py
 """命令执行底座协议真源（`/execution/v1` 子协议）。
 
@@ -382,6 +382,8 @@ class WatchRule(_Base):
 
 
 class _CommonExecutionArguments(_InputBase):
+    strict_shell: bool = False
+    expected_files: list[str] = Field(default_factory=list, max_length=32)
     skill_ref: dict[str, str] | None = None
     completion_role: Literal["work", "resource"] = "work"
     template_hash: str | None = None
@@ -576,6 +578,9 @@ class OutputPageV2(_Base):
 class ResourceStatusView(_Base):
     """资源状态视图（控制端只读投影的来源）。"""
 
+    execution_context: dict[str, Any] = Field(default_factory=dict)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
     resource_id: str
     session_id: str = ""
     run_id: str = ""
@@ -613,7 +618,10 @@ class ResourceListPage(_Base):
 
 
 class OperationReceipt(_Base):
-    """操作回执。`status` 只表示**本次操作**的状态，不代表被控制程序已结束。"""
+    """操作状态与实际执行上下文；不代表分析成功。"""
+
+    execution_context: dict[str, Any] = Field(default_factory=dict)
+    stderr_output: OutputPageV2 | None = None
 
     schema_version: int = EXECUTION_SCHEMA_VERSION
     operation_id: str
@@ -660,6 +668,7 @@ class ExecutionEventPage(_Base):
 
 
 class ExecutionEnvironmentReport(_Base):
+    observed_at: str = ""
     """环境发现结果。不返回秘密（代理/CA 只报是否配置）。"""
 
     schema_version: int = EXECUTION_SCHEMA_VERSION

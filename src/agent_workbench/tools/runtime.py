@@ -118,6 +118,7 @@ class Toolbox:
     control_check: Any = None
     #: 最近一次上下文装配的 manifest（只读投影，供诊断导出与复盘）
     context_manifest: dict[str, Any] | None = None
+    execution_environment_snapshot: dict[str, Any] | None = None
     #: 只读版本元数据；由Runner绑定，不作为执行权限或图状态。
     loaded_runtime_versions: dict[str, Any] | None = None
     working_context: dict[str, Any] | None = None

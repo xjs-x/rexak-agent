@@ -34,6 +34,10 @@ class WorkingContextMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
             context.toolbox.graph_review_window_id = None
             context.toolbox.graph_sync_snapshot = None
         context.toolbox.working_context = view
+        if getattr(context.toolbox, "execution_environment_snapshot", None):
+            report = context.toolbox.execution_environment_snapshot
+            view["execution_environment"] = {key: report.get(key) for key in (
+                "executor_id", "observed_at", "tools", "missing", "interpreters")}
         update = {"pending_job_ids": view["pending_job_ids"]}
         if focus_signature(focus) != focus_signature(state.get("current_focus")):
             update["current_focus"] = focus

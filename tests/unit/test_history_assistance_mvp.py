@@ -142,10 +142,10 @@ def test_view_keeps_original_tool_message_pair_and_no_new_user_or_system_role():
     messages = paired()
     before = copy.deepcopy(messages)
     result, at = reference_messages(messages, {"origin": "host", "memory": {}})
-    assert messages == before and result[at] is not messages[at]
-    assert result[at].id == "original" and result[at].tool_call_id == "one"
-    assert json.loads(str(result[at].content))["data"] == {"value": 1}
-    assert len(result) == len(messages) and all_tools_paired(result)
+    assert messages == before and result[:len(messages)] == before
+    assert at == len(messages) and isinstance(result[at], AIMessage)
+    assert json.loads(str(result[at].content))["_host_history_reference"]["origin"] == "host"
+    assert len(result) == len(messages) + 1 and all_tools_paired(result)
     assert sum(isinstance(m, HumanMessage) for m in result) == 1
     assert not any(isinstance(m, SystemMessage) for m in result)
     initial, _ = reference_messages([messages[0]], {"origin": "host"})
