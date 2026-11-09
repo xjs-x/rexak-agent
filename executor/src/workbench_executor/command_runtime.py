@@ -456,7 +456,7 @@ class CommandRuntime:
     async def _spawn_worker(self, job_id: str) -> bool:
         job_dir = self.job_dir(job_id)
         log_path = job_dir / "worker.log"
-        env = minimal_environment()
+        env = minimal_environment(builtin_commands_dir=self._settings.builtin_commands_dir)
         env["PYTHONUNBUFFERED"] = "1"
         try:
             with log_path.open("ab") as log:

@@ -93,7 +93,22 @@ class WorkerTaskPackage(DelegationInput):
     evidence_access: Literal["session_read_v1"] | None = None
     execution_access: Literal["pi_tools_v1"] | None = None
     collaboration_access: Literal["collaboration_v1"] | None = None
-    input_files: list[dict] = Field(default_factory=list, max_length=16)
+    input_files: list["WorkerInputFile"] = Field(default_factory=list, max_length=16)
+
+
+class WorkerInputFile(BaseModel):
+    """Worker-visible metadata, excluding Executor-only receipt fields."""
+
+    model_config = ConfigDict(extra="forbid")
+    attachment_id: UUID
+    filename: str = Field(max_length=240)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    byte_size: int = Field(ge=0, le=67108864)
+    worker_workspace_id: UUID
+    relative_path: str
+    session_id: UUID
+    operation_id: UUID
+    source: str
 
 
 class WorkerObservation(BaseModel):

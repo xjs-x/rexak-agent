@@ -147,19 +147,39 @@ async def sync_fence(toolbox: Toolbox, *, revocations: list[dict[str, Any]] | No
         note="",
     ).model_dump(mode="json")
     ack = await toolbox.executor.execution_sync_control(payload)
-    if not ack.get("applied"):
+    def covered_by_ack(value: dict[str, Any]) -> bool:
+        # Only a CAS collision with an already installed equivalent fence is
+        # redundant. Other rejection reasons must retain the original failure.
+        if not str(value.get("reason", "")).startswith("expected_seq "):
+            return False
+        fence = value.get("fence") or {}
+        if payload["expected_seq"] is None or not isinstance(fence.get("seq"), int):
+            return False
+        if not 0 <= payload["expected_seq"] <= fence["seq"]:
+            return False
+        if any(fence.get(key) != payload[key] for key in
+               ("session_id", "run_id", "owner", "owner_generation", "control_version")):
+            return False
+        known = {(item.get("delegation_id"), item.get("revision"))
+                 for item in fence.get("revocations", []) if isinstance(item, dict)}
+        return all(any(ident == item["delegation_id"] and revision >= item["revision"]
+                       for ident, revision in known) for item in payload["revocations"])
+
+    if not ack.get("applied") and not covered_by_ack(ack):
         # 乐观并发失败：用执行端当前 seq 重试一次；仍冲突则如实失败。
         fence = ack.get("fence") or {}
         payload["expected_seq"] = fence.get("seq")
         ack = await toolbox.executor.execution_sync_control(payload)
-        if not ack.get("applied"):
+        if not ack.get("applied") and not covered_by_ack(ack):
             raise ExecutionUnavailable(
                 "stale_control",
                 f"执行端拒绝本次控制同步：{ack.get('reason') or '未知原因'}",
             )
     fence = ack.get("fence") or {}
     seq = int(fence.get("seq") or 0)
-    toolbox.execution_fence_seq = seq
+    # Concurrent commands may receive an older equivalent acknowledgement.
+    # Never roll back this runtime hint; the Executor remains authoritative.
+    toolbox.execution_fence_seq = max(seq, toolbox.execution_fence_seq or 0)
     return seq
 
 

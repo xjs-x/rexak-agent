@@ -18,6 +18,7 @@ from sqlalchemy import select
 from agent_workbench.agent.context import RunContext
 from agent_workbench.contracts.enums import ArtifactAvailability, ErrorCode, OperationStatus
 from agent_workbench.contracts.tool import ArtifactRef, ToolError, ToolResult
+from agent_workbench.domain.execution_provenance import execution_provenance
 from agent_workbench.evidence.redaction import redact_api_value
 from agent_workbench.persistence.tables import ArtifactRow
 from agent_workbench.tools.runtime import Toolbox
@@ -133,8 +134,10 @@ async def read_artifact(
         encoding_note = (f"二进制内容（media_type={row.media_type}），未转换为文本。"
                          "已有执行结果可能在 Operation 元数据中，可用 search_history(kind=operation, query=source_operation_id) 读取；无需重新请求目标。")
 
+    provenance = await execution_provenance(toolbox, row)
     return _ok(
         redact_api_value({
+            **({"execution_provenance": provenance} if provenance is not None else {}),
             "artifact_id": str(row.id),
             "media_type": row.media_type,
             "byte_size": total,

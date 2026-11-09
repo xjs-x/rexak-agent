@@ -35,11 +35,10 @@ uv run python scripts/start_workbench.py --check-only
 npm ci --prefix worker
 npm run build --prefix worker
 uv run python scripts/start_ultra_worker.py --configure
-uv run python scripts/start_ultra_worker.py --configure-model --provider bailian --model deepseek-v4.1-flash
 .\start-workbench.cmd
 ```
 
-示例的供应商和模型需按自己已保存的设置替换；`--configure-model` 需要对应供应商的 Key 已在 Web 中保存。`--configure` 创建仅访问 `ultra_worker` 台账的数据库角色和本机加密服务凭据，已有配置会保留。Worker 模型配置是独立快照；Main 设置变化后需重新运行 `--configure-model` 并重启。未配置该快照时，Worker 使用 Mock，不用于真实模型测试。启动入口使用本机回环端口检查 Worker 的鉴权健康状态和 A2A 身份，日志在 `logs/launcher/worker.log`。
+Main 与 Pi Worker 共用前端「模型设置」中的模型、地址和 Key，无需再配置独立模型快照。保存后自动供新阶段及其 Worker 使用；在途任务保留原模型绑定，Worker 跟随所属主任务。`--configure` 只创建独立服务令牌和 Worker 数据库角色，已有凭据保留。配置无效时明确失败，不自动降级 Mock。Worker 监听本机回环地址，模型 Key 不下发 Kali。
 
 ## 更新代码
 
@@ -60,7 +59,7 @@ npm ci --prefix worker
 npm run build --prefix worker
 ```
 
-保留原 Worker 服务凭据和独立模型快照；需要更新 Worker 使用的供应商、模型参数或 Key 时，重新运行 `--configure-model` 并重启。旧 API 或 Worker 进程仍在运行时，源码和构建产物更新不表示它们已加载新版。
+保留原 Worker 服务凭据及历史模型快照文件；新版本不再读取历史模型快照，后续只需保存前端模型设置。首次部署此代码仍需重载 API 与 Worker；之后修改模型设置无需重启。源码或构建更新不等于旧进程已加载新版。
 
 Executor 有变化时构建并部署；脚本保留配置与数据，核对文件哈希后重启。有活动任务时停止更新：
 

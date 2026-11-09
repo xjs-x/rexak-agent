@@ -164,7 +164,7 @@ class WorkerToolService:
                     effect_class=ToolEffectClass.SIDE_EFFECTING, policy_revision=1, scope_revision=box.scope.revision,
                     dispatch_control_version=box.control_version, identity_id=box.identity_id,
                     context_extra={"agent_delegation_id": str(row.id), "worker_id": value.worker_id.hex,
-                        "worker_tool_aggregate": True, "context_id": str(row.context_id)})
+                        "worker_tool_aggregate": True, "context_id": str(row.context_id), "execution_cwd": workspace})
                 if prepared.replayed:
                     stored = (prepared.row.result_snapshot or {}).get("worker_result_artifact_id")
                     if stored:
@@ -247,6 +247,22 @@ class WorkerToolService:
                     "submission_state": "not_submitted"})
             if not leaf.replayed:
                 leaf.row.status = "running"
+                # Immutable request source, separate from checkpoints/events and output bytes.
+                from agent_workbench.domain.execution_provenance import safe_source
+
+                encoded_request = json.dumps({"arguments": safe_source(command_args)}, ensure_ascii=False).encode("utf-8")
+                if len(encoded_request) <= 524288:
+                    stored_request = box.artifacts.write_bytes(encoded_request, media_type="application/json")
+                    request_id = uuid5(leaf.operation_id, "execution-request")
+                    await ArtifactRepository(db).create(artifact_id=request_id,
+                        sha256=stored_request.sha256, byte_size=stored_request.byte_size,
+                        media_type=stored_request.media_type, relative_key=stored_request.relative_key,
+                        session_id=parent.id, source_operation_id=leaf.operation_id,
+                        sensitivity="internal", availability="available", captured_at=stored_request.captured_at,
+                        captured_by_identity=f"worker-request:{leaf.operation_id}", summary="Worker execution request (redacted)")
+                    leaf.row.execution_context = {**(leaf.row.execution_context or {}),
+                        "execution_request_artifact_id": str(request_id), "execution_cwd": workspace,
+                        "execution_request_redacted": safe_source(command_args) != command_args}
         if leaf.replayed:
             if leaf.row.status == "failed" and leaf.row.job_id is None and (leaf.row.result_snapshot or {}).get("execution_certainty") == "not_applied":
                 return {"error": "worker_operation_not_applied", "operation_id": str(leaf.operation_id), "not_applied": True}

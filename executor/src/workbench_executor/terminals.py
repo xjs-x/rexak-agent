@@ -272,7 +272,8 @@ class TerminalRuntime:
         store.open()
 
         env = minimal_environment(
-            {str(k): str(v) for k, v in (arguments.get("env") or {}).items()}
+            {str(k): str(v) for k, v in (arguments.get("env") or {}).items()},
+            builtin_commands_dir=self._settings.builtin_commands_dir,
         )
         env.setdefault("TERM", "xterm-256color")
         # 接收事实必须早于 fork；启动窗口崩溃也不能自动再次创建同一程序。

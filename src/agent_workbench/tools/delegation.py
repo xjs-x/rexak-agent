@@ -49,7 +49,15 @@ async def delegate_task(runtime: ToolRuntime[RunContext], objective: str,
         for identifier in identifiers:
             receipt = await deliver_attachment(box, UUID(identifier),
                 f"attachment:{delegation_id}:{identifier}", worker_id=delegation_id)
-            files.append(receipt["input_file"])
+            source = receipt["input_file"]
+            # Executor receipts include host-only paths and usage hints. The A2A
+            # handoff carries only the Worker task-file protocol fields.
+            keys = ("attachment_id", "filename", "sha256", "byte_size",
+                    "worker_workspace_id", "relative_path", "session_id", "operation_id", "source")
+            if (receipt.get("status") != "succeeded" or source.get("worker_workspace_id") != str(delegation_id)
+                    or source.get("attachment_id") != identifier):
+                raise ValueError("Worker 附件交付回执不匹配")
+            files.append({key: source[key] for key in keys})
         return files
 
     await box.assert_control_current()
@@ -65,12 +73,26 @@ async def delegate_task(runtime: ToolRuntime[RunContext], objective: str,
 
 
 @tool
-async def get_delegated_task(runtime: ToolRuntime[RunContext], delegation_id: str) -> str:
-    """按稳定 delegation_id 核对子任务；未知状态不等于失败。只返回摘要和结果工件引用。"""
-    result = json.loads(tool_result(await manager(runtime).refresh(UUID(delegation_id))))
+async def get_delegated_task(runtime: ToolRuntime[RunContext], delegation_id: str,
+                             history_cursor: int | None = None, history_limit: int = 5) -> str:
+    """核对子任务并查看近期进度；指定 history_cursor 后分页读取可见历史，单页最多 10 条。"""
+    from agent_workbench.domain.worker_progress import worker_progress
+    from agent_workbench.persistence.tables import AgentDelegationRow
+
+    if (history_cursor is not None and history_cursor < 0) or not 1 <= history_limit <= 10:
+        raise ValueError("Worker 历史游标或页大小无效")
+    delegation = UUID(delegation_id)
+    service = manager(runtime)
+    result = json.loads(tool_result(await service.refresh(delegation)))
     box = runtime.context.toolbox
+    # Authorization is repeated immediately before the local history query.
+    await service.read(delegation)
+    async with box.db.session() as db:
+        row = await db.get(AgentDelegationRow, delegation)
+        assert row is not None
+        result["progress"] = await worker_progress(db, row, cursor=history_cursor, limit=history_limit)
     result["message_receipts"] = await CollaborationService(box.db, box.settings).message_receipts(
-        box.session_id, box.run_id, UUID(delegation_id))
+        box.session_id, box.run_id, delegation)
     return json.dumps(result, ensure_ascii=False)
 
 

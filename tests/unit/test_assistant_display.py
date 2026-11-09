@@ -7,6 +7,10 @@ from agent_workbench.api.assistant_display import assistant_display_text
 
 @pytest.mark.parametrize(("raw", "visible"), [
     ("<think>private analysis</think>正常答复", "正常答复"),
+    ("<think>hidden</think></think>正常答复", "正常答复"),
+    ("</THINK> </think>正常答复", "正常答复"),
+    ("</thi", ""),
+    ("普通正文 </think>示例", "普通正文 </think>示例"),
     (" \n<THINK>hidden\n" + "x" * 1400 + "</THINK>\n# 结果\n完成", "# 结果\n完成"),
     ("<think>unfinished", ""),
     ("<thi", ""),

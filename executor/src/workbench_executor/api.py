@@ -331,6 +331,7 @@ class ExecutorState:
             boot_id=self.boot_id,
             output_limit_bytes=settings.job_output_limit_bytes,
             terminate_grace_seconds=settings.command_terminate_grace_seconds,
+            builtin_commands_dir=settings.builtin_commands_dir,
         )
         from workbench_executor.browser import BrowserManager
         from workbench_executor.command_runtime import CommandRuntime

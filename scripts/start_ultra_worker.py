@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import secrets
 import shutil
@@ -21,7 +20,7 @@ from agent_workbench.config.ultra_worker import (
     worker_config_path,
     write_worker_config,
 )
-from agent_workbench.config.worker_model import configure_worker_model, read_worker_model
+from agent_workbench.config.worker_model import configure_worker_model
 from agent_workbench.platform_compat import configure_stdio_utf8
 
 
@@ -58,7 +57,7 @@ def main() -> int:
     configure_stdio_utf8()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--configure", action="store_true", help="创建独立 Worker 角色和服务凭据后退出")
-    parser.add_argument("--configure-model", action="store_true", help="复制当前供应商参数和密钥为独立 Worker 配置")
+    parser.add_argument("--configure-model", action="store_true", help="选择 Main 与 Worker 共用的默认模型")
     parser.add_argument("--provider", choices=["bailian", "xiaomi"], default="bailian")
     parser.add_argument("--model", default="deepseek-v4.1-flash")
     parser.add_argument("--mock", action="store_true", help="显式使用确定性 Mock Provider，不读取真实模型配置")
@@ -69,7 +68,7 @@ def main() -> int:
     settings = get_settings()
     if args.configure_model:
         configure_worker_model(settings, args.provider, args.model)
-        print("Worker 独立模型快照已本机加密保存；主 Agent 设置保持原样。")
+        print("已更新 Main 与 Worker 共用的默认模型；无需保存独立 Worker 快照。")
         return 0
     argv, env = worker_process(settings, mock=args.mock)
     return subprocess.call(argv, env=env, cwd=REPO_ROOT)
@@ -95,9 +94,9 @@ def worker_process(settings: Settings, *, mock: bool = False) -> tuple[list[str]
                REXAK_WORKER_TOKEN=settings.ultra_worker_token or config["token"],
                REXAK_WORKER_PORT=str(endpoint.port or 8795))
     env["REXAK_WORKER_CONTROL_URL"] = f"http://127.0.0.1:{settings.api_port}"
-    model = None if mock else read_worker_model(settings)
-    if model is not None:
-        env["REXAK_WORKER_MODEL_CONFIG"] = json.dumps(model.transport_value())
+    if not mock:
+        # Resolve each task from Main's controller binding; legacy snapshots stay untouched.
+        env["REXAK_WORKER_SHARED_MODEL"] = "1"
     return [node, str(REPO_ROOT / "worker/dist/server.js")], env
 
 

@@ -1,4 +1,4 @@
-import { snapshot, restore, HistoryUnavailable } from './history.js';
+import { snapshot, restore, visibleEvent, visibleDigest, HistoryUnavailable } from './history.js';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
@@ -119,6 +119,29 @@ export class WorkerStore implements TaskStore {
       || row.cancel_requested || Task.fromJSON(row.task).status?.state !== TaskState.TASK_STATE_COMPLETED)
       throw new Error('Pi history unavailable for this completed Session task');
     return restore(row.transcript, row.sha256);
+  }
+  async appendVisibleEvent(requestId: string, sequence: number, message: AgentMessage): Promise<void> {
+    this.assertOwner();
+    const event = visibleEvent(message);
+    if (!event) return;
+    const result = await this.pool.query(`INSERT INTO ultra_worker.visible_events(request_id,sequence,role,message,sha256)
+      SELECT $1,$2,$3,$4,$5 WHERE EXISTS (SELECT 1 FROM ultra_worker.requests WHERE request_id=$1 AND phase='running')
+      ON CONFLICT(request_id,sequence) DO NOTHING RETURNING sequence`,
+      [requestId, sequence, event.role, event.message, event.sha256]);
+    if (!result.rowCount) {
+      const prior = (await this.pool.query('SELECT sha256 FROM ultra_worker.visible_events WHERE request_id=$1 AND sequence=$2',
+        [requestId, sequence])).rows[0];
+      if (!prior || prior.sha256 !== event.sha256) throw new Error('Worker visible event claim or digest conflict');
+    }
+  }
+  async visibleHistory(requestId: string, sessionId: unknown) {
+    const request = (await this.pool.query('SELECT payload FROM ultra_worker.requests WHERE request_id=$1', [requestId])).rows[0];
+    if (!request || !sessionId || request.payload.session_id !== sessionId) throw new Error('Worker visible history unavailable');
+    const rows = (await this.pool.query('SELECT sequence,role,message,sha256,created_at FROM ultra_worker.visible_events WHERE request_id=$1 ORDER BY sequence', [requestId])).rows;
+    return rows.map(row => {
+      if (visibleDigest(row.message) !== row.sha256) throw new Error('Worker visible history checksum mismatch');
+      return { sequence: row.sequence, role: row.role, ...row.message, created_at: row.created_at };
+    });
   }
   async claim(taskId: string): Promise<boolean> {
     this.assertOwner();

@@ -285,3 +285,14 @@ async def test_active_container_is_not_reused_or_closed_by_new_batch():
 async def test_completed_challenge_is_skipped_on_refreshed_platform_state():
     calls, _events, _outcomes = await run_case([challenge(is_completed=True), challenge("two")])
     assert calls == ["two"]
+
+
+@pytest.mark.parametrize("serial,expected", [(True, ["c", "d"]), (False, ["c"])])
+def test_explicit_start_skips_earlier_unsolved_questions(serial, expected):
+    from agent_workbench.tsecbench.launcher import select_challenge_codes
+
+    rows = [ChallengeInfo(code, "test", "easy", "1", 100, 1, 0,
+                          code == "b", "stopped", ()) for code in ["a", "b", "c", "d"]]
+    assert select_challenge_codes(rows, 1, serial=serial) == expected
+    assert select_challenge_codes(rows, -1, serial=serial) == []
+    assert select_challenge_codes(rows, 3, serial=serial) == []

@@ -23,7 +23,9 @@ export function ModelConfiguration({ settings, onSaved }: {
         delete_api_key: remove, set_default: makeDefault,
       });
       setKey(""); setEndpoint(null); onSaved(updated);
-      setNotice(remove ? "已删除本机保存的 Key。" : "已保存，新的运行阶段、暂停后继续及下次启动会读取此配置。");
+      setNotice(remove ? "已删除共用 Key，主智能体和子智能体均不再使用它启动新任务。"
+        : makeDefault ? "已保存，主智能体与子智能体的新任务将共用所选模型，无需重启；当前任务继续使用原模型。"
+        : "已保存此供应商的共用设置。使用该供应商的主智能体和子智能体会自动读取，无需重启；默认模型未改变。");
     } catch (cause) { setNotice(String(cause)); }
     finally { setBusy(false); }
   };
@@ -37,7 +39,7 @@ export function ModelConfiguration({ settings, onSaved }: {
     <label>API Key<input aria-label="模型 API Key" type="password" autoComplete="new-password" value={key} disabled={busy} onChange={(event) => setKey(event.target.value)} placeholder={profile.secret_configured ? "已配置；留空保留，输入新 Key 可替换" : "输入一次并保存到本机"} /></label>
     <p className="fineprint">Windows 使用当前用户的系统加密存储。Key 不会回显，也不会下发 Kali。</p>
     <dl className="model-limits"><dt>上下文窗口</dt><dd>{profile.context_limit.toLocaleString()} tokens</dd><dt>请求输出额度（含思考）</dt><dd>{profile.request_output_limit.toLocaleString()} tokens</dd><dt>可用输入预算（含安全余量）</dt><dd>{profile.allowed_input_tokens.toLocaleString()} tokens</dd></dl>
-    <label className="checkbox-row"><input type="checkbox" checked={makeDefault} onChange={(event) => setMakeDefault(event.target.checked)} />设为新阶段的默认模型</label>
+    <label className="checkbox-row"><input type="checkbox" checked={makeDefault} onChange={(event) => setMakeDefault(event.target.checked)} />设为主智能体和子智能体新任务的默认模型</label>
     <div className="model-settings-actions"><button disabled={busy} onClick={() => void save()}>保存模型设置</button><button disabled={busy || !profile.secret_configured} onClick={() => void save(true)}>删除已保存 Key</button><span className={`pill ${profile.secret_configured ? "status-confirmed" : "status-blocked"}`}>{profile.secret_configured ? "Key 已配置" : "尚未配置 Key"}</span></div>
     {notice && <p role="status">{notice}</p>}
   </section>;

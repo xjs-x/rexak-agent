@@ -309,6 +309,17 @@ def console_url(config: BenchmarkConfig, session_id: str | None = None) -> str:
     )
 
 
+def select_challenge_codes(
+    rows: Sequence[ChallengeInfo], index: int, *, serial: bool
+) -> list[str]:
+    """Use the user's selected pending question as the explicit start boundary."""
+    pending = [row for row in rows if not row.is_completed]
+    if not 0 <= index < len(pending):
+        return []
+    selected = pending[index:] if serial else pending[index:index + 1]
+    return [row.unique_code for row in selected]
+
+
 async def evaluate_serial(
     config: BenchmarkConfig,
     codes: Sequence[str],

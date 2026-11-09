@@ -36,6 +36,36 @@ test('provider failure stays FAILED after controller reconciliation and retains 
   assert.match(JSON.stringify(artifact), /Injected mock provider failure/);
 });
 
+test('shared configuration failure records FAILED without starting Pi or leaking keys', { skip: !enabled }, async () => {
+  const f = await fixture();
+  let created = 0;
+  const executor = new PiExecutor(f.store, {}, (...args) => { created++; return createPiWorker(...args); }, undefined,
+    async () => { throw new Error('fixture-private-model-key'); });
+  await executor.execute(f.ctx, f.bus);
+  const task = (await f.store.load(f.task.id))!;
+  assert.equal(created, 0);
+  assert.equal(task.status!.state, TaskState.TASK_STATE_FAILED);
+  assert.ok(!JSON.stringify(Task.toJSON(task)).includes('fixture-private-model-key'));
+});
+
+test('task resolves current configuration before Pi creation and retains it for its calls', { skip: !enabled }, async () => {
+  const f = await fixture();
+  const config = { kind: 'openai-compatible' as const, provider: 'bailian' as const, model: 'fixture-model',
+    base_url: 'https://fixture.invalid/compatible-mode/v1', api_key: 'fixture-new-key',
+    temperature: 1, max_tokens: 10, context_window: 100, timeout_ms: 1000 };
+  let received = false;
+  const executor = new PiExecutor(f.store, {}, (objective, options) => {
+    assert.equal(options?.modelConfig, config);
+    received = true;
+    // Exercise real Pi's deterministic Mock loop; never send a provider request.
+    return createPiWorker(objective, { ...options, modelConfig: undefined, callHooks: undefined });
+  }, undefined, async id => { assert.equal(id, f.record.request_id); return config; });
+  await executor.execute(f.ctx, f.bus);
+  assert.ok(received);
+  assert.equal((await f.store.load(f.task.id))!.status!.state, TaskState.TASK_STATE_COMPLETED);
+  assert.ok(!JSON.stringify(Task.toJSON((await f.store.load(f.task.id))!)).includes('fixture-new-key'));
+});
+
 test('cancel after claim waits for execution and prevents all Pi/model/tool startup', { skip: !enabled }, async () => {
   const f = await fixture(), claimed = gate(), release = gate();
   const original = f.store.byTask.bind(f.store);

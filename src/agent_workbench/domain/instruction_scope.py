@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import re
 from collections.abc import Iterable
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from sqlalchemy import select
@@ -24,9 +25,13 @@ from agent_workbench.observability.events import append_event
 from agent_workbench.persistence.tables import CommandRow, RunRow, SessionRow
 
 _TARGET = re.compile(
-    r"https?://[^\s<>\"'`，。；）)]+|(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])", re.I
+    r"https?://[^\s<>\"'`，。；）)]+"
+    r"|(?P<bare>(?<![\w.@/\\-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z]{2,63}:[0-9]{1,5}(?:/[^\s<>\"'`，。；）)]*)?)(?![\w:])"
+    r"|(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])", re.I
 )
 _EXCLUSION = re.compile(r"不要|禁止|排除|不测试|不访问|例如|比如|仅作示例", re.I)
+_TARGET_CONTEXT = re.compile(r"目标|靶场|授权|测试|访问|连接|扫描", re.I)
 
 
 def instruction_hosts(texts: Iterable[str]) -> list[str]:
@@ -37,9 +42,18 @@ def instruction_hosts(texts: Iterable[str]) -> list[str]:
             if _EXCLUSION.search(prefix):
                 continue
             raw = match.group().rstrip(".,;!?，。；！？”)}")
+            if match.group("bare"):
+                # Labelled targets and standalone endpoints are user authority;
+                # an arbitrary file.py:123 reference is not a target grant.
+                line = text.splitlines()[text[:match.start()].count("\n")].strip()
+                if not _TARGET_CONTEXT.search(prefix) and line.rstrip(".,;!?，。；！？”)}") != raw:
+                    continue
             try:
                 target = parse_target(raw)
-                if "://" not in raw:
+                if match.group("bare"):
+                    if not 1 <= int(urlsplit(f"http://{raw}").port or 0) <= 65535:
+                        continue
+                elif "://" not in raw:
                     ipaddress.ip_address(target.host)
                 host = target.host.encode("idna").decode("ascii")
                 if host in METADATA_HOSTS or any(c in host for c in "*?[/\\"):

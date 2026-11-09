@@ -7,12 +7,14 @@ import { WorkerStore, terminalStates } from './store.js';
 import type { EvidenceReadRef } from './evidence.js';
 import { remoteTools } from './remote-tools.js';
 import { collaborationChannel, steeringInbox, type ContextMessage } from './collaboration.js';
+import type { WorkerModelConfig } from './model-provider.js';
 
 export class PiExecutor implements AgentExecutor {
   private active = new Map<string, { cancelled: boolean; abort: () => void; done: Promise<void>; steer?: (message: ContextMessage) => void }>();
   constructor(private store: WorkerStore, private testOptions: PiOptions = {},
               private workerFactory: typeof createPiWorker = createPiWorker,
-              private evidenceConfig?: { controlUrl: string; token: string }) {}
+              private evidenceConfig?: { controlUrl: string; token: string },
+              private resolveModel?: (requestId?: string) => Promise<WorkerModelConfig>) {}
 
   abortAll() {
     for (const handle of this.active.values()) { handle.cancelled = true; handle.abort(); }
@@ -53,8 +55,32 @@ export class PiExecutor implements AgentExecutor {
           await this.store.complete(task.id, TaskState.TASK_STATE_FAILED, artifact);
           this.status(bus, ctx, TaskState.TASK_STATE_FAILED); return;
         }
-        const worker = this.workerFactory(objective, { ...this.testOptions, history, task: record.payload as unknown as TaskPackage,
+        let visibleSequence = 0;
+        let modelConfig = this.testOptions.modelConfig;
+        try {
+          if (this.resolveModel) modelConfig = await this.resolveModel(record.request_id);
+        } catch {
+          const artifact = Artifact.fromJSON({ artifactId: randomUUID(), name: 'delegation-result', parts: [{ data: {
+            task_id: task.id, context_id: task.contextId, status: 'failed',
+            summary: 'Shared model configuration unavailable; no model or tool was started',
+            observations: [], evidence_refs: [], unresolved_questions: [], suggested_next_steps: []
+          }, mediaType: 'application/json' }] });
+          await this.store.complete(task.id, TaskState.TASK_STATE_FAILED, artifact);
+          this.status(bus, ctx, TaskState.TASK_STATE_FAILED); return;
+        }
+        const current = await this.store.byTask(task.id);
+        if (!this.store.available) return;
+        if (handle.cancelled || current?.cancel_requested) {
+          const cancelled = Artifact.fromJSON({ artifactId: randomUUID(), name: 'delegation-result', parts: [{ data: {
+            task_id: task.id, context_id: task.contextId, status: 'cancelled', summary: 'Cancelled before Pi startup',
+            observations: [], evidence_refs: [], unresolved_questions: [], suggested_next_steps: []
+          }, mediaType: 'application/json' }] });
+          await this.store.complete(task.id, TaskState.TASK_STATE_CANCELED, cancelled);
+          this.status(bus, ctx, TaskState.TASK_STATE_CANCELED); return;
+        }
+        const worker = this.workerFactory(objective, { ...this.testOptions, modelConfig, history, task: record.payload as unknown as TaskPackage,
           isCancellationRequested: () => handle.cancelled,
+          onVisibleMessage: message => this.store.appendVisibleEvent(record.request_id, ++visibleSequence, message),
           ...(this.evidenceConfig ? { evidence: { ...this.evidenceConfig, requestId: record.request_id,
             taskId: task.id, contextId: task.contextId, workerId: record.worker_id,
             ensureActive: async () => {
@@ -62,7 +88,7 @@ export class PiExecutor implements AgentExecutor {
               if (!this.store.available || handle.cancelled || !current || current.phase !== 'running' || current.cancel_requested) throw new Error('Evidence access no longer active');
             } } } : {}),
           callHooks: {
-            start: (sequence, startedAt) => this.store.beginModelCall(record, task.contextId, sequence, startedAt, this.testOptions.modelConfig!),
+            start: (sequence, startedAt) => this.store.beginModelCall(record, task.contextId, sequence, startedAt, modelConfig!),
             finish: metric => this.store.finishModelCall(record.request_id, metric),
           } });
         handle.abort = () => worker.agent.abort();

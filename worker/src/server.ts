@@ -11,6 +11,7 @@ import { validTaskPackage } from './task-package.js';
 import { validateModelConfig, type WorkerModelConfig } from './model-provider.js';
 import { validateControlUrl } from './evidence.js';
 import type { ContextMessage } from './collaboration.js';
+import { sharedModelResolver } from './shared-model.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function canonical(value: unknown): string {
@@ -30,17 +31,18 @@ export function card(baseUrl: string): AgentCard {
   });
 }
 
-export async function createWorkerServer(options: { databaseUrl: string; token: string; baseUrl: string; delayMs?: number; fail?: boolean; modelConfig?: WorkerModelConfig; controlUrl?: string }) {
+export async function createWorkerServer(options: { databaseUrl: string; token: string; baseUrl: string; delayMs?: number; fail?: boolean; modelConfig?: WorkerModelConfig; controlUrl?: string; sharedModel?: boolean }) {
   if (options.token.length < 24) throw new Error('Worker token must have at least 24 characters');
   const modelConfig = options.modelConfig === undefined ? undefined : validateModelConfig(options.modelConfig);
   const controlUrl = validateControlUrl(options.controlUrl ?? 'http://127.0.0.1:8770');
+  const resolveModel = options.sharedModel ? sharedModelResolver(controlUrl, options.token) : undefined;
   const pool = new pg.Pool({ connectionString: options.databaseUrl, max: 6, connectionTimeoutMillis: 5000 });
   const lock = await pool.connect();
   // Single runtime owner; second process must not mark live tasks interrupted.
   const acquired = (await lock.query('SELECT pg_try_advisory_lock(8795, 1) AS acquired')).rows[0].acquired;
   if (!acquired) { lock.release(); await pool.end(); throw new Error('Worker database already owned by another runtime'); }
   const store = new WorkerStore(pool);
-  const executor = new PiExecutor(store, { delayMs: options.delayMs, fail: options.fail, modelConfig }, undefined, { controlUrl, token: options.token });
+  const executor = new PiExecutor(store, { delayMs: options.delayMs, fail: options.fail, modelConfig }, undefined, { controlUrl, token: options.token }, resolveModel);
   const loseOwnership = () => { store.fence(); executor.abortAll(); };
   lock.on('error', loseOwnership);
   lock.on('end', loseOwnership);
@@ -57,7 +59,21 @@ export async function createWorkerServer(options: { databaseUrl: string; token: 
     next();
   });
   app.use(express.json({ limit: '128kb' }));
-  app.get('/health', (_req, res) => { res.json({ runtime: 'pi', provider: modelConfig?.provider ?? 'rexak-mock', model: modelConfig?.model ?? 'mock-pi-v1', tools: 'delegated_kali_and_session_evidence', protocol: '1.0' }); });
+  app.get('/health', async (_req, res) => {
+    try {
+      const current = resolveModel ? await resolveModel() : modelConfig;
+      res.json({ runtime: 'pi', provider: current?.provider ?? 'rexak-mock', model: current?.model ?? 'mock-pi-v1',
+        model_source: resolveModel ? 'controller_shared' : 'bootstrap',
+        model_configured: !!current,
+        tools: 'delegated_kali_and_session_evidence', protocol: '1.0' });
+    } catch {
+      // Keep the console reachable so the user can repair/delete a shared Key there.
+      // This is service readiness, not proof that provider authentication succeeds.
+      res.json({ runtime: 'pi', protocol: '1.0', provider: null, model: null,
+        model_source: 'controller_shared', model_configured: false,
+        tools: 'delegated_kali_and_session_evidence', error: 'Shared model configuration unavailable' });
+    }
+  });
   // SDK 1.3.0 Express card handler JSON.stringify leaks internal protobuf oneof shape.
   // Use the official wire codec explicitly; JSON-RPC still uses the official handler.
   app.get('/.well-known/agent-card.json', async (_req, res) => { res.json(AgentCard.toJSON(await handler.getAgentCard())); });
@@ -154,7 +170,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   // Child environment is the trusted bootstrap channel; do not retain a duplicate secret there.
   delete process.env.REXAK_WORKER_MODEL_CONFIG;
-  const runtime = await createWorkerServer({ databaseUrl: process.env.REXAK_WORKER_DATABASE_URL ?? '', token: process.env.REXAK_WORKER_TOKEN ?? '', baseUrl: `http://127.0.0.1:${port}`, modelConfig, controlUrl: process.env.REXAK_WORKER_CONTROL_URL });
+  const runtime = await createWorkerServer({ databaseUrl: process.env.REXAK_WORKER_DATABASE_URL ?? '', token: process.env.REXAK_WORKER_TOKEN ?? '', baseUrl: `http://127.0.0.1:${port}`, modelConfig, controlUrl: process.env.REXAK_WORKER_CONTROL_URL, sharedModel: process.env.REXAK_WORKER_SHARED_MODEL === '1' });
     const server = runtime.app.listen(port, '127.0.0.1', () => { console.log(`Rexak Pi A2A 1.0 listening on 127.0.0.1:${port}; tools=delegation_authorized`); });
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { server.close(() => { void runtime.close().then(() => process.exit(0)); }); });
 }

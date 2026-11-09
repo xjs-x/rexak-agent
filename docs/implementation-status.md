@@ -2,6 +2,22 @@
 
 当前公开交付结果见 [v1.0 验收摘要](validation-v1.md)。本页按时间保留各阶段记录，历史部署状态与测试范围不代表后续状态。
 
+## 2026-11-08：Main / Pi Worker 共用模型设置
+
+按用户要求替代旧独立模型快照。前端模型设置和本机密钥库成为唯一可写来源；Worker 每次启动任务从可信回环控制端取得父 Run 的绑定与当前 Key，无需重新配置或重启 Worker。在途任务不切换模型；缺配置明确失败，不回退旧 Key 或 Mock。历史独立快照文件保留。源码、前端和Worker构建已更新，专项验证通过；Windows原入口已重载，真实配置读取与共用Key一致性通过，14个历史非终态任务与凭据保留，Kali27文件同哈希且保留原实例。未调用真实模型；全量回归按用户要求停止，未宣称通过。具体检查结果见 [本次交付记录](../reports/shared-model-settings-20261108.md)，未验证项目不标完成。技术结论见 [decision 0026](decisions/0026-ultra-shared-model-settings.md)。
+
+## 2026-11-08：暂停 Pwn 复测暴露问题的最小修复
+
+最近暂停 Run b5bd9266 的 HTTP 被错误 scope 预检拒绝（裸域名端口未识别）、六路并发相同 fence 出现 CAS 争抢，以及重复 think 关闭标签显示泄漏，已分别修复用户原文目标识别、控制端等价 fence 回执复用、API/前端显示投影。范围 5 项、fence 8 项（真实临时 SQLite）、API 显示 15 项、前端显示 11 项专项通过；相关静态检查、编码和必要前端构建通过。Windows 原入口已重载，真实历史对话显示检查通过；Kali 27 文件哈希未变，保留进程。任务仍暂停，scope 和历史数据未改，未连接目标或调用模型；真实继续后的效果未验证。详见[本轮排查修复](../reports/pwn-audit/latest-paused-pwn-repair.md)。
+
+## 2026-11-08：生产最终部署就绪
+
+经用户明确授权，核对 PID/start ticks/进程组后通过正常接口关闭指定历史 nc PTY，未处理其他资源。原流程完整部署 Executor，生产实际安装包 27 文件哈希与本机一致，新 boot `3485002-2470199d96ea`；六个普通内置命令已注册。原桌面入口完成一次 Windows API/Runner/Pi Worker 重启，禁用历史任务自动恢复，未重建前端或 Worker。真实生产 Main Web/Pwn 命令与 Worker 私有环境两笔无害检查均退出 0、进程组已回收、最终活动资源 0；控制端历史快照不变。迁移仍 f2d91a4c8b77，真实模型/CTF 联合行为留待用户测试，未重复既有测试。结论 READY，详见[最终部署验收](../reports/pwn-audit/final-deployment-acceptance.md)。
+
+## 2026-11-08：统一内置命令环境（历史隔离验收，后续已部署）
+
+Executor 在原 PATH 末尾追加固定维护命令目录，为同一 Ultra 执行环境提供 gdb、gef、checksec、ROPgadget、patchelf 和 pwn-python；不前置 Pwn venv、不改变默认 python3、不增加题型或工具 Schema。Kali 独立实例 Main/Worker 的 Web→Pwn 连续执行、私有 HOME/TMPDIR、普通退出码、PTY 和 GDB 超时清理通过；17 项 Executor 定向测试、控制端 Worker 2 项和 Pi 适配 8 项通过。最终候选 27 文件哈希一致。生产仍有原活动 PTY，未更新已安装源码、注册生产命令或重启，真实生产加载与完整 Pi 链路未验证。见[统一工具环境报告](../reports/pwn-audit/ultra-unified-toolchain.md)。
+
 ## 2026-11-07：执行路径、环境与产物诊断
 
 Main 命令/Shell脚本默认传播失败，回执提供实际工作目录与独立stderr；附件明确路径基准，环境发现支持有界按需程序查询并保留时间快照；声明产物非空检查写入原完成回执，与真实退出码分开。控制端及入口50项专项、Kali执行端8项及6个隔离场景通过；按要求未跑全量。原入口与Kali更新核对、历史9个非终态任务保留；最新全局类型检查通过，最终前端构建仍存在并行修改范围的类型错误，未标全仓通过。见[整改报告](../reports/tool-efficiency-repair-20261107.md)、[缓存交接](../reports/tool-efficiency-cache-handoff-20261107.md)和[decision 0025](decisions/0025-execution-analysis-diagnostics.md)。

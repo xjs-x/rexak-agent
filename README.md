@@ -188,11 +188,10 @@ uv run python scripts/setup_workbench.py install
 npm ci --prefix worker
 npm run build --prefix worker
 uv run python scripts/start_ultra_worker.py --configure
-uv run python scripts/start_ultra_worker.py --configure-model --provider bailian --model deepseek-v4.1-flash
 .\start-workbench.cmd
 ```
 
-将示例中的 `--provider` 和 `--model` 换成已配置且受支持的供应商及模型。`--configure` 创建 Worker 专用数据库角色和本机加密服务凭据，不覆盖已有配置；`--configure-model` 从当前已保存的模型设置生成独立加密快照。后续修改 Main 的模型设置不会自动更新 Worker 快照，需要显式重新运行 `--configure-model` 并重启。未配置独立模型时，Worker 使用 Mock，不能作为真实目标测试的模型效果。Ultra Worker 监听本机回环地址，按需经控制端使用 Kali 工具；[详细步骤](docs/deployment-quickstart.md#启用-ultra)。
+Main 与 Pi Worker 共用前端「模型设置」中的模型、地址和 Key，无需再配置独立模型快照。保存后自动供新阶段及其 Worker 使用；在途任务保留原模型绑定，Worker 跟随所属主任务。`--configure` 只创建独立服务令牌和 Worker 数据库角色，已有凭据保留。配置无效时明确失败，不自动降级 Mock。Worker 监听本机回环地址，模型 Key 不下发 Kali。
 
 首次使用：配置模型 → 新建聊天 → 给出目标、授权范围和测试要求 → 查看工具结果及状态 → 按需暂停、继续或取消 → 在「图谱」读取并手动刷新双图。取消已受理不等于远端进程已退出，仍应检查资源状态。
 

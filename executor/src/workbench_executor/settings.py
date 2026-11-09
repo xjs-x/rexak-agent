@@ -135,6 +135,11 @@ class ExecutorSettings(BaseSettings):
         return self.data_root / "jobs"
 
     @property
+    def builtin_commands_dir(self) -> Path:
+        """统一的维护级命令入口；不是任务配置或按题型切换的环境。"""
+        return self.data_root / "tools" / "bin"
+
+    @property
     def terminal_log_root(self) -> Path:
         return self.data_root / "terminals"
 

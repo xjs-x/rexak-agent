@@ -1,17 +1,13 @@
-"""Worker 独立模型快照与本机密钥。不会随 A2A、业务工件或主 Agent 设置流转。"""
+"""Worker 从 Main 共用模型设置派生运行绑定；凭据不进入任务包或工件。"""
 
 from __future__ import annotations
 
-import base64
-import json
-import sys
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from agent_workbench.config.model_settings import read_model_key, validate_endpoint
-from agent_workbench.config.secrets import write_secret_file
 from agent_workbench.config.settings import Settings
 from agent_workbench.models.provider import resolve_provider_profile
 
@@ -44,39 +40,47 @@ def worker_model_path(settings: Settings) -> Path:
     return settings.secret_store_path.with_name("ultra-worker-model.json")
 
 
-def read_worker_model(settings: Settings) -> WorkerModelConfig | None:
-    path = worker_model_path(settings)
-    if not path.exists():
-        return None
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if value.get("format") == "dpapi" and sys.platform == "win32":
-        from agent_workbench.config.model_settings import _dpapi
+def shared_worker_model(settings: Settings, snapshot: dict | None = None) -> WorkerModelConfig:
+    """Derive from the Main binding/vault; never persist a second writable model copy."""
+    from agent_workbench.config.model_settings import configuration_lock
+    from agent_workbench.models.provider import ModelBinding
 
-        payload = json.loads(_dpapi(base64.b64decode(value["payload"]), decrypt=True))
-    elif value.get("format") == "local" and sys.platform != "win32":
-        payload = value["payload"]
-    else:
-        raise ValueError("Worker 模型配置不能由当前用户解密")
-    return WorkerModelConfig.model_validate(payload)
+    with configuration_lock:
+        if snapshot is None:
+            profile = resolve_provider_profile(settings=settings)
+            temperature = 1.0
+            timeout = settings.model_request_timeout_seconds
+        else:
+            binding = ModelBinding.from_snapshot(snapshot)
+            profile, temperature, timeout = binding.profile, binding.temperature, binding.request_timeout_seconds
+        key = read_model_key(profile.provider_id, settings)
+        if not key:
+            raise ValueError("请先在模型设置中保存所选供应商的 Key")
+        return WorkerModelConfig.model_validate({
+            "provider": profile.provider_id, "model": profile.model_name,
+            "base_url": profile.base_url, "api_key": key, "temperature": temperature,
+            "max_tokens": profile.effective_output_limit, "context_window": profile.context_limit,
+            "timeout_ms": timeout * 1000,
+        })
+
+
+def read_worker_model(settings: Settings) -> WorkerModelConfig:
+    """Compatibility reader: always use the shared source, ignoring historical snapshots."""
+    return shared_worker_model(settings)
 
 
 def configure_worker_model(settings: Settings, provider: str, model: str) -> None:
-    """Explicitly copy an existing provider binding once; later Main changes do not affect Worker."""
-    profile = resolve_provider_profile(provider, model, settings)
-    key = read_model_key(provider, settings)
-    if not key:
-        raise ValueError("请先保存对应供应商的模型密钥")
-    value = WorkerModelConfig.model_validate({
-        "provider": provider, "model": model, "base_url": profile.base_url,
-        "api_key": key, "max_tokens": profile.effective_output_limit,
-        "context_window": profile.context_limit,
-        "timeout_ms": settings.model_request_timeout_seconds * 1000,
-    }).transport_value()
-    if sys.platform == "win32":
-        from agent_workbench.config.model_settings import _dpapi
+    """Compatibility CLI now selects the shared default instead of copying credentials."""
+    from agent_workbench.config.model_settings import (
+        configuration_lock,
+        read_preferences,
+        save_preferences,
+    )
 
-        protected = _dpapi(json.dumps(value).encode("utf-8"))
-        stored = {"format": "dpapi", "payload": base64.b64encode(protected).decode("ascii")}
-    else:
-        stored = {"format": "local", "payload": value}
-    write_secret_file(worker_model_path(settings), stored)
+    with configuration_lock:
+        resolve_provider_profile(provider, model, settings)
+        if not read_model_key(provider, settings):
+            raise ValueError("请先在模型设置中保存对应供应商的 Key")
+        preferences = read_preferences(settings)
+        preferences.default_provider, preferences.default_model = provider, model
+        save_preferences(preferences, settings)

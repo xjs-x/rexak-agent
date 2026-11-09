@@ -22,6 +22,21 @@ def test_strict_mode_preserves_protocol_and_port():
     assert not ScopePolicy(updated).is_allowed("http://lab.test:8080/")
 
 
+def test_explicit_bare_endpoint_is_a_user_target_without_granting_other_hosts():
+    texts = ["目标地址：node5.example.test:27571/\n\n授权 CTF 测试"]
+    scope = scope_from_instructions(ScopeSnapshot(mode="instruction"), texts)
+    assert instruction_hosts(texts) == ["node5.example.test"]
+    assert ScopePolicy(scope).is_allowed("http://node5.example.test:27571/")
+    assert ScopePolicy(scope).is_allowed("https://node5.example.test:27571/")
+    assert not ScopePolicy(scope).is_allowed("http://other.example.test:27571/")
+    assert instruction_hosts(["node5.example.test:27571/"]) == ["node5.example.test"]
+    assert instruction_hosts(["不要访问 bad.example.test:1234/", "例如 demo.example.test:1234/",
+                              "错误位置 code.py:123，另有 foo.test:1234", "目标：a.test:65536/",
+                              "目标：a.test:0/", "联系 me@a.test:1234"]) == []
+    strict = ScopeSnapshot(mode="scoped")
+    assert scope_from_instructions(strict, texts) == strict
+
+
 def test_targets_are_normalized_but_examples_and_exclusions_are_not_added():
     hosts = instruction_hosts(
         [

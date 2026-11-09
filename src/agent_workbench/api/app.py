@@ -186,6 +186,9 @@ def create_app() -> FastAPI:
     from agent_workbench.api.worker_evidence import router as worker_evidence_router
 
     app.include_router(worker_evidence_router)
+    from agent_workbench.api.worker_model import router as worker_model_router
+
+    app.include_router(worker_model_router)
     from agent_workbench.api.worker_tools import router as worker_tools_router
 
     app.include_router(worker_tools_router)

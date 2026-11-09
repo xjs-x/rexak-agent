@@ -1,7 +1,5 @@
-"""独立 Worker 模型配置；不接触日常密钥。"""
+"""Main / Worker 共用配置与父任务绑定；仅使用合成密钥。"""
 
-import json
-from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -11,37 +9,35 @@ from agent_workbench.config.settings import Settings
 from agent_workbench.contracts.delegation import DelegationInput
 
 
-def test_worker_model_snapshot_is_separate_and_encrypted(tmp_path, monkeypatch):
-    settings = Settings(secret_store_path=tmp_path / "secrets.json")
-    profile = SimpleNamespace(base_url="https://fixture.example/compatible-mode/v1",
-                              effective_output_limit=393216, context_limit=1000000)
-    monkeypatch.setattr(worker_model, "resolve_provider_profile", lambda *_args: profile)
-    monkeypatch.setattr(worker_model, "read_model_key", lambda *_args: "fixture-key-do-not-log")
-    assert worker_model.read_worker_model(settings) is None
-    worker_model.configure_worker_model(settings, "bailian", "deepseek-v4.1-flash")
+def test_worker_model_follows_shared_settings_and_ignores_legacy_snapshot(tmp_path, monkeypatch):
+    from agent_workbench.config.model_settings import ModelPreferences, save_preferences
+    settings = Settings(secret_store_path=tmp_path / "secrets.json").model_copy(update={"dashscope_base_url": "https://fixture.invalid/compatible-mode/v1", "xiaomi_base_url": "https://fixture.invalid/v1"})
+    worker_model.worker_model_path(settings).write_text('{"format":"obsolete"}', encoding="utf-8")
+    save_preferences(ModelPreferences(default_provider="bailian", default_model="deepseek-v4.1-flash"), settings)
+    key = ["fixture-key-do-not-log"]
+    monkeypatch.setattr(worker_model, "read_model_key", lambda *_args: key[0])
     cfg = worker_model.read_worker_model(settings)
-    assert cfg and cfg.model == "deepseek-v4.1-flash" and cfg.timeout_ms == 300000
-    assert cfg.max_tokens == 393216 and cfg.temperature == 1
-    assert "fixture-key" not in repr(cfg)
-    monkeypatch.setattr(worker_model, "read_model_key", lambda *_args: "changed-main-key")
-    assert cfg == worker_model.read_worker_model(settings)
-    assert cfg.transport_value()["api_key"] == "fixture-key-do-not-log"
-    import sys
-
-    if sys.platform == "win32":
-        assert "fixture-key" not in worker_model.worker_model_path(settings).read_text(encoding="utf-8")
-    assert not settings.secret_store_path.exists()
+    assert cfg.model == "deepseek-v4.1-flash" and cfg.timeout_ms == 300000
+    assert cfg.max_tokens == 393216 and "fixture-key" not in repr(cfg)
+    key[0] = "changed-main-key"
+    assert worker_model.read_worker_model(settings).api_key.get_secret_value() == key[0]
+    worker_model.configure_worker_model(settings, "xiaomi", "mimo-v2.6-pro")
+    assert worker_model.read_worker_model(settings).provider == "xiaomi"
+    assert worker_model.worker_model_path(settings).read_text(encoding="utf-8") == '{"format":"obsolete"}'
 
 
-def test_bad_worker_configuration_never_falls_back(tmp_path):
-    settings = Settings(secret_store_path=tmp_path / "secrets.json")
-    path = worker_model.worker_model_path(settings)
-    path.write_text(json.dumps({"format": "invalid", "payload": {}}), encoding="utf-8")
+def test_shared_worker_keeps_parent_binding_but_reads_current_key(tmp_path, monkeypatch):
+    from agent_workbench.models.provider import ModelBinding, resolve_provider_profile
+    settings = Settings(secret_store_path=tmp_path / "secrets.json").model_copy(update={"dashscope_base_url": "https://fixture.invalid/compatible-mode/v1", "xiaomi_base_url": "https://fixture.invalid/v1"})
+    binding = ModelBinding(resolve_provider_profile("bailian", "deepseek-v4.1-flash", settings),
+                           temperature=0.7, request_timeout_seconds=123)
+    monkeypatch.setattr(worker_model, "read_model_key", lambda *_args: "new-shared-key")
+    cfg = worker_model.shared_worker_model(settings, binding.to_snapshot())
+    assert cfg.model == binding.profile.model_name and cfg.base_url == binding.profile.base_url
+    assert cfg.temperature == 0.7 and cfg.timeout_ms == 123000
+    monkeypatch.setattr(worker_model, "read_model_key", lambda *_args: None)
     with pytest.raises(ValueError):
-        worker_model.read_worker_model(settings)
-    with pytest.raises(ValidationError):
-        worker_model.WorkerModelConfig.model_validate({"provider": "bailian", "model": "x", "api_key": "",
-            "base_url": "http://untrusted.example", "max_tokens": 10, "context_window": 20, "timeout_ms": 100})
+        worker_model.shared_worker_model(settings, binding.to_snapshot())
 
 
 @pytest.mark.parametrize("extra", [{"background": "x" * 8001}, {"completion_requirements": [" "]},

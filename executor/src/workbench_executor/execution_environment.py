@@ -18,17 +18,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from workbench_executor.processes import minimal_environment
 from workbench_executor.settings import ExecutorSettings
 
 
-def _probe_version(argv: list[str], *, timeout: float = 3.0) -> str:
+def _probe_version(argv: list[str], *, timeout: float = 3.0,
+                   env: dict[str, str] | None = None) -> str:
     try:
         result = subprocess.run(
             argv,
             capture_output=True,
             timeout=timeout,
             check=False,
-            env={
+            env=env if env is not None else {
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                 "LANG": "C.UTF-8",
                 "HOME": os.environ.get("HOME", "/tmp"),
@@ -49,20 +51,24 @@ def discover_environment(settings: ExecutorSettings, *, workspace_bytes_used: in
         raise ValueError("最多16个程序名，只允许名称，不接受路径或 Shell 文本")
     tools: dict[str, str] = {}
     missing: dict[str, str] = {}
+    env = minimal_environment(builtin_commands_dir=settings.builtin_commands_dir)
 
     def record(name: str, argv: list[str] | None = None) -> None:
-        path = shutil.which(name)
+        path = shutil.which(name, path=env.get("PATH"))
         if not path:
             missing[name] = "PATH 中未找到；环境维护流程可安装"
             return
         flags = {"java": "-version", "javap": "-version", "javac": "-version", "unzip": "-v"}
-        version = _probe_version(argv or [path, flags.get(name, "--version")])
+        # gef is an enhanced GDB entry point; --version would report GDB's
+        # version, not the installed extension's version.
+        version = "" if name == "gef" else _probe_version(argv or [path, flags.get(name, "--version")], env=env)
         tools[name] = f"{path}" + (f" ({version})" if version else " (版本未核实)")
 
     names: list[str] = list(settings.required_tools)
     names.extend(tool_names or [])
     names.extend(["java", "javac", "javap", "jar", "jimage", "node", "python3",
-                  "unzip", "zip", "strings", "rg", "gcc", "gdb"])
+                  "unzip", "zip", "strings", "rg", "gcc", "gdb",
+                  "checksec", "ROPgadget", "patchelf", "pwn-python", "gef"])
     for name in sorted(set(names)):
         record(name)
 
@@ -78,7 +84,7 @@ def discover_environment(settings: ExecutorSettings, *, workspace_bytes_used: in
     else:
         missing["shell"] = f"配置的 shell 不存在：{shell_path}"
     for name in settings.optional_interpreters:
-        path = shutil.which(name)
+        path = shutil.which(name, path=env.get("PATH"))
         if path:
             interpreters[name] = path
 
@@ -114,6 +120,8 @@ def discover_environment(settings: ExecutorSettings, *, workspace_bytes_used: in
             "任务依赖请在本会话工作区内创建 venv/本地依赖目录（例如 "
             "`python3 -m venv .venv && ./.venv/bin/pip install ...`）；"
             "系统级软件属于环境维护，不在任务内默认安装。"
+            "若环境清单列出 pwn-python，可直接用它运行 pwntools/pyelftools 脚本，"
+            "无需激活环境；默认 python3 保持原解释器。"
         ),
         "notes": [
             "发现过程不会自动安装任何软件。",

@@ -257,7 +257,7 @@ class JobWorker:
         env_extra = {
             str(key): str(value) for key, value in (self.spec.get("env") or {}).items()
         }
-        env = minimal_environment(env_extra)
+        env = minimal_environment(env_extra, builtin_commands_dir=self.data_root / "tools" / "bin")
         stdin_text = self.spec.get("stdin_text")
 
         self.store = ResourceOutputStore(

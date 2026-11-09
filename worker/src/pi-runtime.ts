@@ -72,6 +72,7 @@ export interface PiOptions {
   callHooks?: CallHooks; providerTransport?: Parameters<typeof realStream>[3];
   evidence?: EvidenceChannel;
   isCancellationRequested?: () => boolean;
+  onVisibleMessage?: (message: AgentMessage) => Promise<void>;
 }
 export function createPiWorker(objective: string, options: PiOptions = {}) {
   const observations: { source: 'mock_tool'; text: string }[] = [];
@@ -111,6 +112,11 @@ export function createPiWorker(objective: string, options: PiOptions = {}) {
   const historicalAssistantCount = (options.history ?? []).filter(m => m.role === 'assistant').length;
   // Token deltas and private content never enter durable task metadata.
   agent.subscribe(event => { if (event.type !== 'message_update' && events.length < 256) events.push(event.type); });
+  if (options.onVisibleMessage) agent.subscribe(async event => {
+    if (event.type !== 'message_end') return;
+    try { await options.onVisibleMessage!(event.message); }
+    catch (error) { console.error('Worker visible history write failed:', error instanceof Error ? error.name : 'unknown'); }
+  });
   return { agent, observations, events, metrics, evidenceReads: evidence?.reads ?? new Map(), outputRefs: remote?.outputRefs ?? new Map(),
     get outputRefsTruncated() { return remote?.outputRefsTruncated ?? false; },
     get executionUncertain() { return cleanupUncertain || remote?.uncertain === true; }, usage() {

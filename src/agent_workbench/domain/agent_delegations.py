@@ -11,7 +11,7 @@ from uuid import UUID, uuid5
 
 import httpx
 from a2a.types import Task, TaskState
-from a2a.utils.errors import A2AError
+from a2a.utils.errors import A2AError, InvalidParamsError, InvalidRequestError
 from google.protobuf.json_format import MessageToDict
 from pydantic import ValidationError
 from sqlalchemy import or_, select, true
@@ -152,7 +152,17 @@ class DelegationManager:
                 files = await input_delivery(delegation_id, payload["attachment_ids"])
                 if len(files) != len(payload["attachment_ids"]):
                     raise ValueError("附件交付回执数量不符")
-                payload = WorkerTaskPackage.model_validate({**payload, "input_files": files}).model_dump(mode="json")
+                if any(file.get("attachment_id") != identifier
+                       or file.get("worker_workspace_id") != str(delegation_id)
+                       or file.get("session_id") != str(self.session_id)
+                       or file.get("relative_path") !=
+                       f'inputs/attachments/{identifier}/{file.get("sha256")}/{file.get("filename")}'
+                       for identifier, file in zip(payload["attachment_ids"], files, strict=True)):
+                    raise ValueError("附件交付回执路径或工作区不匹配")
+                keys = ("attachment_id", "filename", "sha256", "byte_size", "worker_workspace_id",
+                        "relative_path", "session_id", "operation_id", "source")
+                payload = WorkerTaskPackage.model_validate({**payload, "input_files": [
+                    {key: file[key] for key in keys} for file in files]}).model_dump(mode="json")
             except (ApiError, RuntimeError, ValueError, OSError) as exc:
                 # A2A 尚未提交；失败不可伪装为 Worker 已获取文件。
                 async with self.db.transaction() as db:
@@ -178,6 +188,16 @@ class DelegationManager:
                 task = await client.submit(delegation_id, payload)
             return await self._project(delegation_id, task)
         except TRANSPORT_ERRORS as exc:
+            if isinstance(exc, (InvalidParamsError, InvalidRequestError)) or (
+                    isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {400, 422}):
+                async with self.db.transaction() as db:
+                    row = await db.get(AgentDelegationRow, delegation_id)
+                    assert row is not None
+                    if row.state == "submitting":
+                        row.state = "failed"
+                        row.diagnostic = f"submission_rejected:{type(exc).__name__}"
+                        row.summary = "A2A 拒绝任务包，Worker 未启动"
+                return await self.read(delegation_id)
             await self._unknown(delegation_id, f"submission_uncertain:{type(exc).__name__}")
             return await self.read(delegation_id)
 

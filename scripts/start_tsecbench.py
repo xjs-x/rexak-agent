@@ -32,6 +32,7 @@ from agent_workbench.tsecbench.launcher import (  # noqa: E402
     install_desktop_shortcut,
     last_profile_fields,
     save_profile,
+    select_challenge_codes,
     validate_inputs,
     wait_windows_vpn,
 )
@@ -132,7 +133,7 @@ class EvaluationWindow:
         scope = ttk.Combobox(
             arrange,
             textvariable=self.scope,
-            values=["单题", "全部未完成题目（串行）"],
+            values=["单题", "从所选题目开始（串行）"],
             state="readonly",
             width=26,
         )
@@ -327,18 +328,15 @@ class EvaluationWindow:
         if not self.rows:
             messagebox.showinfo("先检查准备情况", "请先完成“检查并读取题目”。", parent=self.root)
             return
-        if self.scope.get() == "单题":
-            index = self.challenge_box.current()
-            pending = [row for row in self.rows if not row.is_completed]
-            codes = [pending[index].unique_code] if 0 <= index < len(pending) else []
-        else:
-            codes = [row.unique_code for row in self.rows if not row.is_completed]
+        codes = select_challenge_codes(
+            self.rows, self.challenge_box.current(), serial=self.scope.get() != "单题"
+        )
         if not codes:
             messagebox.showinfo("没有待测题目", "请选择未完成的题目。", parent=self.root)
             return
         config = self.configuration()
         detail = (
-            f"平台：{config.base_url}\n范围：{len(codes)} 题，串行运行\n"
+            f"平台：{config.base_url}\n起始题目：{codes[0]}\n范围：{len(codes)} 题，串行运行\n"
             f"Agent：{config.execution_mode.value}\n单题等待上限：{config.max_seconds / 60:g} 分钟\n\n"
             "开始后将启动靶场并调用网页中配置的模型。确认开始？"
         )

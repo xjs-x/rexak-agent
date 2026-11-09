@@ -45,7 +45,9 @@ ENV_ALLOWLIST = (
 )
 
 
-def minimal_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+def minimal_environment(
+    extra: dict[str, str] | None = None, *, builtin_commands_dir: Path | None = None
+) -> dict[str, str]:
     """构造最小环境。**显式拒绝**继承管理类秘密。"""
     env = {name: os.environ[name] for name in ENV_ALLOWLIST if name in os.environ}
     env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -54,6 +56,13 @@ def minimal_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
     if extra:
         blocked = {"EXECUTOR_TOKEN", "WORKBENCH_ACCESS_TOKEN", "XIAOMI_API_KEY"}
         env.update({k: v for k, v in extra.items() if k not in blocked})
+    # Only the administrator-provisioned command directory is added, never a
+    # dependency venv. Append it so existing tools and interpreters keep priority.
+    if builtin_commands_dir is not None and builtin_commands_dir.is_dir():
+        directory = str(builtin_commands_dir.resolve())
+        entries = env.get("PATH", os.defpath).split(os.pathsep)
+        if directory not in entries:
+            env["PATH"] = os.pathsep.join([*entries, directory])
     return env
 
 
@@ -153,11 +162,13 @@ class ProcessSupervisor:
         boot_id: str,
         output_limit_bytes: int,
         terminate_grace_seconds: int = 10,
+        builtin_commands_dir: Path | None = None,
     ) -> None:
         self._jobs_root = jobs_root
         self._boot_id = boot_id
         self._output_limit = output_limit_bytes
         self._terminate_grace = terminate_grace_seconds
+        self._builtin_commands_dir = builtin_commands_dir
         self._handles: dict[str, ProcessHandle] = {}
 
     @property
@@ -191,7 +202,7 @@ class ProcessSupervisor:
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(cwd),
-            env=minimal_environment(env_extra),
+            env=minimal_environment(env_extra, builtin_commands_dir=self._builtin_commands_dir),
             stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
             stdout=stdout_handle,
             stderr=stderr_handle,

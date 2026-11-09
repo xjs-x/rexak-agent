@@ -2367,7 +2367,7 @@ async def get_model_settings(request: Request) -> dict[str, Any]:
         "default_model": preferences.default_model,
         "profiles": profiles,
         "price_catalog_version": catalog.version,
-        "effective_scope": "模型选择用于新阶段；当前阶段及暂停继续保留原模型。Key 在本机保存，新的运行阶段或暂停后继续会读取新 Key。",
+        "effective_scope": "主智能体与子智能体共用此模型设置和 Key，无需分别配置或重启。模型选择用于新阶段，其子智能体跟随该阶段模型；当前任务保留已绑定模型，暂停继续读取新 Key。",
     }
 
 

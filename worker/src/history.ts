@@ -8,6 +8,7 @@ function canonical(value: any): string {
   return JSON.stringify(value);
 }
 const digest = (messages: unknown) => createHash('sha256').update(canonical(messages)).digest('hex');
+export const visibleDigest = digest;
 export class HistoryUnavailable extends Error {}
 function checkJsonb(value: any): void {
   if (typeof value === 'string') {
@@ -30,6 +31,36 @@ function redact(value: any): any {
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) =>
     [key, /^(api[_-]?key|password|authorization|proxy-authorization|cookie|set-cookie|secret|access_token|refresh_token)$/i.test(key) ? '[REDACTED]' : redact(item)]));
   return value;
+}
+
+/** One stable visible Pi message; bounded independently of the resumable transcript. */
+export function visibleEvent(message: AgentMessage): { role: string; message: Record<string, unknown>; sha256: string } | undefined {
+  if (message.role === 'system') return undefined;
+  const m: any = message;
+  const jsonSafe = (value: any): any => {
+    if (typeof value === 'string') return value.replace(/\u0000/g, '[NUL]').replace(/[\uD800-\uDFFF]/g, '[invalid Unicode]');
+    if (Array.isArray(value)) return value.map(jsonSafe);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [jsonSafe(key), jsonSafe(item)]));
+    return value;
+  };
+  const bounded = (value: any): any => {
+    const safe = jsonSafe(redact(value));
+    const encoded = JSON.stringify(safe);
+    return Buffer.byteLength(encoded) <= 8192 ? safe : { truncated: true, preview: Array.from(encoded).slice(0, 3000).join('') };
+  };
+  let projected: Record<string, unknown>;
+  if (m.role === 'user') projected = { content: bounded(m.content), timestamp: m.timestamp };
+  else if (m.role === 'assistant') projected = { content: (m.content ?? []).filter((p: any) => p.type === 'text' || p.type === 'toolCall').map((p: any) =>
+    p.type === 'text' ? { type: 'text', text: bounded(p.text) } : { type: 'toolCall', id: p.id, name: p.name, arguments: bounded(p.arguments) }),
+    stopReason: m.stopReason, timestamp: m.timestamp };
+  else if (m.role === 'toolResult') projected = { toolCallId: m.toolCallId, toolName: m.toolName,
+    content: bounded(m.content), isError: m.isError, timestamp: m.timestamp,
+    artifactRefs: bounded(m.details?.output_refs ?? m.details?.executor_artifact_ids ?? []) };
+  else return undefined;
+  if (Buffer.byteLength(JSON.stringify(projected)) > 16384) projected = { timestamp: m.timestamp,
+    truncated: true, preview: Array.from(JSON.stringify(projected)).slice(0, 8000).join('') };
+  checkJsonb(projected);
+  return { role: m.role, message: projected, sha256: digest(projected) };
 }
 
 /** Message-only projection: no tools, runtime state, opaque provider signatures or private thinking. */
