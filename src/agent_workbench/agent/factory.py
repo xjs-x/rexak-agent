@@ -213,6 +213,7 @@ def build_agent_middleware(
         *([HistoryAssistanceMiddleware(binding.profile)] if settings.history_assistance_mode != "off" else []),
         ModelObserverMiddleware(
             price_catalog,
+            profile=binding.profile,
             request_timeout_seconds=settings.model_request_max_seconds,
             idle_timeout_seconds=binding.request_timeout_seconds,
         ),

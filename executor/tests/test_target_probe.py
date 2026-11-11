@@ -69,3 +69,25 @@ def test_https_cross_host_mapping_is_reported_unsupported(
     )
     assert response.json()["status"] == "unsupported"
     assert response.json()["stage"] == "tls_sni"
+
+
+@pytest.mark.parametrize("connected", [True, False])
+def test_non_http_service_uses_tcp_evidence(client, auth_headers, monkeypatch, connected):
+    from unittest.mock import AsyncMock, Mock
+
+    import workbench_executor.api as api
+    from workbench_executor.http_sessions import HttpSessionRegistry
+
+    monkeypatch.setattr(HttpSessionRegistry, "request", AsyncMock(side_effect=ValueError("binary banner")))
+    writer = Mock()
+    writer.wait_closed = AsyncMock()
+    connect = AsyncMock(return_value=(Mock(), writer)) if connected else AsyncMock(side_effect=ConnectionRefusedError())
+    monkeypatch.setattr(api.asyncio, "open_connection", connect)
+    result = client.post("/target-probe", headers=auth_headers,
+                         json={"url": "http://127.0.0.1:8899/", "scope": SCOPE}).json()
+    assert result["status"] == ("reachable" if connected else "unreachable")
+    assert result["stage"] == "tcp"
+    assert result.get("http_status") is None
+    if connected:
+        writer.close.assert_called_once()
+        writer.write.assert_not_called()

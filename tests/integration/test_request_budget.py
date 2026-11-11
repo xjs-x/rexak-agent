@@ -465,6 +465,8 @@ async def test_late_response_after_swallowed_timeout_is_not_returned_or_archived
     database, unique_name
 ):
     context = await context_for(database, unique_name)
+    # This test exercises one physical request; automatic reconnect is tested separately.
+    context.toolbox.settings.model_auto_reconnect = False
 
     async def late():
         try:

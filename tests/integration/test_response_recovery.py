@@ -332,3 +332,38 @@ def test_recovery_feedback_is_short_and_observable() -> None:
     message = recovery_feedback(quality)
     assert "长度限制" in message and len(message) < 200
     assert json.dumps(message, ensure_ascii=False)
+
+
+async def test_connection_retry_inside_official_graph_does_not_duplicate_tools(database, unique_name, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import httpx2 as httpx
+    from openai import APIConnectionError
+
+    from agent_workbench.models import invocation
+
+    context = await context_for(database, unique_name)
+    context.toolbox.settings.model_auto_reconnect = True
+    monkeypatch.setattr(invocation, "_reconnect_pause", AsyncMock())
+    executed = []
+    @tool
+    def once(value: str) -> str:
+        """Record exactly one tool execution."""
+        executed.append(value)
+        return "ok"
+    class ReconnectingModel(ScriptedChatModel):
+        connection_failures: int = 4
+        def _generate(self, *args, **kwargs):
+            if self.connection_failures:
+                self.connection_failures -= 1
+                raise APIConnectionError(request=httpx.Request("POST", "https://example.invalid"))
+            return super()._generate(*args, **kwargs)
+    model = ReconnectingModel(responses=[tool_call("once", {"value": "one"}, "once-id"), final_text("finished")])
+    graph = create_agent(model=model, tools=[once], state_schema=AgentGraphState,
+        context_schema=RunContext, middleware=_middlewares(context, max_recoveries=0))
+    result = await graph.ainvoke(cast(Any, {"messages": [HumanMessage(content="test", id="u1")]}), context=context)
+    assert executed == ["one"] and result["messages"][-1].content == "finished"
+    calls = await _calls(database, context.toolbox.run_id)
+    assert len(calls) == 6
+    assert len({c.logical_call_id for c in calls[:5]}) == 1
+    assert all(c.usage_status == "unknown" for c in calls[:4])

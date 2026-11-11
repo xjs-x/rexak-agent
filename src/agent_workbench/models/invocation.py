@@ -56,6 +56,103 @@ async def invoke_attempt(
     idle_timeout_seconds: float | None = None,
     manifest: dict[str, Any] | None = None,
     require_recorded: bool = False,
+    prepare_attempt: Callable[[], None] | None = None,
+) -> Any:
+    """Retry transient model transport failures, with each attempt independently recorded.
+
+    This never replays a graph or a tool. Unknown provider usage remains unknown.
+    """
+    import random
+    from datetime import timedelta
+
+    from openai import APIConnectionError, APIStatusError
+
+    settings = getattr(scope.toolbox, "settings", None)
+    enabled = getattr(settings, "model_auto_reconnect", False)
+    initial = float(getattr(settings, "model_reconnect_initial_seconds", 2))
+    maximum = float(getattr(settings, "model_reconnect_max_seconds", 30))
+    failures = 0
+    while True:
+        # 在每次重连及请求审计之前刷新仅本次请求可见的运行时间。
+        if prepare_attempt is not None:
+            prepare_attempt()
+        try:
+            return await _invoke_attempt_once(
+                call, scope=scope, logical_id=logical_id, phase=phase, catalog=catalog,
+                request_timeout_seconds=request_timeout_seconds, idle_timeout_seconds=idle_timeout_seconds,
+                manifest=manifest, require_recorded=require_recorded or failures > 0,
+            )
+        except (APIConnectionError, APIStatusError, ModelRequestTimeout) as exc:
+            from agent_workbench.models.errors import content_rejection
+
+            if content_rejection(exc) is not None:
+                raise
+            status = getattr(exc, "status_code", None)
+            retryable = isinstance(exc, (APIConnectionError, ModelRequestTimeout)) or status in {408, 429, 500, 502, 503, 504}
+            if not enabled or not retryable:
+                raise
+            check = getattr(scope.toolbox, "assert_control_current", None)
+            if check is not None:
+                await check()
+            failures += 1
+            delay = min(maximum, initial * (2 ** min(failures - 1, 16))) * random.uniform(0.8, 1.0)
+            response = getattr(exc, "response", None)
+            retry_after = response.headers.get("retry-after") if response is not None else None
+            if retry_after:
+                import math
+                from email.utils import parsedate_to_datetime
+
+                try:
+                    server_delay = float(retry_after)
+                except ValueError:
+                    try:
+                        server_delay = (parsedate_to_datetime(retry_after) - datetime.now(UTC)).total_seconds()
+                    except (TypeError, ValueError, OverflowError):
+                        server_delay = 0
+                if math.isfinite(server_delay):
+                    delay = max(delay, server_delay)
+            chain = []
+            cause: BaseException | None = exc
+            while cause is not None and len(chain) < 6:
+                chain.append(type(cause).__name__)
+                cause = cause.__cause__
+            async with scope.toolbox.db.transaction() as db:
+                await append_event(
+                    db, session_id=scope.toolbox.session_id, run_id=scope.toolbox.run_id,
+                    event_type=EventType.RUN_STATUS,
+                    payload={"scope": "model_request", "phase": "retry_wait",
+                             "logical_call_id": str(logical_id), "attempt": failures,
+                             "error_code": type(exc).__name__, "error_chain": chain,
+                             "http_status": status, "delay_seconds": delay,
+                             "next_retry_at": (datetime.now(UTC) + timedelta(seconds=delay)).isoformat(),
+                             "note": "模型连接暂时中断，自动等待重连；旧请求用量可能未知，不重放工具。"},
+                )
+            await _reconnect_pause(scope.toolbox, delay)
+
+
+async def _reconnect_pause(toolbox: Any, delay: float) -> None:
+    deadline = asyncio.get_running_loop().time() + delay
+    while True:
+        check = getattr(toolbox, "assert_control_current", None)
+        if check is not None:
+            await check()
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(1, remaining))
+
+
+async def _invoke_attempt_once(
+    call: Callable[[], Awaitable[Any]],
+    *,
+    scope: InvocationScope,
+    logical_id: UUID,
+    phase: str,
+    catalog: PriceCatalog | None = None,
+    request_timeout_seconds: float | None = None,
+    idle_timeout_seconds: float | None = None,
+    manifest: dict[str, Any] | None = None,
+    require_recorded: bool = False,
 ) -> Any:
     """唯一网络尝试所有者；不透明重试，已交付流片段不拼接新输出。"""
     toolbox = scope.toolbox

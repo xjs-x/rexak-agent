@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
+from datetime import UTC, datetime
 from uuid import UUID
 
 from langchain.agents.middleware import AgentMiddleware
@@ -10,7 +12,8 @@ from langchain.agents.middleware import AgentMiddleware
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.middleware.response_recovery import recovery_scope
 from agent_workbench.agent.state import AgentGraphState
-from agent_workbench.config.catalog import PriceCatalog, default_price_catalog
+from agent_workbench.config.catalog import PriceCatalog, ProviderProfile, default_price_catalog
+from agent_workbench.models.context_budget import ensure_fits, estimate_request, message_inventory
 from agent_workbench.models.invocation import InvocationScope, ModelRequestTimeout, invoke_attempt
 
 
@@ -28,11 +31,15 @@ class ModelObserverMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         *,
         request_timeout_seconds: float | None = None,
         idle_timeout_seconds: float | None = None,
+        profile: ProviderProfile | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         super().__init__()
         self._catalog = price_catalog or default_price_catalog()
         self._request_timeout_seconds = request_timeout_seconds
         self._idle_timeout_seconds = idle_timeout_seconds
+        self._profile = profile
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     async def awrap_model_call(self, request, handler):
         context = getattr(request.runtime, "context", None)
@@ -54,16 +61,46 @@ class ModelObserverMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 message_count=len(request.messages),
                 system_prompt_digest=digest,
             )
+        outgoing = request
+        manifest = getattr(context.toolbox, "context_manifest", None)
+
+        def prepare_attempt() -> None:
+            nonlocal outgoing
+            if context.run_timing is None:
+                return
+            # 只从原始请求追加一条临时尾部消息；不进入 response/reducer/checkpoint。
+            timing = context.run_timing.message(self._clock())
+            messages = [*request.messages, timing]
+            outgoing = request.override(messages=messages)
+            budget = None
+            if self._profile is not None:
+                budget = estimate_request(
+                    messages, request.system_message, request.tools, self._profile,
+                    model=request.model, model_settings=request.model_settings,
+                    tool_choice=request.tool_choice,
+                )
+                ensure_fits(budget)
+            if manifest is not None:
+                manifest.update(run_time=str(timing.content), selected_messages=message_inventory(messages),
+                                message_count=len(messages))
+                if budget is not None:
+                    manifest.update(
+                        budget=budget.to_dict(), estimated_tokens=budget.components,
+                        total_estimated_tokens=budget.estimated_input_tokens,
+                        token_estimation_method=budget.estimation_method,
+                    )
+
         return await invoke_attempt(
-            lambda: handler(request),
+            lambda: handler(outgoing),
             scope=InvocationScope(context.toolbox, context.model_stream),
             logical_id=logical_id,
             phase="agent",
             catalog=self._catalog,
             request_timeout_seconds=self._request_timeout_seconds,
             idle_timeout_seconds=self._idle_timeout_seconds,
-            manifest=getattr(context.toolbox, "context_manifest", None),
+            manifest=manifest,
             require_recorded=scope is not None,
+            prepare_attempt=prepare_attempt,
         )
 
 

@@ -713,6 +713,33 @@ async def target_probe(request: TargetProbeRequest) -> dict[str, Any]:
             "reason": f"{type(exc).__name__}: {exc}",
         }
 
+    async def tcp_fallback(http_error: Exception) -> dict[str, Any]:
+        # A protocol mismatch is not a routing failure. Connect only to the
+        # already-authorized endpoint; send no application data.
+        try:
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)),
+                timeout=5,
+            )
+        except (OSError, TimeoutError) as exc:
+            return {
+                "status": "unreachable", "stage": "tcp", "actual_url": mapped,
+                "dns_addresses": resolved,
+                "reason": f"{type(exc).__name__}: {exc}",
+                "http_error": f"{type(http_error).__name__}: {http_error}",
+            }
+        writer.close()
+        # A peer reset during close does not invalidate an established connection.
+        with contextlib.suppress(OSError, TimeoutError):
+            await asyncio.wait_for(writer.wait_closed(), timeout=2)
+        return {
+            "status": "reachable", "stage": "tcp", "actual_url": mapped,
+            "dns_addresses": resolved, "http_status": None, "tls_verified": False,
+            "proxy_inherited": False,
+            "reason": "TCP 连接成功；HTTP/TLS 未验证，目标可能使用二进制协议。",
+            "http_error": f"{type(http_error).__name__}: {http_error}",
+        }
+
     registry = HttpSessionRegistry(policy, use_system_proxy=False)
     try:
         response = await registry.request(
@@ -723,13 +750,7 @@ async def target_probe(request: TargetProbeRequest) -> dict[str, Any]:
             max_body_bytes=0,
         )
     except Exception as exc:
-        return {
-            "status": "unreachable",
-            "stage": "tls_or_http",
-            "actual_url": mapped,
-            "dns_addresses": resolved,
-            "reason": f"{type(exc).__name__}: {exc}",
-        }
+        return await tcp_fallback(exc)
     finally:
         await registry.close()
     return {

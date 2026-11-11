@@ -49,6 +49,13 @@ const EVENT_TYPES = [
   "stream.resync_required",
 ];
 
+/** 宿主注入的上下文投影只供模型阅读，不是模型正文；不进入对话气泡。 */
+function isHostProjectionDelta(event: AgentEvent): boolean {
+  if (event.type !== "message.delta") return false;
+  const payload = event.payload as Record<string, unknown>;
+  return /^host_(context_update|history_reference):/.test(String(payload.response_id ?? ""));
+}
+
 export type ConnectionState = "connecting" | "online" | "offline";
 export type ExecutorState = "unknown" | "checking" | "online" | "offline";
 
@@ -319,6 +326,7 @@ export function useWorkbench(): WorkbenchApi {
     if (!phase || phase === "finished") return null;
     return {
       waiting: "等待模型响应",
+      retry_wait: "模型连接暂时中断，正在自动等待重连",
       thinking: "模型正在思考",
       responding: "模型正在生成回复或工具调用",
     }[phase] ?? "模型请求进行中";
@@ -576,6 +584,7 @@ export function useWorkbench(): WorkbenchApi {
         const current = latestRun(snap);
         const deltas = eventPage.events
           .filter((event) => event.type === "message.delta")
+          .filter((event) => !isHostProjectionDelta(event))
           .filter((event) => event.run_id === current?.id && current?.status === "running");
         const responseId = String((deltas.at(-1)?.payload as Record<string, unknown> | undefined)?.response_id ?? "");
         const latest = responseId
@@ -612,6 +621,7 @@ export function useWorkbench(): WorkbenchApi {
             lastSeq = event.session_seq;
             lastEventAt = Date.now();
             guard(() => setEvents((previous) => mergeEvents(previous, [event])));
+            if (isHostProjectionDelta(event)) return;
             if (event.type === "message.delta") {
               const payload = event.payload as Record<string, unknown>;
               const delta = String(payload.delta ?? "");

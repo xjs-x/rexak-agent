@@ -288,11 +288,28 @@ async def dispatch_operation(
         )
         return None, uncertain_result(operation_id, "执行岛返回了不符合协议的数据", details=str(exc))
     except ExecutorConnectionError as exc:
+        await _record_outcome(
+            toolbox, operation_id=operation_id, status=str(OperationStatus.UNKNOWN),
+            job_id=None, resource_id=None,
+        )
         return None, uncertain_result(
             operation_id,
             "执行岛不可达，无法确认操作是否已受理；不要直接重复提交",
             details=str(exc),
         )
+    # Synchronous control actions (cancel/terminal input/close) have no Job.
+    # Persist their own receipt here, rather than depending on resource polling
+    # or each caller remembering to settle the operation.
+    status = str(receipt.get("status") or "unknown")
+    if (str(receipt.get("operation_id")) != str(operation_id)
+            or status not in {"accepted", "running", "succeeded", "failed", "cancelled", "unknown"}):
+        await _record_outcome(
+            toolbox, operation_id=operation_id, status=str(OperationStatus.UNKNOWN),
+            job_id=None, resource_id=None,
+        )
+        return None, uncertain_result(operation_id, "执行回执身份或状态无效，保留原操作等待核对")
+    async with toolbox.db.transaction() as db:
+        await ToolOperationRepository(db).mark_result(operation_id, status=status)
     return receipt, None
 
 

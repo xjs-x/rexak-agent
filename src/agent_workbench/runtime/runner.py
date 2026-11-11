@@ -43,6 +43,7 @@ from agent_workbench.domain.run_state import (
     release_run,
     set_run_status,
 )
+from agent_workbench.domain.run_timing import load_run_timing
 from agent_workbench.domain.scope import ScopePolicy
 from agent_workbench.evidence.artifacts import (
     build_artifact_store,
@@ -436,6 +437,12 @@ class AgentRunner:
                         # 先评估执行事件与等待条件，再决定是否唤醒等待中的 run。
                         if execution_cycle_enabled:
                             await execution_cycle(self._db, settings=self._settings)
+                        else:
+                            from agent_workbench.runtime.execution_events import (
+                                targeted_execution_cycle,
+                            )
+
+                            await targeted_execution_cycle(self._db, settings=self._settings, run_id=only_run_id)
                         wake = await probe_and_wake(
                             self._db,
                             settings=self._settings,
@@ -739,9 +746,12 @@ class AgentRunner:
             interactive_threshold_seconds=float(settings.tool_interactive_threshold_seconds),
             control_check=self._assert_dispatch_allowed,
         )
+        async with self._db.session() as db:
+            run_timing = await load_run_timing(db, run)
         context = RunContext(
             toolbox=toolbox,
             thread_id=session_row.thread_id,
+            run_timing=run_timing,
             disabled_tools=selection.disabled_tools(),
         )
 
@@ -1514,6 +1524,13 @@ class AgentRunner:
             return None, None
         # Project committed END before waiting on execution certainty; recovery reuses it.
         await self._archive_final_response(run, message)
+        from agent_workbench.runtime.jobs import (
+            settle_checkpoint_cancellations,
+            settle_open_terminal_operations,
+        )
+
+        await settle_checkpoint_cancellations(self._db, run.id, messages)
+        await settle_open_terminal_operations(self._db, run.id)
         pending, wait_sets = await run_has_pending_work(self._db, run.id)
         async with self._db.session() as db:
             unsettled = (

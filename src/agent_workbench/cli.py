@@ -108,7 +108,7 @@ def serve_runner(
         bool,
         typer.Option(
             "--skip-execution-cycle",
-            help="只推进 --only-run-id 指定的 run，不做全局执行事件巡检（评测隔离用）",
+            help="只推进 --only-run-id 指定的 run，只核对本题资源和等待条件，不做全局执行事件巡检（评测隔离用）",
         ),
     ] = False,
 ) -> None:
@@ -116,7 +116,7 @@ def serve_runner(
 
     `--only-run-id` 用于**定向驱动**：当数据库里还堆着其它 queued run 时，
     调试/演练需要确定性地只处理目标 run，而不是被前面的 run 拖住。
-    `--skip-execution-cycle` 进一步关闭全局执行事件巡检，只保留本题的作业唤醒，
+    `--skip-execution-cycle` 进一步关闭全局执行事件巡检，只保留本题的资源、等待条件核对与作业唤醒，
     供评测适配器按需拉起专用 Runner 使用；默认关闭，不影响常规运行。
     """
     if skip_execution_cycle and not only_run_id:

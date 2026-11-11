@@ -34,6 +34,13 @@ async def sync_resource_operation(session: AsyncSession, resource: ExecutionReso
     ).scalar_one_or_none()
     if operation is None:
         return
+    # Opening an interactive terminal completes when the terminal exists.
+    # Its process lifetime belongs to the resource, not the shell_open operation.
+    if resource.kind == "terminal" and operation.tool_name == "shell_open":
+        if resource.state in {"running", "exited", "closed"}:
+            operation.status = "succeeded"
+            operation.updated_at = datetime.now(UTC)
+        return
     terminal = resource.state in {"exited", "closed"}
     if operation.status in {"succeeded", "failed", "cancelled"} and not terminal:
         return

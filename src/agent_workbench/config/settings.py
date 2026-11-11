@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     recovery_output_limit_tokens: int | None = Field(default=None, gt=0)
     #: 单次逻辑模型决策允许的自动恢复次数（初次请求之外），不是任务尝试总数限制。
     max_response_recoveries: int = Field(default=2, ge=0, le=8)
+    model_auto_reconnect: bool = True
+    model_reconnect_initial_seconds: float = Field(default=2, gt=0, le=60)
+    model_reconnect_max_seconds: float = Field(default=30, gt=0, le=300)
     tool_max_concurrent: int = 4
     origin_max_concurrent: int = 2
     browser_write_max_concurrent: int = 1

@@ -339,3 +339,60 @@ async def test_unknown_final_checkpoint_reconnect_and_conversation_read(database
             )
             assert report.status_code == 200, report.text
             assert answer in report.text
+
+
+@pytest.mark.parametrize("fault", [None, "unknown", "wrong_operation", "model_text"])
+async def test_final_end_repairs_only_bound_confirmed_cancel_receipt(database, unique_name, fault):
+    import json
+    run, task, _ = await setup_run(database, unique_name)
+    async with database.transaction() as db:
+        op = await OperationRegistry(db).prepare(
+            run_id=run.id, session_id=task.id, tool_call_id="cancel-receipt",
+            tool_name="cancel_job", arguments={}, effect_class=ToolEffectClass.SIDE_EFFECTING,
+            policy_revision=1, scope_revision=1,
+        )
+        opid = op.operation_id
+    body = json.dumps({"status": "succeeded", "data": {
+        "operation_id": str(uuid4() if fault == "wrong_operation" else opid),
+        "action": "cancel_resource", "status": "unknown" if fault == "unknown" else "succeeded",
+        "process_confirmed_exited": fault != "unknown",
+    }})
+    message = (AIMessage(content=body) if fault == "model_text" else
+               ToolMessage(content=body, tool_call_id="cancel-receipt"))
+    runtime = runtime_for(run, messages=[
+        AIMessage(content="", tool_calls=[{"id": "cancel-receipt", "name": "cancel_job", "args": {}}]),
+        message, AIMessage(content="已完成", id="final"),
+    ])
+    if fault == "model_text":
+        # A forged model receipt cannot settle an operation even in isolation.
+        from agent_workbench.runtime.jobs import settle_checkpoint_cancellations
+        assert await settle_checkpoint_cancellations(database, run.id, [message]) == 0
+    else:
+        state, _ = await AgentRunner(database=database, owner="natural")._resolve_after_segment(
+            runtime, run, task, SpanRecorder())
+        assert state == (RunStatus.COMPLETED if fault is None else RunStatus.RECOVERING)
+
+
+@pytest.mark.parametrize("resource_state", ["running", "closed", "unknown", "starting"])
+async def test_open_terminal_operation_is_independent_of_process_lifetime(database, unique_name, resource_state):
+    from agent_workbench.persistence.tables import ToolOperationRow
+
+    run, task, _ = await setup_run(database, unique_name)
+    async with database.transaction() as db:
+        op = await OperationRegistry(db).prepare(
+            run_id=run.id, session_id=task.id, tool_call_id="open-terminal",
+            tool_name="shell_open", arguments={}, effect_class=ToolEffectClass.SIDE_EFFECTING,
+            policy_revision=1, scope_revision=1,
+        )
+        opid = op.operation_id
+        await ExecutionResourceRepository(db).upsert(
+            resource_id=uuid4(), session_id=task.id, executor_id="fixture", kind="terminal",
+            state=resource_state, origin_run_id=run.id, origin_operation_id=opid,
+        )
+    state, _ = await AgentRunner(database=database, owner="natural")._resolve_after_segment(
+        runtime_for(run), run, task, SpanRecorder())
+    expected = RunStatus.COMPLETED if resource_state in {"running", "closed"} else RunStatus.RECOVERING
+    assert state == expected
+    async with database.session() as db:
+        row = await db.get(ToolOperationRow, opid)
+        assert row.status == ("succeeded" if expected == RunStatus.COMPLETED else "accepted")

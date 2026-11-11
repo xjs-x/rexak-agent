@@ -38,6 +38,12 @@ type TimelineItem =
   | { kind: "message"; entry: ConversationEntry }
   | { kind: "tools"; items: ToolActivityItem[] };
 
+/** 裁掉思考后没有可见正文、也没有更多内容的轮次不占位，避免时间线出现空档。 */
+function isInvisibleEntry(entry: ConversationEntry): boolean {
+  if (entry.role === "user") return false;
+  return !entry.has_more && !assistantDisplayText(entry.preview).trim();
+}
+
 function buildTimeline(conversation: ConversationEntry[], tools: ToolActivityItem[]): TimelineItem[] {
   const ordered = [
     ...conversation.map((entry) => ({ kind: "message" as const, at: entry.occurred_at, entry })),
@@ -46,6 +52,7 @@ function buildTimeline(conversation: ConversationEntry[], tools: ToolActivityIte
   const timeline: TimelineItem[] = [];
   for (const item of ordered) {
     if (item.kind === "message") {
+      if (isInvisibleEntry(item.entry)) continue;
       timeline.push({ kind: "message", entry: item.entry });
       continue;
     }
@@ -106,8 +113,10 @@ export function Composer({
   const [value, setValue] = useState("");
   const [menu, setMenu] = useState(false);
   const [modelMenu, setModelMenu] = useState(false);
+  const [modelMenuRight, setModelMenuRight] = useState(0);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const modelButton = useRef<HTMLButtonElement>(null);
   const queue = useAttachments(sessionId, onPrepareAttachments, attachmentsEnabled, executionMode);
   const submitting = useRef(false);
   const pendingMessage = useRef<{ signature: string; key: string } | null>(null);
@@ -169,6 +178,28 @@ export function Composer({
     </button>
   );
 
+  // 面板对齐模型胶囊：按其实际位置计算，窗口缩放或模型名长短变化都不会跑偏。
+  const toggleModelMenu = () => {
+    setMenu(false);
+    if (modelMenu) {
+      setModelMenu(false);
+      return;
+    }
+    const button = modelButton.current;
+    const composer = button?.closest(".composer");
+    if (button && composer instanceof HTMLElement) {
+      const composerRect = composer.getBoundingClientRect();
+      const buttonRect = button.getBoundingClientRect();
+      const width = Math.min(280, composerRect.width - 16);
+      const center = buttonRect.left + buttonRect.width / 2 - composerRect.left;
+      const desired = composerRect.width - (center + width / 2);
+      // 允许越过输入框右缘，但不能超出视口；否则退回输入框内。
+      const maxOverflow = Math.max(0, window.innerWidth - 8 - composerRect.right);
+      setModelMenuRight(Math.max(-maxOverflow, desired));
+    }
+    setModelMenu(true);
+  };
+
   return (
     <form
       className="composer"
@@ -184,8 +215,13 @@ export function Composer({
       }}
     >
       {modelMenu && (
-        <div className="model-menu" onMouseLeave={() => setModelMenu(false)}>
+        <div
+          className="model-menu"
+          style={{ right: modelMenuRight }}
+          onMouseLeave={() => setModelMenu(false)}
+        >
           <div className="mm-head">选择模型</div>
+          <div className="mm-group">默认</div>
           {modelLocked ? (
             <div className="mm-lock">
               <Icon name="lock" size="sm" />
@@ -194,7 +230,6 @@ export function Composer({
           ) : (
             <div className="mm-hint">模型用于新阶段；暂停后继续沿用原模型。</div>
           )}
-          <div className="mm-group">默认</div>
           {models.filter((model) => model.isDefault).map(renderModel)}
           <div className="mm-group">全部模型</div>
           {models.filter((model) => !model.isDefault).map(renderModel)}
@@ -280,11 +315,9 @@ export function Composer({
         <span className="spacer" />
         <button
           type="button"
+          ref={modelButton}
           className={`model-chip${modelLocked ? " locked" : ""}`}
-          onClick={() => {
-            setMenu(false);
-            setModelMenu((open) => !open);
-          }}
+          onClick={toggleModelMenu}
           title={modelLocked ? "当前运行阶段固定模型" : "切换模型"}
         >
           {modelLocked && <Icon name="lock" size="sm" />}
@@ -409,6 +442,18 @@ function ActivityGroup({
   ]
     .filter(Boolean)
     .join(" · ");
+  const finished = items.filter((item) => item.finished_at).length;
+  const running = items.some((item) =>
+    ["preparing", "accepted", "received", "starting", "running"].includes(item.status),
+  );
+  const elapsed = running
+    ? ""
+    : durationLabel(items[0]?.started_at, items.at(-1)?.finished_at);
+  const timing = running
+    ? `进行中 · ${finished}/${items.length}`
+    : elapsed
+      ? `用时 ${elapsed}`
+      : "";
 
   const openDetail = async (item: ToolActivityItem) => {
     const key = `${item.run_id}:${item.tool_call_id}`;
@@ -428,13 +473,14 @@ function ActivityGroup({
 
   return (
     <div className={`activity ${open ? "open" : ""}`}>
-      <button className="activity-summary" onClick={() => setOpen((current) => !current)}>
-        <Icon name="pencil" size="sm" />
-        <span>{summary || `工具操作 · ${items.length} 项`}</span>
+      <button className="activity-summary" title={summary} onClick={() => setOpen((current) => !current)}>
+        <Icon name="activity" size="sm" />
+        <span>执行了 {items.length} 步</span>
+        {timing && <span className="activity-time">{timing}</span>}
         <Icon name="chev-d" size="sm" className="chev" />
       </button>
       <div className="op-wrap">
-        <div className="op-list">
+        <div className="op-list timeline">
           {items.map((item) => {
             const key = `${item.run_id}:${item.tool_call_id}`;
             const kind = classifyTool(item.tool_name);

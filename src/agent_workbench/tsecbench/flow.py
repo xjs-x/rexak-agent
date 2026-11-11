@@ -214,9 +214,9 @@ class SingleChallengeFlow:
                 probes = await self._probe(urls, executor_scope_payload(scope))
                 if not any(item.reachable for item in probes):
                     raise FlowError(
-                        "从 Kali 执行岛访问授权地址的 HTTP/HTTPS 探针全部失败。"
-                        "常见原因：Kali 未连接评测 VPN、VMware NAT 未放通，或目标只提供"
-                        "非 HTTP 服务/自签名 TLS。请先运行 `workbench tsec net check --target "
+                        "从 Kali 执行岛访问授权地址的 HTTP/HTTPS 及 TCP 连通性探针未通过。"
+                        "常见原因：Kali 未连接评测 VPN、VMware NAT 未放通，或目标服务尚未就绪。"
+                        "请先运行 `workbench tsec net check --target "
                         f"{targets[0].origin}` 核对；确认属 TLS 或非 HTTP 后可用 "
                         "--skip-reachability 跳过本预检。"
                     )

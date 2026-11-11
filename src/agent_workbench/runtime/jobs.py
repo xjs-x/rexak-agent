@@ -511,14 +511,16 @@ async def _wake_run(
 
         # 幂等键按 (run, 摘要) 生成：重复巡检不会给模型塞第二份同样的通知
         digest = hashlib.sha256(f"{run_id}|{summary}".encode()).hexdigest()[:32]
-        await CommandRepository(session).submit(
-            session_id=run.session_id,
-            run_id=run_id,
-            kind=CommandKind.MESSAGE,
-            content=wakeup_message(summary, requires_revalidation=requires_revalidation),
-            idempotency_key=f"job-wakeup-{digest}",
-            payload={"source": "job_wakeup", "reason": "jobs_reached_terminal"},
-        )
+        reuse_final = bool((run.config_snapshot or {}).get("completion_result_artifact_id")) and not requires_revalidation
+        if not reuse_final:
+            await CommandRepository(session).submit(
+                session_id=run.session_id,
+                run_id=run_id,
+                kind=CommandKind.MESSAGE,
+                content=wakeup_message(summary, requires_revalidation=requires_revalidation),
+                idempotency_key=f"job-wakeup-{digest}",
+                payload={"source": "job_wakeup", "reason": "jobs_reached_terminal"},
+            )
         await set_run_status(session, run_id=run_id, target=RunStatus.QUEUED)
         await append_event(
             session,
@@ -544,7 +546,8 @@ async def _wake_run(
                 "summary": summary,
                 "stale_job_ids": stale_job_ids,
                 "version_unknown_job_ids": version_unknown_job_ids,
-                "injected_message": True,
+                "injected_message": not reuse_final,
+                "reuse_committed_final": reuse_final,
             },
         )
     return True
@@ -597,3 +600,59 @@ def is_unresolved(state: str) -> bool:
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+async def settle_checkpoint_cancellations(db: Database, run_id: UUID, messages: list[Any]) -> int:
+    """Repair omitted control projections from committed tool receipts, never model text.
+
+    A cancel action has no Job to poll. Its own confirmed receipt, bound to the
+    same operation and ToolCall, is the completion evidence, not the target result.
+    """
+    import json
+
+    from langchain_core.messages import ToolMessage
+
+    receipts: dict[str, dict[str, Any]] = {}
+    for message in messages:
+        if not isinstance(message, ToolMessage) or not isinstance(message.content, str):
+            continue
+        try:
+            result = json.loads(message.content)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(result, dict) or result.get("status") != "succeeded":
+            continue
+        receipt = result.get("data")
+        if (not isinstance(receipt, dict) or receipt.get("status") != "succeeded"
+                or receipt.get("action") not in {"cancel_resource", "terminal_close"}
+                or receipt.get("process_confirmed_exited") is not True):
+            continue
+        receipts[message.tool_call_id] = receipt
+    changed = 0
+    async with db.transaction() as session:
+        rows = (await session.execute(select(ToolOperationRow).where(
+            ToolOperationRow.run_id == run_id,
+            ToolOperationRow.tool_name == "cancel_job",
+            ToolOperationRow.job_id.is_(None),
+            ToolOperationRow.status.in_(["accepted", "running", "unknown"]),
+        ).with_for_update())).scalars().all()
+        for row in rows:
+            receipt = receipts.get(row.tool_call_id)
+            if receipt is not None and receipt.get("operation_id") == str(row.operation_id):
+                row.status = "succeeded"
+                changed += 1
+    return changed
+
+
+async def settle_open_terminal_operations(db: Database, run_id: UUID) -> None:
+    """Reconcile opening-operation completion without closing retained terminals."""
+    from agent_workbench.persistence.execution_projection import sync_resource_operation
+
+    async with db.transaction() as session:
+        resources = (await session.execute(select(ExecutionResourceRow).where(
+            ExecutionResourceRow.origin_run_id == run_id,
+            ExecutionResourceRow.kind == "terminal",
+            ExecutionResourceRow.sync_status == "in_sync",
+        ))).scalars().all()
+        for resource in resources:
+            await sync_resource_operation(session, resource)

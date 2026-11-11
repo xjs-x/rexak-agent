@@ -142,6 +142,10 @@ async def _attempts_used(context: RunContext, logical_id: UUID) -> int:
                             ModelCallRow.logical_call_id == logical_id,
                             ModelCallRow.run_id == context.toolbox.run_id,
                             ModelCallRow.phase == "agent",
+                            (ModelCallRow.error_code.is_(None)) | ModelCallRow.error_code.not_in([
+                                "OpenAIConnectionError", "APIConnectionError", "APITimeoutError",
+                                "ModelRequestTimeout", "RateLimitError", "InternalServerError",
+                            ]),
                         )
                     )
                 ).scalar_one()

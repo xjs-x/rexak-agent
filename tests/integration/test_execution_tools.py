@@ -231,3 +231,58 @@ async def test_identity_fields_cannot_be_injected_through_arguments(database, un
         assert envelope["session_id"] == str(task_id)
         assert envelope["dispatch_control_version"] == 7
         assert executor.control_syncs[0]["run_id"] == str(run_id)
+
+
+@pytest.mark.parametrize("receipt_status", ["succeeded", "unknown"])
+async def test_control_receipt_settles_operation_without_job(database, unique_name, receipt_status):
+    from unittest.mock import AsyncMock
+
+    from agent_workbench.tools.execution_dispatch import (
+        dispatch_operation,
+        prepare_execution_operation,
+    )
+
+    with TestClient(create_app()) as client:
+        sid, rid, _ = create_task(client, unique_name)
+    executor = FakeExecutor()
+    toolbox = fake_toolbox(database, sid, executor, run_id=rid)
+    op, _, _ = await prepare_execution_operation(
+        toolbox, tool_call_id="cancel-no-job", tool_name="cancel_job",
+        action="cancel_resource", arguments={"resource_id": str(uuid4())},
+    )
+    executor.execution_submit = AsyncMock(return_value={
+        "operation_id": str(op), "status": receipt_status,
+        "action": "cancel_resource", "process_confirmed_exited": receipt_status == "succeeded",
+    })
+    receipt, error = await dispatch_operation(toolbox, op, {})
+    assert error is None and receipt is not None
+    async with database.session() as db:
+        row = await ToolOperationRepository(db).get(op)
+        assert row is not None
+        assert row.status == receipt_status
+        assert row.job_id is None
+
+
+async def test_control_receipt_wrong_identity_stays_unknown(database, unique_name):
+    from unittest.mock import AsyncMock
+
+    from agent_workbench.tools.execution_dispatch import (
+        dispatch_operation,
+        prepare_execution_operation,
+    )
+
+    with TestClient(create_app()) as client:
+        sid, rid, _ = create_task(client, unique_name)
+    executor = FakeExecutor()
+    toolbox = fake_toolbox(database, sid, executor, run_id=rid)
+    op, _, _ = await prepare_execution_operation(
+        toolbox, tool_call_id="invalid-cancel", tool_name="cancel_job",
+        action="cancel_resource", arguments={"resource_id": str(uuid4())},
+    )
+    executor.execution_submit = AsyncMock(return_value={"operation_id": str(uuid4()), "status": "succeeded"})
+    receipt, error = await dispatch_operation(toolbox, op, {})
+    assert receipt is None and error is not None and error.status == OperationStatus.UNKNOWN
+    async with database.session() as db:
+        row = await ToolOperationRepository(db).get(op)
+        assert row is not None
+        assert row.status == "unknown"

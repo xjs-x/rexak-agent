@@ -130,13 +130,30 @@ async def sessions_with_execution_activity(db: Database) -> list[UUID]:
     return sorted(session_ids, key=str)
 
 
-async def pull_events(db: Database, *, settings: Settings, client: Any) -> dict[str, Any]:
+async def pull_events(db: Database, *, settings: Settings, client: Any, run_id: UUID | None = None) -> dict[str, Any]:
     """拉取远端持久事件到控制端投影。游标只在同批落库成功后推进。"""
     result: dict[str, Any] = {"pulled": 0, "created": 0, "notes": []}
     async with db.session() as session:
-        cursor = await ExecutionEventCursorRepository(session).get(settings.executor_id)
+        cursor_key = settings.executor_id if run_id is None else f"targeted:{run_id}"
+        cursor = await ExecutionEventCursorRepository(session).get(cursor_key)
+        allowed_resources: set[str] = set()
+        allowed_operations: set[str] = set()
+        selected_session = None
+        if run_id is not None:
+            run = await session.get(RunRow, run_id)
+            if run is None:
+                return result
+            selected_session = run.session_id
+            allowed_resources.update(str(x) for x in (await session.execute(
+                select(ExecutionResourceRow.resource_id).where(ExecutionResourceRow.origin_run_id == run_id)
+            )).scalars())
+            for wait in (await session.execute(select(ExecutionWaitSetRow).where(ExecutionWaitSetRow.run_id == run_id))).scalars():
+                allowed_resources.update(wait.resource_ids or [])
+            allowed_operations.update(str(x) for x in (await session.execute(
+                select(ToolOperationRow.operation_id).where(ToolOperationRow.run_id == run_id)
+            )).scalars())
     try:
-        page = await client.execution_events(after=cursor, limit=EVENT_FETCH_LIMIT)
+        page = await client.execution_events(after=cursor, limit=1000 if run_id is not None else EVENT_FETCH_LIMIT)
     except (ExecutorConnectionError, ExecutorProtocolError) as exc:
         result["notes"].append(f"读取执行事件失败（保持现有游标）：{type(exc).__name__}")
         return result
@@ -148,6 +165,13 @@ async def pull_events(db: Database, *, settings: Settings, client: Any) -> dict[
             max_seq = cursor
             for item in events:
                 session_id = _session_uuid(item.get("session_id"))
+                max_seq = max(max_seq, int(item.get("seq") or 0))
+                if run_id is not None and (session_id != selected_session or not (
+                    item.get("resource_id") in allowed_resources
+                    or item.get("operation_id") in allowed_operations
+                    or (not item.get("resource_id") and not item.get("operation_id"))
+                )):
+                    continue
                 _row, is_new = await receipts.insert_if_new(
                     executor_id=str(item.get("executor_id") or settings.executor_id),
                     event_id=str(item.get("event_id")),
@@ -163,18 +187,20 @@ async def pull_events(db: Database, *, settings: Settings, client: Any) -> dict[
                 created += 1 if is_new else 0
                 max_seq = max(max_seq, int(item.get("seq") or 0))
             # 同一事务内推进游标：不会越过未提交数据。
-            await ExecutionEventCursorRepository(session).put(settings.executor_id, max_seq)
+            await ExecutionEventCursorRepository(session).put(cursor_key, max_seq)
         result["pulled"] = len(events)
         result["created"] = created
+    result["has_more"] = bool(page.get("has_more"))
     return result
 
 
-async def refresh_resources(db: Database, *, settings: Settings, client: Any) -> None:
+async def refresh_resources(db: Database, *, settings: Settings, client: Any, run_ids: list[UUID] | None = None) -> None:
     """核对控制端已知活跃资源；事件接收本身不能替代状态同步。"""
     async with db.session() as session:
-        rows = (await session.execute(select(ExecutionResourceRow).where(
-            _needs_resource_refresh()
-        ).limit(1000))).scalars().all()
+        stmt = select(ExecutionResourceRow).where(_needs_resource_refresh())
+        if run_ids is not None:
+            stmt = stmt.where(ExecutionResourceRow.origin_run_id.in_(run_ids))
+        rows = (await session.execute(stmt.limit(1000))).scalars().all()
     for row in rows:
         try:
             view = await client.execution_resource(str(row.resource_id))
@@ -308,7 +334,7 @@ async def evaluate_wait_sets(
                             .where(
                                 ExecutionEventReceiptRow.session_id == wait_set.session_id,
                                 ExecutionEventReceiptRow.type.in_(list(wait_set.event_types)),
-                                ExecutionEventReceiptRow.received_at >= wait_set.created_at,
+                                ExecutionEventReceiptRow.occurred_at >= wait_set.created_at,
                                 *([ExecutionEventReceiptRow.resource_id.in_(
                                     list(wait_set.resource_ids)
                                 )] if wait_set.resource_ids else []),
@@ -810,3 +836,31 @@ def _parse_time(value: Any) -> datetime:
         except ValueError:
             pass
     return _utcnow()
+
+
+async def targeted_execution_cycle(db: Database, *, settings: Settings, run_id: UUID) -> dict[str, Any]:
+    """Refresh only this Run, including wait-sets; never advance the global event cursor."""
+    async with db.session() as session:
+        run = await session.get(RunRow, run_id)
+        if run is None or run.status not in {"queued", "running", "waiting_tool", "recovering"}:
+            return {"satisfied": [], "notes": []}
+        waits = (await session.execute(select(ExecutionWaitSetRow).where(
+            ExecutionWaitSetRow.run_id == run_id, ExecutionWaitSetRow.status.in_(["open", "satisfied"])
+        ))).scalars().all()
+    if not waits:
+        return {"satisfied": [], "notes": []}
+    tunnel = SshTunnel(settings)
+    client = HttpExecutorClient(tunnel, settings=settings, expected_executor_id=settings.executor_id)
+    try:
+        await client.start()
+        await refresh_resources(db, settings=settings, client=client, run_ids=[run_id])
+        if any(wait.event_types for wait in waits):
+            for _ in range(4):
+                page = await pull_events(db, settings=settings, client=client, run_id=run_id)
+                if not page.get("has_more"):
+                    break
+        return await evaluate_wait_sets(db, settings=settings, client=client, run_ids=[run_id])
+    except (TunnelUnavailable, ExecutorConnectionError, ExecutorProtocolError) as exc:
+        return {"satisfied": [], "notes": [f"当前任务等待条件核对失败：{type(exc).__name__}，保留等待，不重放操作。"]}
+    finally:
+        await _close(client, tunnel)

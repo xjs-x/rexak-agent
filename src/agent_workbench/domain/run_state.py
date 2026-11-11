@@ -244,6 +244,8 @@ async def set_run_status(
         row.completion_reason = str(completion_reason)
     if stop_reason is not None:
         row.stop_reason = stop_reason
+    elif target is RunStatus.RUNNING:
+        row.stop_reason = None
     if target in TERMINAL_RUN_STATUSES or target is RunStatus.PAUSED:
         # 终态与 paused 都释放所有权，避免后续误判"还在跑"
         row.owner = None

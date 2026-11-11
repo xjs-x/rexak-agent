@@ -42,3 +42,6 @@
 启动器不支持断点自动续跑；重开后重新读取平台进度，已完成题目跳过。
 
 本地模式接入与平台托管上榜不同，后者仍需单独准备托管镜像。
+
+
+模型连接临时中断时，公共 Python 模型调用层默认自动退避重连，网页显示“自动等待重连”，无需点击恢复。暂停/取消会停止重连。密钥无效、明确拒绝、数据库错误和未确认的工具执行结果不会按网络中断盲目重试。评测专用 Runner 仅核对当前题目的等待条件；最终回答和执行条件均满足后自动收尾。新配置可通过 WORKBENCH_MODEL_AUTO_RECONNECT、WORKBENCH_MODEL_RECONNECT_INITIAL_SECONDS、WORKBENCH_MODEL_RECONNECT_MAX_SECONDS 调整，默认开启、2秒起步、最大30秒退避（服务端 Retry-After 可要求更久）。
