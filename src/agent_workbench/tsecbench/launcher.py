@@ -150,6 +150,9 @@ def save_profile(
     root: Path | None = None,
 ) -> BenchmarkConfig:
     """Each save creates a new private profile; previous credentials are preserved."""
+    from agent_workbench.contracts.delegation import require_ultra_mode
+
+    require_ultra_mode(mode)
     raw = validate_vpn(vpn) if vpn else None
     folder = (root or private_home() / "profiles") / (
         datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:10]

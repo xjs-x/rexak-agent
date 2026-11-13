@@ -174,6 +174,9 @@ class HttpWorkbenchApi:
         scope: dict[str, Any],
         policy: dict[str, Any],
     ) -> dict[str, Any]:
+        from agent_workbench.contracts.delegation import require_ultra_mode
+
+        require_ultra_mode(self._config.execution_mode)
         payload = {
             "project_id": project_id,
             "title": title,

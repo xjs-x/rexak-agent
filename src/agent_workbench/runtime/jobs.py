@@ -54,6 +54,7 @@ from agent_workbench.persistence.repositories import (
 from agent_workbench.persistence.tables import (
     ExecutionResourceRow,
     RunRow,
+    SessionRow,
     ToolJobRow,
     ToolOperationRow,
 )
@@ -141,7 +142,12 @@ async def runs_waiting_on_jobs(db: Database) -> list[UUID]:
         rows = (
             (
                 await session.execute(
-                    select(RunRow.id).where(RunRow.status == str(RunStatus.WAITING_TOOL))
+                    select(RunRow.id).where(
+                        RunRow.status == str(RunStatus.WAITING_TOOL),
+                        RunRow.session_id.in_(select(SessionRow.id).where(
+                            SessionRow.execution_mode == "ultra"
+                        )),
+                    )
                 )
             )
             .scalars()
@@ -176,6 +182,14 @@ async def probe_and_wake(
     }
 
     waiting = run_ids if run_ids is not None else await runs_waiting_on_jobs(db)
+    if waiting:
+        async with db.session() as session:
+            waiting = list((await session.execute(select(RunRow.id).where(
+                RunRow.id.in_(waiting),
+                RunRow.session_id.in_(select(SessionRow.id).where(
+                    SessionRow.execution_mode == "ultra"
+                )),
+            ))).scalars())
     if not waiting:
         return result
 

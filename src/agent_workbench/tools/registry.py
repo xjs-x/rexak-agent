@@ -47,6 +47,7 @@ class ToolSelection:
     """一次 run 的工具选择。reason 用于把"为什么关掉某组"写进诊断。"""
 
     ultra: bool = False
+    ctfy_mcp: bool = False
     http: bool = True
     #: 浏览器工具。真实可用性由 Executor 的能力预检决定；不可用时执行岛会返回
     #: `browser_unavailable`，控制端据此给出确定失败，而不是假装成功。
@@ -78,6 +79,7 @@ class ToolSelection:
     def to_manifest(self) -> dict[str, Any]:
         return {
             **({"ultra": True} if self.ultra else {}),
+            **({"ctfy_mcp": True} if self.ctfy_mcp else {}),
             "http": self.http,
             "browser": self.browser,
             "files": self.files,
@@ -153,7 +155,7 @@ def default_selection(
         "coverage": "第一阶段停止维护 Coverage 协议，仅保留历史读取。",
     }
     if capabilities is None:
-        return ToolSelection(knowledge=not cfg.blind_test, graph=cfg.session_graph_enabled, legacy_memory=not cfg.session_graph_enabled, disabled_reasons=reasons)
+        return ToolSelection(ctfy_mcp=cfg.ctfy_mcp_enabled, knowledge=not cfg.blind_test, graph=cfg.session_graph_enabled, legacy_memory=not cfg.session_graph_enabled, disabled_reasons=reasons)
 
     execution_declared = bool(capabilities.execution)
     trusted = capabilities.execution_mode == "trusted" and execution_declared
@@ -185,6 +187,7 @@ def default_selection(
             reasons["terminals"] = capabilities.execution_reason("pty") or "PTY 能力不可用"
 
     return ToolSelection(
+        ctfy_mcp=cfg.ctfy_mcp_enabled,
         knowledge=not cfg.blind_test, graph=cfg.session_graph_enabled, legacy_memory=not cfg.session_graph_enabled,
         command=command_ok,
         terminals=pty_ok,
@@ -198,6 +201,10 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
     """按选择装配工具列表。"""
     chosen = selection or default_selection()
     tools: list[Any] = []
+    if chosen.ctfy_mcp:
+        from agent_workbench.tools.ctfy import CTFY_TOOLS
+
+        tools.extend(CTFY_TOOLS)
     if chosen.ultra:
         from agent_workbench.tools.delegation import DELEGATION_TOOLS
 

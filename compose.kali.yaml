@@ -1,0 +1,33 @@
+services:
+  kali:
+    image: rexak-kali-executor:local
+    build:
+      context: .
+      dockerfile: deploy/kali/Dockerfile
+    container_name: workbench-kali
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    shm_size: 512mb
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "127.0.0.1:2222:22"
+    volumes:
+      - workbench-kali-data:/home/kali/rexak-agent-data
+      - workbench-kali-hostkeys:/var/lib/rexak-ssh
+      - ./data/kali-docker/authorized_keys:/etc/rexak/authorized_keys:ro
+      - ./data/kali-docker/executor.env:/etc/rexak/executor.env:ro
+    healthcheck:
+      test: ["CMD", "/opt/rexak-executor/.venv/bin/python", "-c", "import httpx; r=httpx.get('http://127.0.0.1:8791/health'); r.raise_for_status(); assert r.json()['executor_id']=='kali-docker-01'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  workbench-kali-data:
+  workbench-kali-hostkeys:

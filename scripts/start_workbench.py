@@ -389,6 +389,15 @@ def launch(
 def main() -> int:
     configure_stdio_utf8()
     configure_local_loopback()
+    if "--executor-docker" in sys.argv:
+        from scripts.kali_docker import activate
+
+        if port_busy(get_settings()):
+            raise RuntimeError("请先停止现有控制台，再通过 Docker 入口切换执行环境")
+        activate()
+        get_settings.cache_clear()
+        while "--executor-docker" in sys.argv:
+            sys.argv.remove("--executor-docker")
     if sys.platform == "win32":
         # 默认 SIGBREAK 会立即结束父进程，绕过 launch 的 finally 并遗留 API/Runner。
         # 与窗口中的 Ctrl+C 一样先清理本次创建的子进程。

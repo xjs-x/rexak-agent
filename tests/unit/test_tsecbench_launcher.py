@@ -146,7 +146,7 @@ def test_new_profiles_preserve_old_credentials_and_vpn(tmp_path):
         "https://benchmark.example.com",
         "second",
         source,
-        ExecutionMode.STANDARD,
+        ExecutionMode.ULTRA,
         120,
         root=tmp_path / "private",
     )
@@ -163,8 +163,12 @@ def test_new_profiles_preserve_old_credentials_and_vpn(tmp_path):
     restored = last_profile_fields(root=tmp_path / "private")
     assert restored["BENCHMARK_TOKEN"] == "second"
     assert restored["WORKBENCH_TSECBENCH_OVPN"] == second.ovpn_path
-    assert restored["TSECBENCH_EXECUTION_MODE"] == "standard"
+    assert restored["TSECBENCH_EXECUTION_MODE"] == "ultra"
     assert restored["TSECBENCH_MAX_SECONDS"] == "120"
+    with pytest.raises(ValueError, match="Ultra"):
+        save_profile("https://benchmark.example.com", "third", source,
+                     ExecutionMode.STANDARD, 120, root=tmp_path / "private")
+    assert last_profile_fields(root=tmp_path / "private")["BENCHMARK_TOKEN"] == "second"
 
 
 @pytest.mark.parametrize(

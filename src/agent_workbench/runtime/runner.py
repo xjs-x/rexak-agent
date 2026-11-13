@@ -209,6 +209,9 @@ class AgentRunner:
             interactive = (RunRow.config_snapshot["created_from"].as_string() == "message") | (
                 RunRow.config_snapshot["created_from_session_create"].as_boolean().is_(True)
             )
+            ultra_sessions = RunRow.session_id.in_(
+                select(SessionRow.id).where(SessionRow.execution_mode == "ultra")
+            )
             if self._production_scan and only_run_id is None:
                 from agent_workbench.persistence.tables import CommandRow
 
@@ -235,6 +238,7 @@ class AgentRunner:
                 stmt = (
                     select(RunRow)
                     .where(
+                        ultra_sessions,
                         RunRow.id.in_(owned_run_ids(self._settings.owner_id)),
                         cancelling
                         | (enabled & ((RunRow.status == str(RunStatus.QUEUED)) | resumable)),
@@ -255,7 +259,7 @@ class AgentRunner:
                 return list((await session.execute(stmt)).scalars().all())
             queued_stmt = (
                 select(RunRow)
-                .where(RunRow.status == str(RunStatus.QUEUED))
+                .where(ultra_sessions, RunRow.status == str(RunStatus.QUEUED))
                 .order_by(RunRow.created_at)
                 .limit(limit)
             )
@@ -273,6 +277,7 @@ class AgentRunner:
                 )
             if only_run_id is not None:
                 queued_stmt = select(RunRow).where(
+                    ultra_sessions,
                     RunRow.id == only_run_id,
                     RunRow.status == str(RunStatus.QUEUED),
                 )
@@ -280,6 +285,7 @@ class AgentRunner:
             resumable_stmt = (
                 select(RunRow)
                 .where(
+                    ultra_sessions,
                     RunRow.status.in_(
                         [
                             str(RunStatus.PAUSING),
@@ -302,6 +308,7 @@ class AgentRunner:
                 )
             if only_run_id is not None:
                 resumable_stmt = select(RunRow).where(
+                    ultra_sessions,
                     RunRow.id == only_run_id,
                     RunRow.status.in_(
                         [
@@ -321,7 +328,9 @@ class AgentRunner:
             # 不去重会让 `step()` 对同一个 run 连续驱动两次。
             candidates: list[RunRow] = []
             seen: set[UUID] = set()
-            cancelling_stmt = select(RunRow).where(RunRow.status == str(RunStatus.CANCELLING))
+            cancelling_stmt = select(RunRow).where(
+                ultra_sessions, RunRow.status == str(RunStatus.CANCELLING)
+            )
             if self._production_scan:
                 cancelling_stmt = cancelling_stmt.where(
                     RunRow.id.in_(owned_run_ids(self._settings.owner_id))
@@ -534,6 +543,9 @@ class AgentRunner:
                                         select(RunRow.id).where(
                                             RunRow.id.in_(owned_run_ids(self._settings.owner_id)),
                                             RunRow.status == str(RunStatus.WAITING_TOOL),
+                                            RunRow.session_id.in_(select(SessionRow.id).where(
+                                                SessionRow.execution_mode == "ultra"
+                                            )),
                                         )
                                     )
                                 )
@@ -586,6 +598,19 @@ class AgentRunner:
             )
 
     async def _drive(self, run_id: UUID) -> RunOutcome | None:
+        # A targeted Runner must not claim or alter a historical Standard run.
+        async with self._db.session() as session:
+            selected = (await session.execute(
+                select(SessionRow.execution_mode, RunRow.config_snapshot)
+                .join(RunRow, RunRow.session_id == SessionRow.id)
+                .where(RunRow.id == run_id)
+            )).one_or_none()
+        if selected is None:
+            return None
+        if (selected[0] != "ultra"
+                or (selected[1] or {}).get("execution_mode", "standard") != "ultra"):
+            log.warning("historical_standard_run_execution_refused", run_id=str(run_id))
+            return None
         # 1) 取所有权
         async with self._db.transaction() as session:
             acquired, generation = await claim_run(

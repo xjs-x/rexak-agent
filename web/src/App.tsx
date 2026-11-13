@@ -299,7 +299,6 @@ export default function App() {
                   <div className="composer-wrap">
                     <Composer
                       executionMode={wb.executionMode}
-                      onExecutionModeChange={wb.setExecutionMode}
                       attachmentsEnabled={wb.attachmentsEnabled}
                       sessionId={wb.sessionId}
                       onPrepareAttachments={wb.prepareAttachmentSession}

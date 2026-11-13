@@ -239,8 +239,8 @@ def list_command(
 def run_command(
     unique_code: Annotated[str, typer.Argument(help="要执行的题目 unique_code")],
     execution_mode: Annotated[
-        ExecutionMode, typer.Option("--execution-mode", help="本题使用 Standard 或 Ultra")
-    ] = ExecutionMode.STANDARD,
+        ExecutionMode, typer.Option("--execution-mode", help="本题仅支持 Ultra")
+    ] = ExecutionMode.ULTRA,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="只展示目标与范围，不启动容器/不提交")
     ] = False,
@@ -273,6 +273,9 @@ def run_command(
     ] = True,
 ) -> None:
     """执行单题：启动靶场 → 创建 Run → 等待 → 提交 Flag → 关闭容器。"""
+    if execution_mode is not ExecutionMode.ULTRA:
+        _fail("新任务仅支持 Ultra 多智能体模式")
+        return
     try:
         config = load_config(
             overrides={

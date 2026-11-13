@@ -127,7 +127,13 @@ async def sessions_with_execution_activity(db: Database) -> list[UUID]:
             )
         ).all()
         session_ids.update(item[0] for item in rows)
-    return sorted(session_ids, key=str)
+    if not session_ids:
+        return []
+    async with db.session() as session:
+        allowed = (await session.execute(select(SessionRow.id).where(
+            SessionRow.id.in_(session_ids), SessionRow.execution_mode == "ultra"
+        ))).scalars().all()
+    return sorted(allowed, key=str)
 
 
 async def pull_events(db: Database, *, settings: Settings, client: Any, run_id: UUID | None = None) -> dict[str, Any]:

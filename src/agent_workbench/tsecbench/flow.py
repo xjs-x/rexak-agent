@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_workbench.config.settings import REPO_ROOT, get_settings
+from agent_workbench.contracts.delegation import ExecutionMode
 from agent_workbench.domain.scope import executor_scope_payload
 from agent_workbench.platform_compat import child_process_env
 from agent_workbench.tsecbench.checks import ProbeError, ProbeResult, probe_targets
@@ -170,6 +171,8 @@ class SingleChallengeFlow:
         runner_info: dict[str, Any] | None = None
 
         try:
+            if self._config.execution_mode is not ExecutionMode.ULTRA:
+                raise FlowError("新任务仅支持 Ultra 多智能体模式")
             await self._platform.open()
             challenges = await self._platform.list_challenges()
             challenge = self._select(challenges)

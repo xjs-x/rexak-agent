@@ -196,6 +196,19 @@ async def test_api_to_runner_minimal_loop_persists_tools_and_final_result(
     monkeypatch.setattr(factory, "build_chat_model", lambda *_args, **_kwargs: model)
     monkeypatch.setattr(factory, "build_tools", lambda *_args, **_kwargs: tools)
     monkeypatch.setattr(runner_module, "HttpExecutorClient", lambda *_args, **_kwargs: executor)
+    from agent_workbench.execution import a2a_worker
+
+    class AvailableWorker:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def connect(self):
+            return None
+
+    monkeypatch.setattr(a2a_worker, "A2AWorkerClient", lambda *_args: AvailableWorker())
     settings = database.settings.model_copy(update={"segment_decision_rounds": 1})
 
     with TestClient(create_app()) as client:

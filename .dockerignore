@@ -1,0 +1,10 @@
+**
+!executor/
+!executor/**
+!deploy/
+!deploy/executor-requirements.txt
+!deploy/executor_control.py
+!deploy/kali/
+!deploy/kali/**
+executor/**/__pycache__/
+executor/**/*.pyc

@@ -1,4 +1,4 @@
-"""Configure/run the optional loopback Pi service. Standard never invokes this script."""
+"""Configure/run the loopback Pi service used by Ultra tasks."""
 
 from __future__ import annotations
 

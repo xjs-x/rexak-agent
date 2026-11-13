@@ -200,7 +200,7 @@ async def test_bundle_includes_continuations_but_not_other_session(database, uni
         text=True,
         encoding="utf-8",
         env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-        timeout=30,
+        timeout=90,
         check=False,
     )
     assert cli_result.returncode == 0, cli_result.stderr

@@ -36,7 +36,7 @@ from agent_workbench.observability.events import append_event
 from agent_workbench.observability.logging import get_logger
 from agent_workbench.persistence.db import Database, get_database
 from agent_workbench.persistence.repositories import ToolJobRepository
-from agent_workbench.persistence.tables import ArtifactRow, ExecutionResourceRow, RunRow
+from agent_workbench.persistence.tables import ArtifactRow, ExecutionResourceRow, RunRow, SessionRow
 
 log = get_logger("agent_workbench.recovery")
 
@@ -93,6 +93,7 @@ async def recover_stale_runs(
         stmt = select(RunRow).where(
             RunRow.status == str(RunStatus.RUNNING),
             (RunRow.lease_until.is_(None)) | (RunRow.lease_until < now),
+            RunRow.session_id.in_(select(SessionRow.id).where(SessionRow.execution_mode == "ultra")),
         )
         if only_run_id is not None:
             stmt = stmt.where(RunRow.id == only_run_id)
@@ -455,7 +456,10 @@ async def decide_recovering_runs(
     notes: list[str] = []
 
     async with db.session() as session:
-        stmt = select(RunRow).where(RunRow.status == str(RunStatus.RECOVERING))
+        stmt = select(RunRow).where(
+            RunRow.status == str(RunStatus.RECOVERING),
+            RunRow.session_id.in_(select(SessionRow.id).where(SessionRow.execution_mode == "ultra")),
+        )
         if only_run_id is not None:
             stmt = stmt.where(RunRow.id == only_run_id)
         if owner_id is not None:

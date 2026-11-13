@@ -17,8 +17,17 @@ test.each([
   ["<think>first</think> <think>second</think>answer", "answer"],
   ["plain <think>example</think>", "plain <think>example</think>"],
   ["```xml\n<think>example</think>\n```", "```xml\n<think>example</think>\n```"],
+  ["【host_context_update：完整当前状态】\n## 当前任务上下文", ""],
+  ["已找到比赛。\n【host_context_update：完整当前状态】", "已找到比赛。"],
 ])("projects assistant text without changing quoted examples: %s", (raw, visible) => {
   expect(assistantDisplayText(raw)).toBe(visible);
+});
+
+test("streaming host snapshot prefixes stay hidden", () => {
+  const marker = "【host_context_update：完整当前状态】";
+  for (let end = 1; end <= marker.length; end += 1) {
+    expect(assistantDisplayText(marker.slice(0, end))).toBe("");
+  }
 });
 
 test("every streaming prefix keeps private thinking out of the DOM", () => {

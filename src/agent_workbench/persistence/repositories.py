@@ -128,8 +128,11 @@ class SessionRepository:
         provider_id: str | None = None,
         model_name: str | None = None,
         thread_id: str | None = None,
-        execution_mode: str = "standard",
+        execution_mode: str = "ultra",
     ) -> SessionRow:
+        from agent_workbench.contracts.delegation import ExecutionMode, require_ultra_mode
+
+        require_ultra_mode(ExecutionMode(execution_mode))
         if owner_id is None and project_id is not None:
             project = await ProjectRepository(self._s).get(project_id)
             owner_id = project.owner_id if project else None

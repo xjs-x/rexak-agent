@@ -26,7 +26,9 @@ from agent_workbench.domain.agent_delegations import DelegationManager, reconcil
 from agent_workbench.domain.run_state import create_run
 from agent_workbench.execution.a2a_worker import A2AWorkerClient
 from agent_workbench.persistence.repositories import SessionRepository
-from agent_workbench.persistence.tables import AgentDelegationRow, RunRow
+from agent_workbench.persistence.tables import AgentDelegationRow, RunRow, SessionRow
+from agent_workbench.runtime.recovery import decide_recovering_runs, recover_stale_runs
+from agent_workbench.runtime.runner import AgentRunner
 
 pytestmark = pytest.mark.integration
 TOKEN = "isolated-mock-worker-token-32-characters"
@@ -306,12 +308,14 @@ async def test_untrusted_artifact_never_becomes_evidence(database, local_worker,
     assert projected.remote_state == "TASK_STATE_COMPLETED"
 
 
-async def test_api_modes_persist_and_standard_ignores_worker(database):
+async def test_api_only_creates_ultra_and_rejects_standard(database):
     with TestClient(create_app()) as client:
         headers = {"X-Workbench-CSRF": client.post("/api/session").json()["csrf_token"]}
         base = {"title": "mode fixture", "initial_objective": "synthetic", "draft": True}
-        old = client.post("/api/sessions", headers=headers, json=base)
-        assert old.status_code == 201 and old.json()["session"]["execution_mode"] == "standard"
+        default = client.post("/api/sessions", headers=headers, json=base)
+        assert default.status_code == 201 and default.json()["session"]["execution_mode"] == "ultra"
+        standard = client.post("/api/sessions", headers=headers, json={**base, "execution_mode": "standard"})
+        assert standard.status_code == 422
         ultra = client.post("/api/sessions", headers=headers, json={**base, "execution_mode": "ultra"})
         assert ultra.status_code == 201
         sid = ultra.json()["session"]["id"]
@@ -323,7 +327,98 @@ async def test_api_modes_persist_and_standard_ignores_worker(database):
         assert run.config_snapshot["execution_mode"] == "ultra"
     async with database.transaction() as db:
         with pytest.raises(ApiError):
-            await create_run(db, session_id=UUID(old.json()["session"]["id"]), objective="x", provider_id="mock", model_name="mock", config_snapshot={"execution_mode": "ultra"})
+            await create_run(db, session_id=UUID(default.json()["session"]["id"]), objective="x", provider_id="mock", model_name="mock", config_snapshot={"execution_mode": "standard"})
+
+
+async def test_historical_standard_run_stays_readable_and_cannot_restart(database, settings):
+    with TestClient(create_app()) as client:
+        headers = {"X-Workbench-CSRF": client.post("/api/session").json()["csrf_token"]}
+        created = client.post("/api/sessions", headers=headers, json={
+            "title": "historical fixture", "initial_objective": "synthetic", "draft": True,
+        })
+        assert created.status_code == 201
+        session_id = UUID(created.json()["session"]["id"])
+
+        async with database.transaction() as db:
+            run = await create_run(db, session_id=session_id, objective="old", provider_id="mock",
+                                   model_name="mock", config_snapshot={})
+            run_id = run.id
+            row = await db.get(SessionRow, session_id)
+            assert row is not None
+            row.execution_mode = "standard"
+            run.config_snapshot = {**run.config_snapshot, "execution_mode": "standard"}
+
+        snapshot = client.get(f"/api/sessions/{session_id}/snapshot")
+        assert snapshot.status_code == 200
+        assert snapshot.json()["session"]["execution_mode"] == "standard"
+        assert (await AgentRunner(database=database, settings=settings).step(only_run_id=run_id)) is None
+        assert (await AgentRunner(database=database, settings=settings)._drive(run_id)) is None
+        denied = client.post(f"/api/sessions/{session_id}/messages", headers={
+            **headers, "Idempotency-Key": "historical-message"}, json={"content": "continue"})
+        assert denied.status_code == 409
+        async with database.transaction() as db:
+            with pytest.raises(ApiError):
+                await create_run(db, session_id=session_id, objective="new", provider_id="mock",
+                                 model_name="mock", config_snapshot={})
+        async with database.transaction() as db:
+            run = await db.get(RunRow, run_id)
+            assert run is not None and run.status == "queued" and run.owner is None
+            run.status = "paused"
+        resume = client.post(f"/api/runs/{run_id}/resume", headers={
+            **headers, "Idempotency-Key": "historical-resume"}, json={})
+        assert resume.status_code == 409
+        async with database.session() as db:
+            run = await db.get(RunRow, run_id)
+            assert run is not None and run.status == "paused"
+            assert run.config_snapshot["execution_mode"] == "standard"
+        async with database.transaction() as db:
+            run = await db.get(RunRow, run_id)
+            assert run is not None
+            run.status = "recovering"
+        decision = await decide_recovering_runs(database, executor_reachable=True,
+                                                only_run_id=run_id)
+        assert not decision["requeued"]
+        async with database.transaction() as db:
+            run = await db.get(RunRow, run_id)
+            assert run is not None and run.status == "recovering"
+            run.status = "running"
+            run.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+        assert await recover_stale_runs(database, only_run_id=run_id) == []
+        async with database.session() as db:
+            run = await db.get(RunRow, run_id)
+            assert run is not None and run.status == "running"
+
+
+async def test_unavailable_worker_fails_ultra_without_standard_fallback(database, settings, monkeypatch):
+    from agent_workbench.execution import a2a_worker
+
+    with TestClient(create_app()) as client:
+        headers = {"X-Workbench-CSRF": client.post("/api/session").json()["csrf_token"]}
+        created = client.post("/api/sessions", headers=headers, json={
+            "title": "worker outage fixture", "initial_objective": "synthetic",
+        })
+        assert created.status_code == 201
+        run_id = UUID(created.json()["run"]["id"])
+
+    class UnavailableWorker:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def connect(self):
+            raise a2a_worker.WorkerUnavailable("synthetic offline worker")
+
+    monkeypatch.setattr(a2a_worker, "A2AWorkerClient", lambda *_args: UnavailableWorker())
+    runner = AgentRunner(database=database, settings=settings, owner="worker-outage-test")
+    monkeypatch.setattr(runner, "_precheck_configuration", lambda _run: None)
+    outcome = await runner.step(only_run_id=run_id)
+    assert outcome is not None and outcome.status == "failed"
+    assert "Ultra Worker / A2A" in outcome.detail
+    async with database.session() as db:
+        run = await db.get(RunRow, run_id)
+        assert run is not None and run.config_snapshot["execution_mode"] == "ultra"
 
 
 async def test_main_create_agent_delegates_and_collects(database, local_worker):

@@ -2722,7 +2722,7 @@ export interface components {
         };
         /** SessionCreate */
         SessionCreate: {
-            /** @default standard */
+            /** @default ultra */
             execution_mode: components["schemas"]["ExecutionMode"];
             /**
              * Draft

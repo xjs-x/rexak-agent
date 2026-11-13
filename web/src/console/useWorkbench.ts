@@ -82,7 +82,6 @@ export interface DeleteResult {
 
 export interface WorkbenchApi {
   executionMode: ExecutionMode;
-  setExecutionMode: (mode: ExecutionMode) => void;
   ready: boolean;
   attachmentsEnabled: boolean;
   bootError: string;
@@ -207,7 +206,7 @@ export function useWorkbench(): WorkbenchApi {
   const [standalone, setStandalone] = useState<SessionItem[]>([]);
   const [projects, setProjects] = useState<ProjectGroup[]>([]);
   const [sessionId, setSessionId] = useState("");
-  const [executionMode, setExecutionMode] = useState<ExecutionMode>("standard");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("ultra");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [pendingProjectId, setPendingProjectId] = useState<string | null>(null);
   const [session, setSession] = useState<Snapshot["session"] | null>(null);
@@ -723,7 +722,7 @@ export function useWorkbench(): WorkbenchApi {
   const newChat = useCallback(
     (projectId?: string | null) => {
       preferredSessionRef.current = "";
-      setExecutionMode("standard");
+      setExecutionMode("ultra");
       setSessionId("");
       setPendingProjectId(projectId ?? null);
       setSelectedProjectId(projectId ?? "");
@@ -786,7 +785,7 @@ export function useWorkbench(): WorkbenchApi {
     const projectId = await ensureProjectId();
     const profile = modelSettings?.profiles.find((item) => `${item.provider_id}/${item.model_name}` === selectedModelKey);
     const created = await api.createSession(projectId, {
-      execution_mode: executionMode,
+      execution_mode: "ultra",
       project_id: projectId, title: "附件草稿", initial_objective: "", draft: true,
       provider_id: profile?.provider_id, model_name: profile?.model_name,
     });
@@ -839,7 +838,7 @@ export function useWorkbench(): WorkbenchApi {
         }
         const projectId = await ensureProjectId();
         const created = await api.createSession(projectId, {
-          execution_mode: executionMode,
+          execution_mode: "ultra",
           project_id: projectId,
           title: content.slice(0, 30) || "新测试任务",
           initial_objective: content,
@@ -1001,7 +1000,6 @@ export function useWorkbench(): WorkbenchApi {
     modelSettings,
     modelOptions,
     executionMode,
-    setExecutionMode,
     selectedModelKey,
     currentModelKey,
     modelLocked,

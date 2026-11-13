@@ -15,6 +15,13 @@ class ExecutionMode(StrEnum):
     ULTRA = "ultra"
 
 
+def require_ultra_mode(mode: ExecutionMode) -> ExecutionMode:
+    """Only new work uses Ultra; Standard remains readable in historical records."""
+    if mode is not ExecutionMode.ULTRA:
+        raise ValueError("新任务仅支持 Ultra 多智能体模式；历史 Standard 记录仍可查看")
+    return mode
+
+
 class DelegationState(StrEnum):
     INTENT = "intent"
     SUBMITTING = "submitting"

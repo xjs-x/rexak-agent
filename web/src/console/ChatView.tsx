@@ -11,7 +11,7 @@ import {
   type WeaknessItem,
 } from "../api/client";
 import { Icon } from "./Icon";
-import { ExecutionModeSelect } from "./Ultra";
+import { ExecutionModeLabel } from "./Ultra";
 import { AttachmentCards, PendingAttachments, useAttachments, formatSize, type AttachmentSend } from "./Attachments";
 import { MarkdownText } from "./Markdown";
 import { assistantDisplayText } from "./assistantDisplay";
@@ -41,6 +41,9 @@ type TimelineItem =
 /** 裁掉思考后没有可见正文、也没有更多内容的轮次不占位，避免时间线出现空档。 */
 function isInvisibleEntry(entry: ConversationEntry): boolean {
   if (entry.role === "user") return false;
+  if (entry.role === "assistant" && entry.preview.includes("【host_context_update")) {
+    return !assistantDisplayText(entry.preview).trim();
+  }
   return !entry.has_more && !assistantDisplayText(entry.preview).trim();
 }
 
@@ -68,8 +71,7 @@ function buildTimeline(conversation: ConversationEntry[], tools: ToolActivityIte
 
 /* ---------------- 输入框 ---------------- */
 export function Composer({
-  executionMode = "standard",
-  onExecutionModeChange,
+  executionMode = "ultra",
   attachmentsEnabled = false,
   sessionId = "",
   onPrepareAttachments,
@@ -90,7 +92,6 @@ export function Composer({
   seed,
 }: {
   executionMode?: ExecutionMode;
-  onExecutionModeChange?: (mode: ExecutionMode) => void;
   attachmentsEnabled?: boolean;
   sessionId?: string;
   onPrepareAttachments?: () => Promise<string>;
@@ -294,7 +295,7 @@ export function Composer({
         }}
       />
       <div className="composer-bar">
-        {onExecutionModeChange && <ExecutionModeSelect value={executionMode} onChange={onExecutionModeChange} disabled={busy || disabled || queue.files.length > 0} />}
+        {!sessionId && <ExecutionModeLabel />}
         <button
           type="button"
           className="attach"

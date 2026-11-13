@@ -1,16 +1,8 @@
 import { useEffect, useState } from 'react';
-import { api, type ExecutionMode, type DelegationList } from '../api/client';
+import { api, type DelegationList } from '../api/client';
 
-export function ExecutionModeSelect({ value, onChange, disabled = false }: {
-  value: ExecutionMode; onChange: (mode: ExecutionMode) => void; disabled?: boolean;
-}) {
-  return <label className="execution-mode" title="创建会话后固定运行模式；Ultra 子 Agent 使用后台独立模型配置、Kali 基础工具和历史证据">
-    <select aria-label="运行模式" value={value} disabled={disabled}
-      onChange={e => onChange(e.target.value as ExecutionMode)}>
-      <option value="standard">Standard · 单智能体</option>
-      <option value="ultra">Ultra · 多智能体</option>
-    </select>
-  </label>;
+export function ExecutionModeLabel() {
+  return <span className="execution-mode" aria-label="运行模式">Ultra · 多智能体</span>;
 }
 
 const labels: Record<string, string> = {

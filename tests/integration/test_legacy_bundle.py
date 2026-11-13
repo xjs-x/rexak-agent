@@ -14,7 +14,6 @@ from psycopg import sql
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
-from agent_workbench.domain.run_state import create_run
 from agent_workbench.evidence.artifacts import ArtifactStore
 from agent_workbench.maintenance.run_bundle import (
     collect_run_bundle,
@@ -68,14 +67,12 @@ async def test_baseline_database_exports_without_upgrade(settings, tmp_path):
                 (id,project_id,thread_id,title,scope_snapshot,policy_snapshot,status,revision,event_seq)
                 VALUES (:id,:project,:thread,'旧会话','{}','{}','active',1,0)"""),
                 {"id": task.id, "project": project.id, "thread": f"legacy-{task.id}"})
-            run = await create_run(
-                db,
-                session_id=task.id,
-                objective="旧阶段",
-                provider_id="fake",
-                model_name="scripted",
-                config_snapshot={},
-            )
+            run = SimpleNamespace(id=uuid4())
+            await db.execute(text("""INSERT INTO app.runs
+                (id,session_id,status,objective,provider_id,model_name,owner_generation,
+                 control_version,code_version,prompt_version,config_snapshot)
+                VALUES (:id,:session,'completed','旧阶段','fake','scripted',0,0,'legacy','legacy','{}')"""),
+                {"id": run.id, "session": task.id})
             await db.execute(
                 text("""INSERT INTO app.leads
                 (id,session_id,hypothesis,status,priority,identity_refs,evidence_refs,priority_rationale,revision)

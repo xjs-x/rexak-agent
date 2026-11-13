@@ -81,6 +81,11 @@ class Settings(BaseSettings):
 
     # Ultra 地址和凭据只由运维设置；模型不能指定。Standard 不连接 Worker。
     ultra_worker_url: str = "http://127.0.0.1:8795"
+    # CTFy 平台控制面只由 Main 使用；地址/令牌不接受模型参数。
+    ctfy_mcp_enabled: bool = False
+    ctfy_mcp_url: str = "https://ctfy.tsinghua.edu.cn/api/v1/mcp/"
+    ctfy_mcp_credentials_file: Path = Path("~/.workbench/ctfy/credentials.json")
+    ctfy_mcp_timeout_seconds: float = Field(default=180, ge=1, le=1800)
     ultra_worker_token: str = Field(default="", repr=False)
     ultra_request_seconds: float = Field(default=10, gt=0, le=60)
     ultra_worker_execution_enabled: bool = True
@@ -196,6 +201,7 @@ class Settings(BaseSettings):
         "secret_store_path",
         "executor_ssh_key",
         "executor_known_hosts",
+        "ctfy_mcp_credentials_file",
         mode="after",
     )
     @classmethod

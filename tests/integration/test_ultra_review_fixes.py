@@ -152,7 +152,6 @@ async def test_cancellation_slot_rotates_past_unconfirmed_ultra(database, settin
         old = await db.get(RunRow, older.run_id)
         new = await db.get(RunRow, newer.run_id)
         assert old and new
-        old.config_snapshot = {**old.config_snapshot, "execution_mode": "standard"}
         for row in (old, new):
             row.status = "cancelling"
         old.created_at, old.updated_at = now - timedelta(days=3), now - timedelta(hours=1)

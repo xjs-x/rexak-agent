@@ -87,7 +87,7 @@ class EvaluationWindow:
                 self.base.set(previous.get("BENCHMARK_BASE_URL", self.base.get()))
                 self.token.set(previous.get("BENCHMARK_TOKEN", ""))
                 self.vpn.set(previous.get("WORKBENCH_TSECBENCH_OVPN", ""))
-                self.mode.set(previous.get("TSECBENCH_EXECUTION_MODE", "ultra"))
+                self.mode.set("ultra")
                 self.minutes.set(f"{float(previous.get('TSECBENCH_MAX_SECONDS', '3600')) / 60:g}")
                 self.status.set(
                     "已恢复上次配置，尚未开始测评。更换平台任务时请替换 Token 和 VPN 文件。"
@@ -114,15 +114,7 @@ class EvaluationWindow:
         arrange.pack(fill="x", pady=12)
         arrange.columnconfigure(3, weight=1)
         ttk.Label(arrange, text="Agent 模式").grid(row=0, column=0, sticky="w")
-        combo = ttk.Combobox(
-            arrange,
-            textvariable=self.mode,
-            values=["ultra", "standard"],
-            state="readonly",
-            width=13,
-        )
-        combo.grid(row=0, column=1, padx=8, sticky="w")
-        self.controls.append(combo)
+        ttk.Label(arrange, text="Ultra 多智能体").grid(row=0, column=1, padx=8, sticky="w")
         ttk.Label(arrange, text="单题等待上限（分钟）").grid(
             row=0, column=2, sticky="w", padx=(12, 0)
         )

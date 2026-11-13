@@ -309,6 +309,8 @@ async def create_run(
     if parent is None:
         raise ApiError(ErrorCode.NOT_FOUND, "Session 不存在")
     mode = ExecutionMode(parent[0] or "standard")
+    if mode is not ExecutionMode.ULTRA:
+        raise ApiError(ErrorCode.CONFLICT, "历史 Standard Session 仅供查看，不能创建新的 Run；请新建 Ultra Session")
     supplied = config_snapshot.get("execution_mode", mode.value)
     if supplied != mode:
         raise ApiError(ErrorCode.CONFLICT, "Run 模式必须与创建时的 Session 模式一致")
@@ -344,6 +346,8 @@ async def assert_resumable(session: AsyncSession, run_id: UUID) -> RunRow:
     row = (await session.execute(select(RunRow).where(RunRow.id == run_id))).scalar_one_or_none()
     if row is None:
         raise ApiError(ErrorCode.NOT_FOUND, f"run 不存在：{run_id}")
+    if (row.config_snapshot or {}).get("execution_mode", "standard") != "ultra":
+        raise ApiError(ErrorCode.CONFLICT, "历史 Standard Run 仅供查看，不能恢复执行；原状态和证据已保留")
     status = RunStatus(row.status)
     if status not in RESUMABLE_RUN_STATUSES:
         if status is RunStatus.COMPLETED:

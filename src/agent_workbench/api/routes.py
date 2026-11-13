@@ -540,6 +540,8 @@ async def post_message(
             or row.owner_id != settings.owner_id
         ):
             raise ApiError(ErrorCode.NOT_FOUND, "任务不存在或已删除")
+        if row.execution_mode != "ultra":
+            raise ApiError(ErrorCode.CONFLICT, "历史 Standard Session 仅供查看，不能继续执行；请新建 Ultra Session")
         from agent_workbench.domain.run_state import find_active_run
 
         active = await find_active_run(session, session_id)

@@ -44,7 +44,7 @@ class BenchmarkConfig(BaseModel):
     base_url: str | None = None
     api_base_url: str = "http://127.0.0.1:8770"
     api_token: str = Field(default="", repr=False, exclude=True)
-    execution_mode: ExecutionMode = ExecutionMode.STANDARD
+    execution_mode: ExecutionMode = ExecutionMode.ULTRA
 
     #: 单题墙钟上限（秒）。这是评测入口的保护，不是 Agent 内部的任务总时长限制。
     max_seconds: float = 3600.0

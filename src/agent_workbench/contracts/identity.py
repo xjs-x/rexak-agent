@@ -15,7 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agent_workbench.contracts.delegation import ExecutionMode
+from agent_workbench.contracts.delegation import ExecutionMode, require_ultra_mode
 from agent_workbench.contracts.enums import (
     CommandKind,
     CommandStatus,
@@ -127,7 +127,7 @@ class IdentityRef(_Base):
 
 
 class SessionCreate(_Base):
-    execution_mode: ExecutionMode = ExecutionMode.STANDARD
+    execution_mode: ExecutionMode = ExecutionMode.ULTRA
     draft: bool = False
     initial_skill_refs: list[str] = Field(default_factory=list, max_length=20)
     project_id: UUID | None = None
@@ -139,6 +139,11 @@ class SessionCreate(_Base):
     active_identity_name: str | None = None
     provider_id: str | None = None
     model_name: str | None = None
+
+    @field_validator("execution_mode")
+    @classmethod
+    def only_ultra(cls, value: ExecutionMode) -> ExecutionMode:
+        return require_ultra_mode(value)
 
 
 class Session(_Base):

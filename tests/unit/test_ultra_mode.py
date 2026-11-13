@@ -10,8 +10,10 @@ from agent_workbench.tools.registry import ToolSelection, build_tools
 
 def test_execution_mode_defaults_and_strict_input():
     value = SessionCreate(title="fixture", initial_objective="local only")
-    assert value.execution_mode is ExecutionMode.STANDARD
+    assert value.execution_mode is ExecutionMode.ULTRA
     assert value.model_copy(update={"execution_mode": ExecutionMode.ULTRA}).execution_mode == "ultra"
+    with pytest.raises(ValidationError, match="仅支持 Ultra"):
+        SessionCreate.model_validate({"title": "x", "initial_objective": "x", "execution_mode": "standard"})
     with pytest.raises(ValidationError):
         SessionCreate.model_validate({"title": "x", "initial_objective": "x", "execution_mode": "ULTRA"})
 

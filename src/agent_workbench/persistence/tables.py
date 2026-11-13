@@ -219,7 +219,7 @@ class ProjectRow(TimestampMixin, Base):
 
 
 class SessionRow(TimestampMixin, Base):
-    execution_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="standard", server_default="standard")
+    execution_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="ultra", server_default="ultra")
     __tablename__ = "sessions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
