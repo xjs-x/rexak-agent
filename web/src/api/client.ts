@@ -202,6 +202,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(15000), ...init,
     });
   } catch {
+    if (init?.signal?.aborted) throw init.signal.reason;
     window.dispatchEvent(new Event("workbench:connection-lost"));
     throw new Error("无法连接本机服务。请启动 Rexak Agent；连接恢复后页面会自动重连，当前输入已保留。");
   }
@@ -226,20 +227,42 @@ export class ApiClient {
   delegations(sessionId: string): Promise<DelegationList> {
     return this.withSessionRetry(() => request(`/sessions/${sessionId}/delegations`));
   }
+  workerTrajectory(sessionId: string, delegationId: string, cursor: { after?: number; before?: number } = {}): Promise<components["schemas"]["WorkerTrajectoryRead"]> {
+    const query = cursor.before !== undefined ? `before=${cursor.before}` : `after=${cursor.after ?? 0}`;
+    return this.withSessionRetry(() => request(`/sessions/${sessionId}/delegations/${delegationId}/trajectory?${query}`));
+  }
+  workerTrajectoryMessage(sessionId: string, delegationId: string, sequence: number): Promise<components["schemas"]["WorkerVisibleEvent"]> {
+    return this.withSessionRetry(() => request(`/sessions/${sessionId}/delegations/${delegationId}/trajectory/${sequence}`));
+  }
   skills(query = "", offset = 0): Promise<SkillPage> {
     return request(`/skills?query=${encodeURIComponent(query)}&offset=${offset}&limit=50`);
+  }
+  sessionSkillCatalog(sessionId: string): Promise<SkillPage> {
+    return this.withSessionRetry(() => request(`/sessions/${sessionId}/skill-catalog`));
   }
   rescanSkills(): Promise<SkillPage> { return this.write("/skills/rescan"); }
   importSkill(body: {directory?: string; zip_base64?: string}): Promise<SkillItem> {
     return this.write("/skills/import", body);
   }
+  createSkill(body: {name: string; description: string; body: string}): Promise<SkillItem> {
+    return this.write('/skills/create', body);
+  }
+  editSkillFiles(id: string, body: components["schemas"]["SkillFilesEdit"]): Promise<SkillItem> {
+    return this.withSessionRetry(() => request(`/skills/${id}/files`, { method: 'PUT',
+      headers: {'Content-Type': 'application/json', 'X-Workbench-CSRF': this.csrf}, body: JSON.stringify(body) }));
+  }
   skillVersions(id: string): Promise<SkillPage> { return request(`/skills/${id}/versions`); }
+  skillDetail(id: string): Promise<SkillItem> { return request(`/skills/${id}`); }
   skillResource(id: string, version: string, path = "SKILL.md", offset = 0, filesOffset = 0): Promise<SkillResource> {
     return request(`/skills/${id}/versions/${version}/files?path=${encodeURIComponent(path)}&offset=${offset}&files_offset=${filesOffset}`);
   }
   updateSkill(id: string, body: components["schemas"]["SkillUpdate"]): Promise<SkillPage> {
     return this.withSessionRetry(() => request(`/skills/${id}`, { method: "PATCH",
       headers: {"Content-Type": "application/json", "X-Workbench-CSRF": this.csrf}, body: JSON.stringify(body) }));
+  }
+  archiveSkill(id: string): Promise<{archived: boolean}> {
+    return this.withSessionRetry(() => request(`/skills/${id}`, {method: 'DELETE',
+      headers: {'X-Workbench-CSRF': this.csrf}}));
   }
   activeSkills(session: string): Promise<components["schemas"]["SkillSessionRead"]> {
     return request(`/sessions/${session}/skills`);
@@ -551,10 +574,25 @@ export class ApiClient {
     return request(`/sessions/${sessionId}/spans?limit=100`);
   }
 
-  saveModelSettings(body: components["schemas"]["ModelSettingsUpdate"]): Promise<ModelSettings> {
-    return this.withSessionRetry(() =>
-      request("/settings/models", { method: "PUT", headers: { "Content-Type": "application/json", "X-Workbench-CSRF": this.csrf }, body: JSON.stringify(body) }),
-    );
+  saveModelProvider(body: components["schemas"]["ProviderWrite"], existing: boolean): Promise<ModelSettings> {
+    const path = existing ? `/settings/models/providers/${encodeURIComponent(body.provider_id)}` : "/settings/models/providers";
+    return this.withSessionRetry(() => request(path, {
+      method: existing ? "PUT" : "POST", headers: { "Content-Type": "application/json", "X-Workbench-CSRF": this.csrf },
+      body: JSON.stringify(body),
+    }));
+  }
+
+  deleteModelProvider(id: string, revision: number): Promise<ModelSettings> {
+    return this.withSessionRetry(() => request(`/settings/models/providers/${encodeURIComponent(id)}?revision=${revision}`, {
+      method: "DELETE", headers: { "X-Workbench-CSRF": this.csrf },
+    }));
+  }
+
+  discoverModels(body: components["schemas"]["ModelDiscoveryRequest"], signal: AbortSignal) {
+    return this.withSessionRetry(() => request<components["schemas"]["ModelDiscoveryRead"]>("/settings/models/discover", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Workbench-CSRF": this.csrf },
+      body: JSON.stringify(body), signal,
+    }));
   }
 
   modelSettings(): Promise<ModelSettings> {
@@ -571,6 +609,12 @@ export class ApiClient {
 
   artifact(artifactId: string): Promise<ArtifactPreview> {
     return request(`/artifacts/${artifactId}?limit=65536`);
+  }
+
+  workerOutput(sessionId: string, delegationId: string, artifactId: string, offset = 0): Promise<{
+    artifact_id: string; offset: number; content: string; next_offset: number | null;
+  }> {
+    return request(`/sessions/${sessionId}/delegations/${delegationId}/output/${artifactId}?offset=${offset}`);
   }
 
   reports(sessionId: string): Promise<{ reports: ReportItem[] }> {

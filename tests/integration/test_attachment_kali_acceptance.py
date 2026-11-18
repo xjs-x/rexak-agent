@@ -58,6 +58,7 @@ async def test_real_kali_main_and_worker_input(database, settings, monkeypatch):
         "real_kali": True, "paid_model": False, "online_target": False,
         "a2a_start": "deterministic test boundary; no model runtime"}
     async with open_executor(cfg) as remote:
+        initial_active_jobs = (await remote.health()).active_jobs
         box = Toolbox(db=database, settings=cfg, session_id=manager.session_id, run_id=manager.run_id,
             owner="test-owner", owner_generation=1, control_version=version, executor=remote,
             scope=ScopePolicy(ScopeSnapshot(mode="instruction")), artifacts=ArtifactStore(cfg),
@@ -153,7 +154,7 @@ async def test_real_kali_main_and_worker_input(database, settings, monkeypatch):
             async with database.transaction() as db:
                 row = await db.get(AgentDelegationRow, ident)
                 row.state = "completed"
-        assert (await remote.health()).active_jobs == 0
+        assert (await remote.health()).active_jobs == initial_active_jobs
     output = os.environ.get("REXAK_ATTACHMENT_EVIDENCE")
     if output:
         Path(output).write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")

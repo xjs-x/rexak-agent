@@ -190,21 +190,17 @@ class AgentRunner:
         async with self._db.session() as session:
             from sqlalchemy import case, exists, true
 
-            from agent_workbench.config.model_settings import read_model_key
+            from agent_workbench.config.model_settings import KEY_ENV, configured_model_refs
             from agent_workbench.runtime.selection import owned_run_ids
 
-            ready_provider = (
-                RunRow.provider_id.not_in(["xiaomi", "bailian"])
-                | RunRow.provider_id.in_(
-                    [
-                        provider
-                        for provider in ("xiaomi", "bailian")
-                        if read_model_key(provider, self._settings)
-                    ]
-                )
-                if self._production_scan
-                else true()
-            )
+            ready_provider = true()
+            if self._production_scan:
+                from sqlalchemy import func
+
+                reference = RunRow.config_snapshot["model_binding"]["secret_ref"].as_string()
+                ready_provider = func.coalesce(reference, "model:" + RunRow.provider_id).in_(
+                    configured_model_refs(self._settings)
+                ) | (reference.is_(None) & RunRow.provider_id.not_in(list(KEY_ENV)))
 
             interactive = (RunRow.config_snapshot["created_from"].as_string() == "message") | (
                 RunRow.config_snapshot["created_from_session_create"].as_boolean().is_(True)
@@ -1096,6 +1092,7 @@ class AgentRunner:
             run.code_version = current.code_version
 
     def _model_binding(self, run: RunRow) -> ModelBinding:
+        from agent_workbench.config.model_settings import model_ref_matches
         from agent_workbench.models.provider import (
             ProviderConfigurationError,
             resolve_provider_profile,
@@ -1108,13 +1105,7 @@ class AgentRunner:
             if (
                 binding.profile.provider_id != run.provider_id
                 or binding.profile.model_name != run.model_name
-                or binding.profile.secret_ref
-                not in {
-                    f"model:{run.provider_id}",
-                    {"xiaomi": "env:XIAOMI_API_KEY", "bailian": "env:DASHSCOPE_API_KEY"}.get(
-                        run.provider_id
-                    ),
-                }
+                or not model_ref_matches(run.provider_id, binding.profile.secret_ref)
             ):
                 raise ProviderConfigurationError("模型绑定快照与任务记录不一致")
             from dataclasses import replace

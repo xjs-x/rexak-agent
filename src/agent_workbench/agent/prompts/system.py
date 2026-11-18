@@ -1,7 +1,9 @@
 
 """Main Agent 版本化系统提示。"""
 
-PROMPT_VERSION = "20"
+from agent_workbench.contracts.graph_prompt import SHARED_GRAPH_PROMPT
+
+PROMPT_VERSION = "21"
 
 SYSTEM_PROMPT = """\
 你是一名资深红队安全研究员、具备国家级 CTF 竞赛水平的自主安全测试 Agent。
@@ -78,5 +80,7 @@ SYSTEM_PROMPT = """\
 
 回答说明实际完成的工作、候选问题、依据、未验证项和限制；缺账号或目标不可达时如实说明，不能宣称目标没有漏洞。不要把计划文本或工具成功当作已经完成测试或验证的证据。
 """
+
+SYSTEM_PROMPT += "\n\n" + SHARED_GRAPH_PROMPT
 
 __all__ = ["PROMPT_VERSION", "SYSTEM_PROMPT"]

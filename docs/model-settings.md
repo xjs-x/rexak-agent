@@ -1,8 +1,10 @@
 # Web 模型设置与官方请求预算
 
-更新：2026-10-15。入口仍为桌面 Rexak Agent → `start-workbench.cmd` → `scripts/start_workbench.py`。
+入口为桌面 Rexak Agent → `start-workbench.cmd` → `scripts/start_workbench.py`。
 
-## 官方参数与输入预算
+## 旧配置迁移时保留的参数
+
+以下是 2026-10-15 核对的内置档案。2026-11-18 的设置改版保留这些档案，用户也可以配置其他提供商、型号及请求预算。
 
 | 供应商 / 模型 | 上下文窗口 | 单次完整输出上限 | 本机允许输入估算上限 |
 | --- | ---: | ---: | ---: |
@@ -27,8 +29,8 @@
 ## 使用与保存
 
 1. 双击原桌面入口。首次未配置 Key 时可正常打开控制台，Runner 等待必要配置。
-2. 左侧“模型设置”选择模型，填写匹配 Key 类型的供应商 HTTPS Base URL，输入 API Key 并保存；同一供应商的模型共享 Key。已有百炼接入地址会从部署配置显示，无需改成 DeepSeek 原厂地址。
-3. Key 留空表示保留，填写新值表示替换，“删除已保存 Key”会显式停用该供应商的本机 Key，不回退到残留环境值。
+2. 在左侧「模型设置」新增或编辑提供商，填写 Provider ID、显示名称、API Base URL 和 API Key。同一提供商的模型共享连接设置和 Key。小米与百炼的已有连接可直接编辑。
+3. 点击「获取可用模型」可用当前表单查询目录，搜索并勾选型号后添加；也可直接填写真实 Model ID。完成型号、能力与默认模型配置后点击「保存提供商」。编辑已有连接时，同源地址可留空保留 Key；勾选「保存时清除 Key」会撤销当前凭据槽的 Key。
 4. 输入框上方选择新聊天或下一运行阶段的模型；创建任务与发送消息都会携带该选择。当前活动或暂停阶段固定原模型与接入地址，界面锁定选择；普通补充与继续沿用当前阶段。需要另一个模型时可新建聊天，结束后的下一阶段也可以切换。
 
 非秘密偏好保存在 `WORKBENCH_DATA_ROOT/settings/models.json`，原子替换；API 与 Runner 读相同配置，不依赖启动器内存传 Key。
@@ -41,8 +43,8 @@ API 只返回是否配置；校验错误不回显输入值，浏览器不在 loc
 
 - `config/catalog.py`：四款模型与来源；`models/provider.py`：档案解析与旧预算升级。
 - `config/model_settings.py`：偏好、DPAPI 与供应商 Key；`config/secrets.py`：统一引用解析。
-- `api/routes.py` / `contracts/models.py`：受会话、Origin 和 CSRF 保护的设置写入、阶段模型选择与快照协议。
+- `api/model_settings.py` / `contracts/models.py`：受会话、Origin 和 CSRF 保护的模型设置、目录发现及协议定义。`api/routes.py` 负责阶段模型选择与快照。
 - `runtime/runner.py`：无 Key 时等待、恢复预算升级及审计；框架主循环仍为官方 `create_agent`。
 - `web/src/ModelConfiguration.tsx` / `App.tsx`：全局设置、任务设置及输入框模型选择。
 
-工程验收与实测范围见[本次验收记录](acceptance-results/2026-10-15/model-settings/README.md)。真实模型与靶场效果由用户测试。
+2026-11-18 改版的验证范围见[测试与验收](../reports/model-settings-redesign/tests.md)。2026-10-15 的历史参数验收见[原验收记录](acceptance-results/2026-10-15/model-settings/README.md)。

@@ -1,5 +1,4 @@
 Port 22
-ListenAddress 0.0.0.0
 HostKey /var/lib/rexak-ssh/ssh_host_ed25519_key
 PermitRootLogin no
 PasswordAuthentication no

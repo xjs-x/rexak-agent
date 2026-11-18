@@ -4,6 +4,7 @@ import { stream as nativeStream } from '@earendil-works/pi-ai/api/openai-complet
 import { createPiWorker } from '../src/pi-runtime.js';
 import { validateModelConfig, type WorkerModelConfig } from '../src/model-provider.js';
 import { validTaskPackage } from '../src/task-package.js';
+import { visibleEvent } from '../src/history.js';
 
 const config: WorkerModelConfig = { kind: 'openai-compatible', provider: 'bailian', model: 'deepseek-v4.1-flash',
   base_url: 'https://fixture.example/compatible-mode/v1', api_key: 'fixture-secret-never-echo', temperature: 1,
@@ -50,6 +51,27 @@ test('native OpenAI-compatible provider performs three turns with mock tools and
   assert.equal(worker.usage().input_tokens, 300); assert.equal(worker.usage().cache_read_tokens, 90);
   assert.equal(worker.usage().input_token_basis, 'total_including_cache');
   assert.equal(worker.usage().output_tokens, 60); assert.equal(worker.usage().usage_status, 'reported');
+});
+test('visible model deltas arrive before the completed message and keep one logical transcript', async () => {
+  const chunk = (content: string, finish: string | null = null) =>
+    'data: ' + JSON.stringify({ id: 'stream-1', object: 'chat.completion.chunk', created: 1, model: config.model,
+      choices: [{ index: 0, delta: { role: 'assistant', content }, finish_reason: finish }] }) + '\n\n';
+  const fake = fakeTransport(() => new Response(new ReadableStream<Uint8Array>({ start(controller) {
+    const encoder = new TextEncoder();
+    controller.enqueue(encoder.encode(chunk('visible first ')));
+    setTimeout(() => { controller.enqueue(encoder.encode(chunk('visible second') + chunk('', 'stop') + 'data: [DONE]\n\n')); controller.close(); }, 20);
+  } }), { headers: { 'content-type': 'text/event-stream' } }));
+  const updates: string[] = [];
+  const worker = createPiWorker('fixture', { modelConfig: config, providerTransport: fake.transport,
+    onVisibleEvent: async event => {
+      if (event.type === 'message_update' || event.type === 'message_end') {
+        const projection = visibleEvent(event.message);
+        if (projection?.role === 'assistant') updates.push(JSON.stringify(projection.message));
+      }
+    } });
+  await worker.run();
+  assert.ok(updates.some(value => value.includes('visible first') && !value.includes('visible second')));
+  assert.ok(updates.at(-1)?.includes('visible first visible second'));
 });
 test('missing provider usage stays unknown, never free', async () => {
   const fake = fakeTransport(() => new Response(streamBody(2, false), { headers: { 'content-type': 'text/event-stream' } }));
@@ -117,8 +139,11 @@ test('measurement settlement failure stops Pi and preserves reported usage', asy
 });
 test('invalid model config and forged handoff fields are rejected', () => {
   assert.throws(() => validateModelConfig({ ...config, api_key: '' }));
-  assert.throws(() => validateModelConfig({ ...config, base_url: 'http://127.0.0.1' }));
-  assert.throws(() => validateModelConfig({ ...config, provider: 'other' }));
+  assert.throws(() => validateModelConfig({ ...config, base_url: 'http://example.test' }));
+  assert.throws(() => validateModelConfig({ ...config, provider: 'not/a/provider' }));
+  assert.equal(validateModelConfig({
+    ...config, provider: 'office-gateway', adapter: 'generic', base_url: 'http://127.0.0.1:8123/v1',
+  }).provider, 'office-gateway');
   assert.ok(validTaskPackage({ objective: 'open exploration', context_refs: [] }));
   assert.ok(!validTaskPackage({ objective: 'x', context_refs: [], api_key: 'forged' }));
   assert.ok(!validTaskPackage({ objective: 'x', context_refs: [], handoff_version: 1, context_id: 'forged', context_sources: [] }));

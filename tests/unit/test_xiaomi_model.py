@@ -158,7 +158,6 @@ def test_bailian_profile_and_nonstream_reasoning_are_provider_specific():
     [
         "",
         "http://fixture.invalid/compatible-mode/v1",
-        "https://fixture.invalid/compatible-mode/v1/chat/completions",
         "https://fixture.invalid/compatible-mode/v1?api_key=fixture",
         "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     ],
@@ -169,6 +168,14 @@ def test_bailian_requires_configured_base_url(endpoint):
     cfg = isolated_settings(DASHSCOPE_BASE_URL=endpoint)
     with pytest.raises(ProviderConfigurationError, match="Base URL"):
         resolve_provider_profile("bailian", settings=cfg)
+
+
+def test_complete_inference_url_normalizes_to_base_url():
+    cfg = isolated_settings(
+        DASHSCOPE_BASE_URL="https://fixture.invalid/compatible-mode/v1/chat/completions/",
+    )
+    profile = resolve_provider_profile("bailian", settings=cfg)
+    assert profile.base_url == "https://fixture.invalid/compatible-mode/v1"
 
 
 def test_nonstream_reasoning_and_default_provider_transport_settings():

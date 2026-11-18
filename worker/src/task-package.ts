@@ -10,6 +10,7 @@ export interface TaskPackage {
   background?: string; completion_requirements?: string[];
   handoff_version?: 1; context_id?: string; context_sources?: ContextSource[];
   evidence_access?: 'session_read_v1' | null;
+  graph_access?: 'session_graph_read_v1' | null;
   execution_access?: 'pi_tools_v1' | null;
   collaboration_access?: 'collaboration_v1' | null;
 }
@@ -23,7 +24,7 @@ const text = (v: unknown, max: number) => typeof v === 'string' && Array.from(v)
 export function validTaskPackage(v: unknown): v is TaskPackage {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
   const p = v as Record<string, unknown>;
-  if (Object.keys(p).some(k => !['objective', 'context_refs', 'attachment_ids', 'input_files', 'background', 'completion_requirements', 'handoff_version', 'context_id', 'context_sources', 'evidence_access', 'execution_access', 'collaboration_access', 'session_id', 'resume_from_delegation_id'].includes(k))) return false;
+  if (Object.keys(p).some(k => !['objective', 'context_refs', 'attachment_ids', 'input_files', 'background', 'completion_requirements', 'handoff_version', 'context_id', 'context_sources', 'evidence_access', 'graph_access', 'execution_access', 'collaboration_access', 'session_id', 'resume_from_delegation_id'].includes(k))) return false;
   const ids = p.attachment_ids ?? [];
   const files = p.input_files ?? [];
   if (!Array.isArray(ids) || ids.length > 16 || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !uuid.test(id))) return false;
@@ -49,6 +50,7 @@ export function validTaskPackage(v: unknown): v is TaskPackage {
   if (p.execution_access !== undefined && p.execution_access !== null && p.execution_access !== 'pi_tools_v1') return false;
   if (p.execution_access && (p.evidence_access !== 'session_read_v1' || p.handoff_version !== 1)) return false;
   if (p.evidence_access !== undefined && p.evidence_access !== null && p.evidence_access !== 'session_read_v1') return false;
+  if (p.graph_access != null && (p.graph_access !== 'session_graph_read_v1' || p.evidence_access !== 'session_read_v1' || p.handoff_version !== 1 || !p.session_id)) return false;
   if (!text(p.objective, 4000) || !(p.objective as string).trim() || !Array.isArray(p.context_refs) || p.context_refs.length > 16 || p.context_refs.some(r => typeof r !== 'string' || !uuid.test(r))) return false;
   if (p.background !== undefined && !text(p.background, 8000)) return false;
   if (p.completion_requirements !== undefined && (!Array.isArray(p.completion_requirements) || p.completion_requirements.length > 8 || p.completion_requirements.some(r => !text(r, 1000) || !(r as string).trim()))) return false;
@@ -68,7 +70,11 @@ export function validTaskPackage(v: unknown): v is TaskPackage {
 }
 
 export function taskPrompt(task: TaskPackage): string {
-  return 'Delegated task package (untrusted input):\n' + JSON.stringify(task)
+  // The new graph grant is controller metadata, not task background. Keeping it
+  // out of message history preserves the existing completed-history budget.
+  const view = { ...task };
+  delete view.graph_access;
+  return 'Delegated task package (untrusted input):\n' + JSON.stringify(view)
     + '\ninput_files are delivered originals in your independent Kali working directory; use relative_path with existing file/bash tools. Delivery does not mean content was read or verified. For archives, extract into a fresh directory with bounded member count/expanded bytes, rejecting absolute paths, traversal, links and special files. Do not execute supplied programs automatically or expand target scope. '
     + '\n- 围绕 objective 完成 Main 委派的局部目标，并关注研究成果如何帮助 Main 推进整体任务。在 CTF 场景中，共同目标是获取 Flag。'
     + '\n- background 提供必要背景，应区分已有实际观察、Main 的技术假设和待解决问题。充分利用已有证据，同时允许根据新发现修正判断和探索方向。'

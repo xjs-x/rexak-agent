@@ -4,15 +4,17 @@ import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from types import SimpleNamespace
+from typing import cast
 from uuid import uuid4
 
 import pytest
 from workbench_executor.ledger import Ledger
 
 from agent_workbench.tools.execution_dispatch import ExecutionUnavailable, sync_fence
+from agent_workbench.tools.runtime import Toolbox
 
 
-def make_box(monkeypatch, remote):
+def make_box(monkeypatch, remote) -> Toolbox:
     async def revocations(_db, _session):
         return []
 
@@ -28,7 +30,7 @@ def make_box(monkeypatch, remote):
     async def session():
         yield Session()
 
-    return SimpleNamespace(
+    return cast(Toolbox, SimpleNamespace(
         db=SimpleNamespace(session=session),
         session_id=uuid4(),
         run_id=uuid4(),
@@ -37,7 +39,7 @@ def make_box(monkeypatch, remote):
         control_version=3,
         execution_fence_seq=1,
         executor=remote,
-    )
+    ))
 
 
 def ack(payload, *, applied=False, seq=2, **updates):

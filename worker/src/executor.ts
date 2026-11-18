@@ -6,6 +6,9 @@ import type { TaskPackage } from './task-package.js';
 import { WorkerStore, terminalStates } from './store.js';
 import type { EvidenceReadRef } from './evidence.js';
 import { remoteTools } from './remote-tools.js';
+import { visibleEvent } from './history.js';
+import { archiveVisibleBody, previewVisibleBody } from './visible-body.js';
+import { skillChannel } from './skills.js';
 import { collaborationChannel, steeringInbox, type ContextMessage } from './collaboration.js';
 import type { WorkerModelConfig } from './model-provider.js';
 
@@ -56,6 +59,16 @@ export class PiExecutor implements AgentExecutor {
           this.status(bus, ctx, TaskState.TASK_STATE_FAILED); return;
         }
         let visibleSequence = 0;
+        let currentMessageSequence: number | undefined;
+        const toolSequences = new Map<string, number>();
+        const toolArguments = new Map<string, { args: unknown; startedAt: number }>();
+        const revisions = new Map<number, number>();
+        const lastDraft = new Map<number, number>();
+        const nextRevision = (sequence: number) => {
+          const revision = (revisions.get(sequence) ?? 0) + 1;
+          revisions.set(sequence, revision);
+          return revision;
+        };
         let modelConfig = this.testOptions.modelConfig;
         try {
           if (this.resolveModel) modelConfig = await this.resolveModel(record.request_id);
@@ -78,15 +91,66 @@ export class PiExecutor implements AgentExecutor {
           await this.store.complete(task.id, TaskState.TASK_STATE_CANCELED, cancelled);
           this.status(bus, ctx, TaskState.TASK_STATE_CANCELED); return;
         }
+        const trustedChannel = this.evidenceConfig ? { ...this.evidenceConfig, requestId: record.request_id,
+          taskId: task.id, contextId: task.contextId, workerId: record.worker_id,
+          ensureActive: async () => {
+            const current = await this.store.byTask(task.id);
+            if (!this.store.available || handle.cancelled || !current || current.phase !== 'running' || current.cancel_requested)
+              throw new Error('Worker controller access no longer active');
+          } } : undefined;
+        const skillClient = trustedChannel ? skillChannel(trustedChannel) : undefined;
+        let skillCatalog: Awaited<ReturnType<ReturnType<typeof skillChannel>['catalog']>> = [];
+        let skillCatalogError: string | undefined;
+        if (skillClient) {
+          try { skillCatalog = await skillClient.catalog(); }
+          catch (error) {
+            skillCatalogError = error instanceof Error ? error.message : 'Skill directory unavailable';
+            console.error('Worker Skill catalog unavailable:', skillCatalogError);
+          }
+        }
         const worker = this.workerFactory(objective, { ...this.testOptions, modelConfig, history, task: record.payload as unknown as TaskPackage,
+          skillChannel: skillClient, skillCatalog, skillCatalogError,
           isCancellationRequested: () => handle.cancelled,
-          onVisibleMessage: message => this.store.appendVisibleEvent(record.request_id, ++visibleSequence, message),
-          ...(this.evidenceConfig ? { evidence: { ...this.evidenceConfig, requestId: record.request_id,
-            taskId: task.id, contextId: task.contextId, workerId: record.worker_id,
-            ensureActive: async () => {
-              const current = await this.store.byTask(task.id);
-              if (!this.store.available || handle.cancelled || !current || current.phase !== 'running' || current.cancel_requested) throw new Error('Evidence access no longer active');
-            } } } : {}),
+          onVisibleEvent: async event => {
+            if (event.type === 'message_start') {
+              currentMessageSequence = ++visibleSequence;
+            } else if (event.type === 'message_update' || event.type === 'message_end') {
+              const projected = visibleEvent(event.message);
+              if (!projected) return;
+              const sequence = currentMessageSequence ?? ++visibleSequence;
+              currentMessageSequence = sequence;
+              const complete = event.type === 'message_end';
+              const now = Date.now();
+              if (!complete && now - (lastDraft.get(sequence) ?? 0) < 120) return;
+              lastDraft.set(sequence, now);
+              let body = projected.message;
+              if (projected.role === 'assistant') {
+                body = complete ? await archiveVisibleBody(trustedChannel, sequence, body) : previewVisibleBody(body);
+              }
+              await this.store.writeVisibleEvent(record.request_id, sequence, projected.role,
+                body, complete ? 'complete' : 'streaming', nextRevision(sequence));
+              if (complete) currentMessageSequence = undefined;
+            } else if (event.type === 'tool_execution_start') {
+              const sequence = ++visibleSequence;
+              toolSequences.set(event.toolCallId, sequence);
+              toolArguments.set(event.toolCallId, { args: event.args, startedAt: Date.now() });
+              await this.store.writeVisibleEvent(record.request_id, sequence, 'tool_execution',
+                { toolCallId: event.toolCallId, toolName: event.toolName, args: event.args,
+                  status: 'running', startedAt: toolArguments.get(event.toolCallId)!.startedAt }, 'streaming', nextRevision(sequence));
+            } else if (event.type === 'tool_execution_end') {
+              const sequence = toolSequences.get(event.toolCallId);
+              if (sequence === undefined) return;
+              const initial = toolArguments.get(event.toolCallId);
+              await this.store.writeVisibleEvent(record.request_id, sequence, 'tool_execution',
+                { toolCallId: event.toolCallId, toolName: event.toolName, args: initial?.args,
+                  status: event.result?.isError ? 'failed' : 'callback_completed',
+                  startedAt: initial?.startedAt, finishedAt: Date.now() },
+                'complete', nextRevision(sequence));
+              toolSequences.delete(event.toolCallId);
+              toolArguments.delete(event.toolCallId);
+            }
+          },
+          ...(trustedChannel ? { evidence: trustedChannel } : {}),
           callHooks: {
             start: (sequence, startedAt) => this.store.beginModelCall(record, task.contextId, sequence, startedAt, modelConfig!),
             finish: metric => this.store.finishModelCall(record.request_id, metric),

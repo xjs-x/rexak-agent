@@ -1,11 +1,14 @@
 import { HISTORY_LIMIT } from './history.js';
-import { Agent, type StreamFn, type AgentMessage } from '@earendil-works/pi-agent-core';
+import { Agent, type StreamFn, type AgentMessage, type AgentEvent } from '@earendil-works/pi-agent-core';
 import { createAssistantMessageEventStream, type AssistantMessage, type Model } from '@earendil-works/pi-ai';
 import { realStream, providerModel, type WorkerModelConfig, type ModelCallMetric, type CallHooks } from './model-provider.js';
 import { taskPrompt, type TaskPackage } from './task-package.js';
 import { evidenceTools, type EvidenceChannel } from './evidence.js';
 import { remoteTools } from './remote-tools.js';
 import { findingTool } from './collaboration.js';
+import { workerSkillTools, type SkillCard, type skillChannel } from './skills.js';
+import { graphTools } from './graph.js';
+import { SHARED_GRAPH_PROMPT } from './graph-contract.js';
 
 export const SYSTEM_PROMPT = `# Pi Worker：协作型安全研究 Agent
 
@@ -73,6 +76,10 @@ export interface PiOptions {
   evidence?: EvidenceChannel;
   isCancellationRequested?: () => boolean;
   onVisibleMessage?: (message: AgentMessage) => Promise<void>;
+  onVisibleEvent?: (event: AgentEvent) => Promise<void>;
+  skillCatalog?: SkillCard[];
+  skillChannel?: ReturnType<typeof skillChannel>;
+  skillCatalogError?: string;
 }
 export function createPiWorker(objective: string, options: PiOptions = {}) {
   const observations: { source: 'mock_tool'; text: string }[] = [];
@@ -83,9 +90,12 @@ export function createPiWorker(objective: string, options: PiOptions = {}) {
   const remote = options.evidence && options.task?.execution_access === 'pi_tools_v1' ? remoteTools(options.evidence, () => agent.abort()) : undefined;
   const collaboration = options.evidence && options.task?.collaboration_access === 'collaboration_v1'
     ? findingTool(options.evidence, evidence?.reads ?? new Map(), remote?.outputRefs ?? new Map()) : undefined;
+  const skills = options.skillChannel ? workerSkillTools(options.skillChannel, options.skillCatalog ?? [], remote?.runSkillScript) : undefined;
+  const graph = options.evidence && options.task?.graph_access === 'session_graph_read_v1' ? graphTools(options.evidence) : undefined;
+  let graphInitialized = false;
   const agent = new Agent({
     sessionId: options.task?.context_id,
-    initialState: { systemPrompt: SYSTEM_PROMPT + (remote ? ' The six basic tools operate in your isolated Kali working directory via Executor. read reads Kali files; read_evidence reads saved Session history. Use bash for authorized programs. No access to Node local files or host environment.' : ' Execution tools are mock only; do not test real targets.'), model: options.modelConfig ? providerModel(options.modelConfig) : mockModel, messages: options.history ?? [], tools: [...(remote ? remote.tools : [{
+    initialState: { systemPrompt: SYSTEM_PROMPT + (graph ? '\n\n' + SHARED_GRAPH_PROMPT : '') + (remote ? ' The six basic tools operate in your isolated Kali working directory via Executor. read reads Kali files; read_evidence reads saved Session history. Use bash for authorized programs. No access to Node local files or host environment.' : ' Execution tools are mock only; do not test real targets.'), model: options.modelConfig ? providerModel(options.modelConfig) : mockModel, messages: options.history ?? [], tools: [...(remote ? remote.tools : [{
       name: 'mock_observe', label: 'Mock observation', description: 'Records synthetic test data; no external effects.',
       parameters: { type: 'object', properties: { text: { type: 'string', maxLength: 1000 } }, required: ['text'], additionalProperties: false },
       async execute(_id: string, params: unknown, signal?: AbortSignal) {
@@ -99,23 +109,53 @@ export function createPiWorker(objective: string, options: PiOptions = {}) {
         if (observations.length < 32) observations.push({ source: 'mock_tool', text });
         return { content: [{ type: 'text' as const, text }], details: { mock: true } };
       },
-    }]), ...(evidence?.tools ?? []), ...(collaboration ? [collaboration] : [])] },
-    transformContext: async messages => {
-      if (!options.history?.length) return messages;
-      // Conservative UTF-8 byte upper bound on tokens, with room for tools/system and next output.
-      const budget = Math.min(HISTORY_LIMIT, (options.modelConfig ? options.modelConfig.context_window - options.modelConfig.max_tokens : 12000) - 4000);
-      if (Buffer.byteLength(JSON.stringify(messages)) > budget) throw new Error('Pi context capacity exceeded; start a fresh delegation with evidence refs');
-      return messages;
+    }]), ...(evidence?.tools ?? []), ...(collaboration ? [collaboration] : []), ...(skills?.tools ?? []), ...(graph?.tools ?? [])] },
+    transformContext: async (messages, signal) => {
+      const context = skills?.context();
+      if (!context && !options.history?.length && !graph) return messages;
+      const inputWindow = options.modelConfig ? options.modelConfig.context_window - options.modelConfig.max_tokens : 12000;
+      // The complete graph-enabled view already includes Pi's system/tool
+      // declarations. Reserve actual model output plus a serialization margin;
+      // do not subtract the legacy 4000-token tool reserve a second time.
+      const budget = graph ? Math.min(HISTORY_LIMIT, Math.floor(inputWindow * 0.9))
+        : Math.min(HISTORY_LIMIT, inputWindow - 4000);
+      const view: AgentMessage[] = context ? [...messages, { role: 'user', content: `当前 Worker 活跃 Skill 指导（仅本次模型请求的上下文视图）：\n${context}`, timestamp: 0 }] : [...messages];
+      const contextBytes = Buffer.byteLength(JSON.stringify(view));
+      // Pi includes live tool declarations in system messages. For graph-enabled
+      // tasks, estimate the complete serialized view in the same UTF-8 / 3 unit
+      // as the controller; treating each schema byte as a token would reject a
+      // valid resumed context merely because three read tools were registered.
+      const contextCost = graph ? Math.ceil(contextBytes / 3) : contextBytes;
+      if ((context || options.history?.length || graph) && contextCost > budget) throw new Error(`Pi context capacity exceeded; unload irrelevant Skills or start a fresh delegation (input_bytes=${contextBytes}, estimated_input=${contextCost}, input_budget=${budget})`);
+      if (graph && !graphInitialized) {
+        // Pi's existing conservative byte budget is independent of Main's request estimator.
+        // The graph estimate uses the same units; nested JSON can double its
+        // cost through quoting. Reserve that and the dynamic message framing.
+        const available = Math.max(0, Math.min(8192, Math.floor((budget - contextCost - 512) / 2)));
+        let initial: unknown;
+        try { initial = await graph.initial(available, signal); }
+        catch (error) {
+          if (signal?.aborted || options.isCancellationRequested?.()) throw error;
+          initial = { mode: 'omitted', note: 'Initial shared graph unavailable; graph_overview / graph_query remain available.', error: error instanceof Error ? error.message : 'graph_read_failed' };
+        }
+        view.push({ role: 'user', content: `当前 Session 共享双图（仅本次模型请求的上下文视图）：\n${JSON.stringify(initial)}`, timestamp: 0 });
+        graphInitialized = true;
+      }
+      return view;
     },
     streamFn: options.modelConfig ? realStream(options.modelConfig, metrics, options.callHooks, options.providerTransport) : mockStream(options.fail, !!remote), toolExecution: 'sequential',
   });
   const historicalAssistantCount = (options.history ?? []).filter(m => m.role === 'assistant').length;
   // Token deltas and private content never enter durable task metadata.
   agent.subscribe(event => { if (event.type !== 'message_update' && events.length < 256) events.push(event.type); });
-  if (options.onVisibleMessage) agent.subscribe(async event => {
-    if (event.type !== 'message_end') return;
-    try { await options.onVisibleMessage!(event.message); }
-    catch (error) { console.error('Worker visible history write failed:', error instanceof Error ? error.name : 'unknown'); }
+  if (options.onVisibleMessage || options.onVisibleEvent) agent.subscribe(async event => {
+    try {
+      if (options.onVisibleEvent) await options.onVisibleEvent(event);
+      else if (event.type === 'message_end') await options.onVisibleMessage!(event.message);
+    } catch (error) {
+      // Observability cannot change the Pi task result or replay an Executor operation.
+      console.error('Worker visible history write failed:', error instanceof Error ? error.name : 'unknown');
+    }
   });
   return { agent, observations, events, metrics, evidenceReads: evidence?.reads ?? new Map(), outputRefs: remote?.outputRefs ?? new Map(),
     get outputRefsTruncated() { return remote?.outputRefsTruncated ?? false; },
@@ -131,7 +171,10 @@ export function createPiWorker(objective: string, options: PiOptions = {}) {
       cache_write_tokens: sum('cache_write_tokens'), failure_reason: [...metrics].reverse().find(m => m.failure_reason)?.failure_reason ?? null };
   }, async run() {
     let promptError: unknown;
-    try { await agent.prompt(options.task ? taskPrompt(options.task) : objective); }
+    try { await agent.prompt(options.task ? taskPrompt(options.task) + (options.skillCatalog?.length
+      ? '\n当前任务固定 Skill 目录（仅名称/描述；可按需 load_skill）：\n' + options.skillCatalog.slice(0, 30)
+        .map(item => `${item.name} (${item.skill_id}@${item.version_id}): ${bounded(item.description, 240)}`).join('\n')
+      : options.skillCatalogError ? `\nSkill 目录暂不可用：${options.skillCatalogError}` : '') : objective); }
     catch (error) { promptError = error; }
     if (remote) {
       const last = agent.state.messages.at(-1);

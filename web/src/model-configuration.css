@@ -1,0 +1,71 @@
+.model-configuration, .catalog-model-form { display: grid; gap: 14px; }
+.model-configuration { min-width: 0; }
+.model-configuration form, .catalog-connection, .catalog-provider-models { display: grid; gap: 13px; }
+.catalog-connection { min-width: 0; margin: 0; padding: 0; border: 0; }
+.catalog-connection legend { padding: 0; margin-bottom: 12px; font-size: 14px; font-weight: 600; }
+.catalog-heading, .catalog-provider-row, .catalog-actions, .catalog-inline, .catalog-picker-tools {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.catalog-heading, .catalog-provider-row { justify-content: space-between; }
+.catalog-heading h3 { margin: 0; font-size: 16px; }
+.catalog-heading p, .catalog-advanced p, .catalog-dialog > p {
+  color: #5d6876; font-size: 12px; line-height: 1.55; margin: 4px 0 0;
+}
+.catalog-heading > div { min-width: 0; overflow-wrap: anywhere; }
+.model-configuration button {
+  padding: 6px 10px; border: 1px solid #d9e0e8; border-radius: 7px;
+  background: #fff; color: #415166; font-size: 12px; line-height: 1.45;
+}
+.model-configuration button:hover:not(:disabled):not(.primary) { background: #f3f6fa; border-color: #b6c7dd; }
+.model-configuration button.primary, .modal.catalog-dialog button.primary {
+  background: #3e6fad; border-color: #3e6fad; color: #fff;
+}
+.model-configuration button.catalog-back { border-color: transparent; padding: 4px 0; color: #506278; background: transparent; margin-bottom: 6px; }
+.catalog-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.model-configuration label, .modal.catalog-dialog label { display: grid; gap: 5px; margin: 0; font-size: 12px; color: #3d4856; }
+.model-configuration :is(input, select), .modal.catalog-dialog :is(input, select) {
+  box-sizing: border-box; width: 100%; min-width: 0; margin: 0; padding: 8px 10px;
+  border: 1px solid #d9e0e8; border-radius: 7px; background: #fff; color: #233044; font: inherit;
+}
+.model-configuration :is(input, select):focus-visible, .catalog-dialog :is(input, select):focus-visible {
+  outline: 2px solid #8aace1; outline-offset: 1px;
+}
+.model-configuration input[readonly] { background: #f5f7f9; color: #526075; }
+.model-configuration input[aria-invalid="true"] { border-color: #b45959; }
+.catalog-advanced { border-top: 1px solid #e9edf2; padding: 10px 0 0; margin-top: 3px; }
+.catalog-advanced summary { cursor: pointer; font-size: 13px; color: #46576e; }
+.catalog-advanced > :is(label, div) { margin-top: 9px; }
+.catalog-provider-models { border-top: 1px solid #e0e6ec; padding-top: 15px; }
+.catalog-rows, .catalog-expanded { padding: 0; margin: 0; list-style: none; }
+.catalog-rows > li { border-bottom: 1px solid #e9edf2; padding: 10px 0; }
+.catalog-identity { display: grid; min-width: 0; gap: 4px; flex: 1 1 220px; }
+.catalog-identity :is(strong, small) { overflow-wrap: anywhere; }
+.catalog-identity strong { font-size: 14px; }
+.catalog-id, .catalog-endpoint, .catalog-identity small, .catalog-expanded small { font-size: 11px; color: #5e6879; }
+.catalog-endpoint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-expanded { background: #f7f9fb; margin-top: 10px; padding: 6px 10px; border-radius: 6px; max-height: 230px; overflow: auto; }
+.catalog-expanded li { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; padding: 4px 0; font-size: 12px; overflow-wrap: anywhere; }
+.catalog-empty { padding: 14px 12px; margin: 0; background: #f6f8fa; border-radius: 7px; color: #536176; font-size: 12px; }
+.catalog-actions { justify-content: flex-end; margin-top: 8px; }
+.catalog-error, .catalog-feedback { margin: 0; color: #982d2d; font-size: 12px; line-height: 1.5; }
+.catalog-feedback { color: #315e51; }
+.modal.catalog-dialog {
+  box-sizing: border-box; width: min(540px, calc(100% - 24px)); max-height: calc(100dvh - 28px);
+  color: #283545; padding: clamp(14px, 4vw, 24px);
+}
+.catalog-dialog::backdrop { background: #29374749; }
+.catalog-dialog > :is(label, form, div) { margin-top: 12px; }
+.catalog-picker-tools span { margin-left: auto; font-size: 12px; color: #526075; }
+.catalog-picker-list { max-height: min(38dvh, 330px); min-height: 60px; overflow: auto; border-block: 1px solid #e5eaf0; padding: 4px; }
+.model-configuration .catalog-check, .modal.catalog-dialog .catalog-check { display: flex; align-items: center; gap: 8px; }
+.catalog-picker-list .catalog-check { padding: 6px 4px; min-height: 30px; overflow-wrap: anywhere; }
+.catalog-picker-list .catalog-check:hover { background: #f3f6fa; }
+.catalog-picker-list .catalog-check small { margin-inline-start: auto; flex: none; color: #647185; }
+.catalog-check input[type="checkbox"], .modal.catalog-dialog .catalog-check input {
+  flex: none; width: 16px; height: 16px; margin: 0; accent-color: #4476b7;
+}
+@media (max-width: 510px) {
+  .catalog-field-grid { grid-template-columns: 1fr; }
+  .catalog-provider-row { align-items: start; }
+  .catalog-identity { flex-basis: 100%; }
+}

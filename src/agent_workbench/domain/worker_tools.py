@@ -20,6 +20,7 @@ from agent_workbench.config.ultra_worker import read_worker_config
 from agent_workbench.contracts.enums import ErrorCode, ToolEffectClass
 from agent_workbench.contracts.errors import ApiError
 from agent_workbench.contracts.identity import ScopeSnapshot
+from agent_workbench.contracts.skill_package import encode_package, safe_skill_path
 from agent_workbench.contracts.worker_tools import WorkerToolRequest
 from agent_workbench.domain.scope import ScopePolicy
 from agent_workbench.domain.worker_evidence import guard
@@ -43,14 +44,16 @@ from agent_workbench.persistence.tables import (
     SessionRow,
     ToolOperationRow,
 )
-from agent_workbench.tools.commands import run_execution_kernel
+from agent_workbench.skills.service import SkillService
+from agent_workbench.tools.commands import common_execution_arguments, run_execution_kernel
 from agent_workbench.tools.execution_context import execution_context
 from agent_workbench.tools.execution_dispatch import require_capability
 from agent_workbench.tools.operation import OperationRegistry
 from agent_workbench.tools.runtime import ResourceLocks, Toolbox
 
 ALLOWED = {"read": {"access", "read"}, "write": {"mkdir", "write"}, "edit": {"access", "read", "write"},
-           "find": {"exists", "glob"}, "grep": {"grep"}, "bash": {"bash"}}
+           "find": {"exists", "glob"}, "grep": {"grep"}, "bash": {"bash"},
+           "skill_script": {"run"}}
 TERMINAL = {"exited", "closed", "cancelled"}
 logger = logging.getLogger(__name__)
 
@@ -213,8 +216,55 @@ class WorkerToolService:
         action = str(args.pop("action", ""))
         if action not in ALLOWED[value.tool]:
             raise ApiError(ErrorCode.FORBIDDEN, "Pi Operations 动作与工具不匹配")
-        file_action = action != "bash"
-        if file_action:
+        file_action = action not in {"bash", "run"}
+        if value.tool == "skill_script":
+            skill_id = str(args.get("skill_id", ""))
+            version_id = str(args.get("version_id", ""))
+            item = next((item for item in await SkillService(self.db, self.settings).catalog(run.id)
+                         if item["skill_id"] == skill_id), None)
+            if item is None or item["version_id"] != version_id:
+                raise ApiError(ErrorCode.FORBIDDEN, "Skill 不在本 Run 固定目录")
+            card, files, spec = await SkillService(self.db, self.settings).session_files(parent.id, skill_id, version_id)
+            if card.package_hash != item["package_hash"]:
+                raise ApiError(ErrorCode.CONFLICT, "Skill 版本校验失败")
+            entry = (spec.get("runtime", {}).get("entrypoints") or {}).get(args.get("path"), {})
+            path = entry.get("path", args.get("path"))
+            if not isinstance(path, str):
+                raise ApiError(ErrorCode.VALIDATION_FAILED, "Skill 脚本路径无效")
+            safe_skill_path(path)
+            if not path.startswith("scripts/") or path not in files:
+                raise ApiError(ErrorCode.FORBIDDEN, "只能执行 Skill 包内 scripts/ 脚本")
+            interpreter = entry.get("interpreter") or {"py": "python", "sh": "shell", "js": "node"}.get(path.rsplit(".", 1)[-1])
+            if not interpreter:
+                raise ApiError(ErrorCode.VALIDATION_FAILED, "Skill 脚本解释器不受支持")
+            argv = args.get("argv") or []
+            if not isinstance(argv, list) or len(argv) > 32 or any(not isinstance(arg, str) or len(arg) > 4096 for arg in argv):
+                raise ApiError(ErrorCode.VALIDATION_FAILED, "Skill 脚本参数无效")
+            if args.get("stdin_json") is not None:
+                if not isinstance(args["stdin_json"], str):
+                    raise ApiError(ErrorCode.VALIDATION_FAILED, "Skill JSON 输入无效")
+                json.loads(args["stdin_json"])
+            caps = await client.capabilities()
+            if caps.execution_mode != "trusted" or not caps.execution_capable("skill_packages") or not caps.execution_capable("command"):
+                raise ApiError(ErrorCode.EXECUTOR_INCOMPATIBLE, "Kali 未启用 Skill 包和命令能力")
+            key = hashlib.sha256(f"{run.id}:{root_key}:{value.step}".encode()).hexdigest()[:32]
+            payload = {"session_id": str(parent.id), "worker_workspace_id": str(row.id),
+                "package_hash": card.package_hash, "output_key": key, "interpreter": interpreter,
+                "required_binaries": (spec.get("runtime", {}).get("requires") or {}).get("binaries", [])}
+            receipt = await client.execution_skill_package(payload)
+            if receipt.get("package_required"):
+                receipt = await client.execution_skill_package({**payload,
+                    "archive_base64": base64.b64encode(encode_package(files)).decode()})
+            command_args = common_execution_arguments(cwd=receipt["output_relative"],
+                env={"PYTHONDONTWRITEBYTECODE": "1", "SKILL_DIR": receipt["skill_dir"],
+                     "SKILL_OUTPUT_DIR": receipt["output_dir"], "WORKBENCH_WORKSPACE": receipt["workspace"]},
+                stdin_text=args.get("stdin_json"), execution_timeout_seconds=args.get("execution_timeout_seconds"),
+                output_limit_action="preserve_process", description=f"Worker Skill {card.name}@{card.package_hash[:12]}: {path}",
+                workspace_id=str(parent.id), extra={"worker_workspace_id": str(row.id),
+                    "argv": [receipt["interpreter"], receipt["skill_dir"] + "/" + path, *argv],
+                    "skill_ref": {"skill_id": skill_id, "version_id": version_id,
+                                  "package_hash": card.package_hash, "script": path}})
+        elif file_action:
             path = str(args.get("path") or ".")
             if path.startswith("/"):
                 try:
@@ -227,8 +277,11 @@ class WorkerToolService:
             command_args = {"argv": ["true"], "worker_file": {"action": action, **args}, "execution_timeout_seconds": 30}
         else:
             command_args = {"command": str(args["command"]), "execution_timeout_seconds": args.get("timeout")}
-        command_args.update(workspace_id=str(parent.id), worker_workspace_id=str(row.id), cwd=".",
-            description=f"Pi Worker {row.id} {value.tool}", completion_role="work")
+        if value.tool == "skill_script":
+            command_args["completion_role"] = "work"
+        else:
+            command_args.update(workspace_id=str(parent.id), worker_workspace_id=str(row.id), cwd=".",
+                description=f"Pi Worker {row.id} {value.tool}", completion_role="work")
         key = root_key + f":{value.step}"
         from agent_workbench.contracts.execution_runtime import validate_arguments
 

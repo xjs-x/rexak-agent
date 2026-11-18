@@ -33,6 +33,14 @@ from agent_workbench.tsecbench.workbench_api import HttpWorkbenchApi
 Emit = Callable[[str, object], None]
 
 
+def configure_docker_executor(*, start: bool = False) -> None:
+    """Use the desktop entry's Docker identity in this process and its children."""
+    from scripts.kali_docker import activate
+
+    activate(start=start)
+    get_settings.cache_clear()
+
+
 def last_profile_fields(*, root: Path | None = None) -> dict[str, str]:
     """Restore the last private form; never log its secret values or start work."""
     files = list((root or private_home() / "profiles").glob("*/tsecbench.env"))
@@ -269,6 +277,7 @@ async def inspect_readiness(
     config: BenchmarkConfig, *, require_api: bool = True
 ) -> list[ChallengeInfo]:
     config.require_ready()
+    await asyncio.to_thread(configure_docker_executor)
     async with SdkPlatformClient(config) as platform:
         rows = await platform.list_challenges()
     if not await kali_vpn_health():
@@ -386,6 +395,7 @@ class ConsoleProcess:
         self.child: subprocess.Popen[bytes] | None = None
 
     async def start(self, config: BenchmarkConfig) -> None:
+        await asyncio.to_thread(configure_docker_executor, start=True)
         async with httpx.AsyncClient(trust_env=False, timeout=2) as client:
             try:
                 response = await client.get(config.api_base_url + "/health")
@@ -409,6 +419,7 @@ class ConsoleProcess:
                     sys.executable,
                     str(REPO_ROOT / "scripts/start_workbench.py"),
                     "--api-only",
+                    "--no-recover",
                     "--no-browser",
                 ],
                 cwd=REPO_ROOT,

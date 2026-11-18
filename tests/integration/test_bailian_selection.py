@@ -29,6 +29,7 @@ async def test_selected_provider_drives_new_runs_and_fixed_runtime_binding(
         }
     )
     monkeypatch.setattr("agent_workbench.api.routes.get_settings", lambda: cfg)
+    monkeypatch.setattr("agent_workbench.api.model_settings.get_settings", lambda: cfg)
     from agent_workbench.config.model_settings import write_model_key
     write_model_key("bailian", "fixture-bailian-persisted", cfg)
     with TestClient(create_app()) as client:

@@ -115,6 +115,7 @@ class DelegationManager:
             context_id = uuid5(delegation_id, "pi-context:v1")
             handoff = WorkerTaskPackage.model_validate({**payload, "context_id": context_id, "session_id": self.session_id, "context_sources": sources,
                 "evidence_access": "session_read_v1", "collaboration_access": "collaboration_v1",
+                "graph_access": "session_graph_read_v1" if self.settings.session_graph_enabled else None,
                 "execution_access": "pi_tools_v1" if self.settings.ultra_worker_execution_enabled else None}).model_dump(mode="json") if existing is None else existing.handoff_snapshot
             await db.execute(insert(AgentDelegationRow).values(
                 id=delegation_id, parent_session_id=self.session_id, parent_run_id=self.run_id,
@@ -124,7 +125,7 @@ class DelegationManager:
                 authorization_snapshot={"scope": parent.scope_snapshot, "policy": parent.policy_snapshot,
                     "identity_id": str(parent.active_identity_id) if parent.active_identity_id else None,
                     "owner_generation": generation, "control_version": control_version,
-                    "tool_allowlist": (["read", "bash", "edit", "write", "grep", "find"] if self.settings.ultra_worker_execution_enabled else ["mock_observe"]) + ["list_evidence", "read_evidence", "report_finding"],
+                    "tool_allowlist": (["read", "bash", "edit", "write", "grep", "find", "skill_script"] if self.settings.ultra_worker_execution_enabled else ["mock_observe"]) + ["list_evidence", "read_evidence", "report_finding"] + (["graph_overview", "graph_query", "read_shared_graph"] if self.settings.session_graph_enabled else []),
                     "executor_access": self.settings.ultra_worker_execution_enabled},
             ).on_conflict_do_nothing(index_elements=[AgentDelegationRow.id]))
             row = await db.get(AgentDelegationRow, delegation_id)

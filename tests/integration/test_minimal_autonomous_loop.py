@@ -46,7 +46,7 @@ from tests.support.scripted_model import final_text, tool_call
 pytestmark = pytest.mark.integration
 
 
-async def test_api_explicitly_rejects_paused_skills(database, unique_name):
+async def test_api_accepts_skill_references_for_runtime_validation(database, unique_name):
     with TestClient(create_app()) as client:
         session_id, _run_id, headers = create_task(client, unique_name)
         response = client.post(
@@ -54,7 +54,7 @@ async def test_api_explicitly_rejects_paused_skills(database, unique_name):
             headers={**headers, "Idempotency-Key": "disabled-skill"},
             json={"content": "继续", "skill_refs": ["user:example"]},
         )
-        assert response.status_code == 422 and "暂不启用 Skills" in response.text
+        assert response.status_code == 202
         async with database.session() as db:
             task = await db.get(SessionRow, session_id)
         response = client.post(
@@ -67,7 +67,7 @@ async def test_api_explicitly_rejects_paused_skills(database, unique_name):
                 "initial_skill_refs": ["user:example"],
             },
         )
-        assert response.status_code == 422 and "暂不启用 Skills" in response.text
+        assert response.status_code == 201
 
 
 @pytest.mark.parametrize(

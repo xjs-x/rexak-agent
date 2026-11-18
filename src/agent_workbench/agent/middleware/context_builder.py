@@ -155,6 +155,7 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
         trimmed: list[str] = []
         profile = self.profile
         budget = None
+        awareness_presented = False
         if decision_board is not None and box is not None:
             box.context_manifest = {
                 "decision_memory": {"projection": decision_board, "selection_trace": decision_trace,
@@ -173,24 +174,74 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                     tool_choice=request.tool_choice,
                 )
 
+            def inject_graph(snapshot, available):
+                nonlocal context, merged, budget
+                from agent_workbench.domain.graph_read import adaptive
+
+                assert working_view is not None
+                # JSON embedded in a provider message has quoting/framing costs beyond
+                # the graph's standalone estimate. Check the complete wire request.
+                for _ in range(12):
+                    working_view["shared_graph"] = adaptive(snapshot, available,
+                        attack_enabled=ctx.toolbox.settings.graph_attack_enabled if ctx else True)
+                    context = compose_view()
+                    merged = compose(context)
+                    budget = estimate()
+                    excess = budget.estimated_input_tokens - budget.allowed_input_tokens
+                    if excess <= 0 or working_view["shared_graph"]["mode"] == "omitted":
+                        return
+                    available = max(0, available - max(128, excess))
+                working_view["shared_graph"] = adaptive(snapshot, 0,
+                    attack_enabled=ctx.toolbox.settings.graph_attack_enabled if ctx else True)
+                context = compose_view()
+                merged = compose(context)
+                budget = estimate()
+
             budget = estimate()
+            if (box is not None and not graph_review_scope.get()
+                    and getattr(box.settings, "session_graph_enabled", False)
+                    and getattr(box.settings, "decision_memory_mode", "current") == "current"
+                    and (not getattr(box, "graph_awareness_initialized", False)
+                         or ((working_view or {}).get("session_memory") or {}).get("overflow"))):
+                from agent_workbench.domain.session_graph import read_graph
+
+                working_view = working_view or {}
+                memory = working_view.get("session_memory") or {}
+                if "graph" not in memory:
+                    async with box.db.session() as db:
+                        snapshot = await read_graph(db, box.session_id)
+                    available = max(0, budget.allowed_input_tokens - budget.estimated_input_tokens - 256)
+                    inject_graph(snapshot, available)
+                awareness_presented = True
             if (
                 budget.estimated_input_tokens > budget.allowed_input_tokens
                 and working_view
                 and "graph" in (working_view.get("session_memory") or {})
             ):
-                working_view["session_memory"] = {
-                    "overflow": True,
-                    "note": "本次完整图无法放入请求预算，未呈现、未确认；可 get_graph。正常工作及自然结束不受限。",
-                }
+                snapshot = working_view["session_memory"]["graph"]
+                if "revision" not in snapshot and ctx is not None:
+                    # Legacy/incomplete projections cannot supply snapshot identity.
+                    from agent_workbench.domain.session_graph import read_graph
+
+                    async with ctx.toolbox.db.session() as db:
+                        snapshot = await read_graph(db, ctx.toolbox.session_id)
+                # An overview must not authorize acknowledgement of an unpresented history page.
+                working_view["session_memory"] = {"overflow": True,
+                    "note": "完整历史核对页未呈现、未确认；get_graph 可重新取得 pending_page。"}
+                working_view.pop("shared_graph", None)
                 if ctx is not None:
                     ctx.toolbox.graph_sync_snapshot = None
                 context = compose_view()
                 merged = compose(context)
                 budget = estimate()
+                inject_graph(snapshot, max(0, budget.allowed_input_tokens - budget.estimated_input_tokens - 256))
             if ctx is not None and budget.estimated_input_tokens > budget.allowed_input_tokens:
                 for index, message in enumerate(selected):
-                    if not isinstance(message, ToolMessage) or len(str(message.content)) < 512:
+                    old_graph_projection = (
+                        message.additional_kwargs.get("host_projection") == "host_context_update"
+                        and any(key in str(message.content) for key in ('"shared_graph"', '"information_graph"'))
+                    )
+                    if (not isinstance(message, ToolMessage) and not old_graph_projection) or len(str(message.content)) < 512:
                         continue
                     source = await persist_history(ctx.toolbox, [message])
                     selected[index] = message.model_copy(
@@ -342,7 +393,10 @@ class ContextBuilderMiddleware(AgentMiddleware[AgentGraphState, RunContext]):
                 await present_page(db, ctx.toolbox, memory["page_id"])
 
         updated = request.override(system_message=merged, messages=selected)
-        return retain_updates(await handler(updated), context_updates)
+        response = await handler(updated)
+        if awareness_presented and box is not None:
+            box.graph_awareness_initialized = True
+        return retain_updates(response, context_updates)
 
 
 def _copy_working(working: Any) -> dict[str, Any] | None:

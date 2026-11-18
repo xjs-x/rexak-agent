@@ -38,6 +38,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/delegations/{delegation_id}/trajectory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Worker Trajectory */
+        get: operations["worker_trajectory_api_sessions__session_id__delegations__delegation_id__trajectory_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/delegations/{delegation_id}/trajectory/{sequence}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Worker Trajectory Message */
+        get: operations["worker_trajectory_message_api_sessions__session_id__delegations__delegation_id__trajectory__sequence__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/delegations/{delegation_id}/output/{artifact_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Worker Output */
+        get: operations["worker_output_api_sessions__session_id__delegations__delegation_id__output__artifact_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/delegations/{delegation_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Worker Events */
+        get: operations["worker_events_api_sessions__session_id__delegations__delegation_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/delegations": {
         parameters: {
             query?: never;
@@ -724,24 +792,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/settings/models": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Model Settings */
-        get: operations["get_model_settings_api_settings_models_get"];
-        /** Update Model Settings */
-        put: operations["update_model_settings_api_settings_models_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/settings/prices": {
         parameters: {
             query?: never;
@@ -831,6 +881,79 @@ export interface paths {
          */
         put: operations["change_session_scope_api_sessions__session_id__scope_put"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Model Settings */
+        get: operations["get_model_settings_api_settings_models_get"];
+        /**
+         * Update Model Settings
+         * @description Compatibility endpoint for callers that only change an existing model's connection.
+         */
+        put: operations["update_model_settings_api_settings_models_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/models/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Provider */
+        post: operations["create_provider_api_settings_models_providers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/models/providers/{provider_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Provider */
+        put: operations["update_provider_api_settings_models_providers__provider_id__put"];
+        post?: never;
+        /** Delete Provider */
+        delete: operations["delete_provider_api_settings_models_providers__provider_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/models/discover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Discover Models */
+        post: operations["discover_models_api_settings_models_discover_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1183,6 +1306,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/skills/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Skill */
+        post: operations["create_skill_api_skills_create_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{skill_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Edit Skill Files */
+        put: operations["edit_skill_files_api_skills__skill_id__files_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/skills/{skill_id}/versions": {
         parameters: {
             query?: never;
@@ -1211,7 +1368,8 @@ export interface paths {
         get: operations["detail_api_skills__skill_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Archive Skill */
+        delete: operations["archive_skill_api_skills__skill_id__delete"];
         options?: never;
         head?: never;
         /** Update Skill */
@@ -1261,6 +1419,23 @@ export interface paths {
         };
         /** Session Skills */
         get: operations["session_skills_api_sessions__session_id__skills_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/skill-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Session Skill Catalog */
+        get: operations["session_skill_catalog_api_sessions__session_id__skill_catalog_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1547,6 +1722,53 @@ export interface components {
              * @default
              */
             reason: string;
+        };
+        /** CatalogModel */
+        CatalogModel: {
+            /** Model Id */
+            model_id: string;
+            /**
+             * Display Name
+             * @default
+             */
+            display_name: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Context Window */
+            context_window?: number | null;
+            /** Max Input Tokens */
+            max_input_tokens?: number | null;
+            /** Max Output Tokens */
+            max_output_tokens?: number | null;
+            /** Request Output Limit */
+            request_output_limit?: number | null;
+            /**
+             * Supports Reasoning
+             * @default unknown
+             * @enum {string}
+             */
+            supports_reasoning: "supported" | "unsupported" | "unknown";
+            /**
+             * Supports Tools
+             * @default unknown
+             * @enum {string}
+             */
+            supports_tools: "supported" | "unsupported" | "unknown";
+            /**
+             * Supports Images
+             * @default unknown
+             * @enum {string}
+             */
+            supports_images: "supported" | "unsupported" | "unknown";
+            /**
+             * Specification Source
+             * @default unknown
+             * @enum {string}
+             */
+            specification_source: "unknown" | "user" | "provider_catalog" | "built_in";
         };
         /** ConversationBody */
         ConversationBody: {
@@ -2115,6 +2337,39 @@ export interface components {
             /** Error Code */
             error_code: string | null;
         };
+        /** ModelDiscoveryRead */
+        ModelDiscoveryRead: {
+            /** Models */
+            models: components["schemas"]["CatalogModel"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /** ModelDiscoveryRequest */
+        ModelDiscoveryRequest: {
+            /**
+             * Protocol
+             * @default openai-chat-completions
+             * @constant
+             */
+            protocol: "openai-chat-completions";
+            /** Base Url */
+            base_url: string;
+            /** Models Url */
+            models_url?: string | null;
+            /**
+             * Discovery Format
+             * @default openai
+             * @enum {string}
+             */
+            discovery_format: "openai" | "dashscope";
+            /** Saved Provider Id */
+            saved_provider_id?: string | null;
+            /** Api Key */
+            api_key?: string | null;
+        };
         /**
          * ModelPrice
          * @description 一个计费单元的单价。`unit` 之外一律按每 1M token 计价。
@@ -2180,7 +2435,7 @@ export interface components {
             /** Allowed Input Tokens */
             allowed_input_tokens: number;
             /** Max Output Tokens */
-            max_output_tokens: number;
+            max_output_tokens: number | null;
             /** Documentation Url */
             documentation_url?: string | null;
             /**
@@ -2223,6 +2478,13 @@ export interface components {
             price_catalog_version: string;
             /** Effective Scope */
             effective_scope: string;
+            /** Providers */
+            providers?: components["schemas"]["ProviderRead"][];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
         };
         /** ModelSettingsUpdate */
         ModelSettingsUpdate: {
@@ -2446,6 +2708,79 @@ export interface components {
              * @default 1
              */
             settings_version: string;
+        };
+        /** ProviderRead */
+        ProviderRead: {
+            /**
+             * Protocol
+             * @default openai-chat-completions
+             * @constant
+             */
+            protocol: "openai-chat-completions";
+            /** Base Url */
+            base_url: string;
+            /** Models Url */
+            models_url?: string | null;
+            /**
+             * Discovery Format
+             * @default openai
+             * @enum {string}
+             */
+            discovery_format: "openai" | "dashscope";
+            /** Provider Id */
+            provider_id: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Models */
+            models?: components["schemas"]["CatalogModel"][];
+            /** Secret Configured */
+            secret_configured: boolean;
+        };
+        /** ProviderWrite */
+        ProviderWrite: {
+            /**
+             * Protocol
+             * @default openai-chat-completions
+             * @constant
+             */
+            protocol: "openai-chat-completions";
+            /** Base Url */
+            base_url: string;
+            /** Models Url */
+            models_url?: string | null;
+            /**
+             * Discovery Format
+             * @default openai
+             * @enum {string}
+             */
+            discovery_format: "openai" | "dashscope";
+            /** Provider Id */
+            provider_id: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Models */
+            models?: components["schemas"]["CatalogModel"][];
+            /** Revision */
+            revision: number;
+            /** Api Key */
+            api_key?: string | null;
+            /**
+             * Delete Api Key
+             * @default false
+             */
+            delete_api_key: boolean;
+            /** Default Model */
+            default_model?: string | null;
         };
         /**
          * ResourceKind
@@ -2828,6 +3163,28 @@ export interface components {
             /** Note */
             note: string;
         };
+        /** SkillCreate */
+        SkillCreate: {
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Body */
+            body: string;
+        };
+        /** SkillFilesEdit */
+        SkillFilesEdit: {
+            /** Base Version Id */
+            base_version_id?: string | null;
+            /** Text Files */
+            text_files?: {
+                [key: string]: string | null;
+            };
+            /** Binary Files */
+            binary_files?: {
+                [key: string]: string;
+            };
+        };
         /** SkillImport */
         SkillImport: {
             /** Directory */
@@ -3035,6 +3392,68 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** WorkerTrajectoryFinding */
+        WorkerTrajectoryFinding: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Summary */
+            summary: string;
+            /** Evidence Refs */
+            evidence_refs: string[];
+            /** Delivery Status */
+            delivery_status: string;
+        };
+        /** WorkerTrajectoryRead */
+        WorkerTrajectoryRead: {
+            delegation: components["schemas"]["DelegationRead"];
+            /** Events */
+            events: components["schemas"]["WorkerVisibleEvent"][];
+            /** Findings */
+            findings: components["schemas"]["WorkerTrajectoryFinding"][];
+            /** Has More */
+            has_more: boolean;
+            /** Next Cursor */
+            next_cursor: number;
+            /** History Incomplete */
+            history_incomplete: boolean;
+            /** Resume From Delegation Id */
+            resume_from_delegation_id?: string | null;
+            /** Stream Cursor */
+            stream_cursor?: string | null;
+        };
+        /** WorkerVisibleEvent */
+        WorkerVisibleEvent: {
+            /** Sequence */
+            sequence: number;
+            /** Revision */
+            revision: number;
+            /** Phase */
+            phase: string;
+            /** Role */
+            role: string;
+            /** Message */
+            message: {
+                [key: string]: unknown;
+            };
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -3098,6 +3517,146 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ToolActivityDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    worker_trajectory_api_sessions__session_id__delegations__delegation_id__trajectory_get: {
+        parameters: {
+            query?: {
+                after?: number;
+                limit?: number;
+                before?: number | null;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+                delegation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerTrajectoryRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    worker_trajectory_message_api_sessions__session_id__delegations__delegation_id__trajectory__sequence__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                delegation_id: string;
+                sequence: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerVisibleEvent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    worker_output_api_sessions__session_id__delegations__delegation_id__output__artifact_id__get: {
+        parameters: {
+            query?: {
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+                delegation_id: string;
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    worker_events_api_sessions__session_id__delegations__delegation_id__events_get: {
+        parameters: {
+            query?: {
+                after?: string;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+                delegation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -4483,59 +5042,6 @@ export interface operations {
             };
         };
     };
-    get_model_settings_api_settings_models_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelSettingsRead"];
-                };
-            };
-        };
-    };
-    update_model_settings_api_settings_models_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ModelSettingsUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelSettingsRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     get_price_settings_api_settings_prices_get: {
         parameters: {
             query?: never;
@@ -4720,6 +5226,193 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_model_settings_api_settings_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsRead"];
+                };
+            };
+        };
+    };
+    update_model_settings_api_settings_models_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_provider_api_settings_models_providers_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_provider_api_settings_models_providers__provider_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_provider_api_settings_models_providers__provider_id__delete: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header?: never;
+            path: {
+                provider_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    discover_models_api_settings_models_discover_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelDiscoveryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelDiscoveryRead"];
                 };
             };
             /** @description Validation Error */
@@ -5454,6 +6147,74 @@ export interface operations {
             };
         };
     };
+    create_skill_api_skills_create_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SkillCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_skill_files_api_skills__skill_id__files_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                skill_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SkillFilesEdit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     versions_api_skills__skill_id__versions_get: {
         parameters: {
             query?: never;
@@ -5503,6 +6264,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SkillRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_skill_api_skills__skill_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                skill_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -5638,6 +6432,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SkillSessionRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    session_skill_catalog_api_sessions__session_id__skill_catalog_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillList"];
                 };
             };
             /** @description Validation Error */

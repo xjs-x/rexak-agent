@@ -5,15 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from uuid import UUID
 
+import httpx
 from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
+from sqlalchemy.exc import SQLAlchemyError
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.agent.signals import StaleResponseError
 from agent_workbench.contracts.enums import ArtifactAvailability, Sensitivity, ToolEffectClass
 from agent_workbench.contracts.tool import ArtifactRef
 from agent_workbench.execution.ctfy_mcp import CtfyMcpClient, CtfyMcpError
+from agent_workbench.execution.ctfy_vpn import CtfyVpnError, ensure_vpn_for_platform_result
 from agent_workbench.persistence.repositories import ArtifactRepository, ToolOperationRepository
 from agent_workbench.tools.remote import prepare_operation, record_result
 
@@ -50,6 +54,63 @@ def _settings(runtime: ToolRuntime[RunContext]):
     if not settings.ctfy_mcp_enabled:
         raise ValueError("CTFy MCP 当前禁用")
     return settings
+
+
+async def _recover_challenge_read(
+    client: CtfyMcpClient, name: str, args: dict[str, Any], result: dict[str, Any]
+) -> dict[str, Any]:
+    """Read a listed challenge when the platform's single-item route fails."""
+    if name not in {"get_challenge", "list_challenge_attachments"} or not result.get("isError"):
+        return result
+    content = result.get("content") or []
+    error = " ".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+    expected = "challenge_not_found" if name == "get_challenge" else "token_competition_forbidden"
+    challenge_id = args.get("challenge_id")
+    if expected not in error or not isinstance(challenge_id, str) or not challenge_id:
+        return result
+
+    competition_id = args.get("competition_id")
+    if not isinstance(competition_id, str) or not competition_id:
+        account = await client.call_tool("get_me", {})
+        teams = (account.get("structuredContent") or {}).get("competition_teams") or []
+        active = [
+            team.get("competition_id") for team in teams
+            if isinstance(team, dict) and isinstance(team.get("competition_id"), str)
+            and isinstance(team.get("running_instances"), int)
+            and team["running_instances"] > 0
+        ]
+        # More than one active competition is ambiguous. Never mix two
+        # competitions that happen to reuse the same challenge ID.
+        if len(active) != 1:
+            return result
+        competition_id = active[0]
+
+    for offset in range(0, 500, 100):
+        listed = await client.call_tool(
+            "list_competition_challenges",
+            {"competition_id": competition_id, "limit": 100, "offset": offset},
+        )
+        rows = (listed.get("structuredContent") or {}).get("result")
+        if listed.get("isError") or not isinstance(rows, list):
+            return result
+        challenge = next(
+            (row for row in rows if isinstance(row, dict) and row.get("id") == challenge_id),
+            None,
+        )
+        if challenge is not None:
+            payload: Any = challenge if name == "get_challenge" else {
+                "result": challenge.get("attachments") or []
+            }
+            return {
+                "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+                "structuredContent": payload,
+                "isError": False,
+                "rexak_source": "list_competition_challenges",
+                "rexak_competition_id": competition_id,
+            }
+        if len(rows) < 100:
+            break
+    return result
 
 
 @tool
@@ -141,6 +202,8 @@ async def ctfy_call_tool(
     启动/停止/续期实例及提交答案会改变平台状态，不自动重试。
     unknown 必须先读平台状态核对，不能换工具调用重复提交。
     平台返回的靶场地址不自动扩大当前 Run 的 Scope；Kali 必须拥有对应目标的授权与 VPN 路由。
+    VPN 实例启动后，控制端会按平台配置地址保密切换 Kali WireGuard；
+    vpn_setup 未达到 ready 时，不得把靶机连接失败当作漏洞结论。
     答案按 question_id 提交，以平台判定为准；正确后重新读取题目，检查后续解锁的小问。
     """
     settings = _settings(runtime)
@@ -175,30 +238,108 @@ async def ctfy_call_tool(
                     },
                     ensure_ascii=False,
                 )
+            platform_receipt_saved = False
+            preview: dict[str, Any] = {}
             try:
                 await box.assert_control_current()
                 result = await client.call_tool(name, args)
-                raw = json.dumps(result, ensure_ascii=False).replace(client.token, "[REDACTED]")
-                ref = await _save_response(box, operation_id, name, raw)
+                result = await _recover_challenge_read(client, name, args, result)
                 status = "failed" if result.get("isError") else "succeeded"
                 preview = {
                     "operation_id": str(operation_id),
                     "status": status,
-                    "artifact_refs": [ref.model_dump(mode="json")],
-                    "content_preview": raw[:6000],
-                    "truncated": len(raw) > 6000,
-                    "summary": f"CTFy {name} 已返回平台回执；评分以平台判定为准",
+                    "artifact_refs": [],
+                    "response_artifact": "pending",
+                    "summary": f"CTFy {name} 已返回平台结果；正在保存响应工件",
                 }
+                if name == "start_instance":
+                    structured = result.get("structuredContent")
+                    candidate = structured.get("id") if isinstance(structured, dict) else None
+                    if isinstance(candidate, str):
+                        try:
+                            preview["instance_id"] = str(UUID(candidate))
+                        except ValueError:
+                            # A malformed remote identifier is not a local
+                            # permission to retry a side-effecting start.
+                            preview["instance_id_invalid"] = True
+                # The platform outcome is known before local serialization,
+                # artifact storage, and VPN setup. Persist it first so those
+                # local failures cannot leave a side-effecting call accepted.
+                try:
+                    await record_result(
+                        box,
+                        operation_id=operation_id,
+                        job_id=None,
+                        status=status,
+                        result_summary=preview,
+                    )
+                except (OSError, SQLAlchemyError):
+                    # Retry only the idempotent local ledger write. Never
+                    # repeat the already completed platform call.
+                    await record_result(
+                        box,
+                        operation_id=operation_id,
+                        job_id=None,
+                        status=status,
+                        result_summary=preview,
+                    )
+                platform_receipt_saved = True
+                raw = json.dumps(result, ensure_ascii=False).replace(client.token, "[REDACTED]")
+                preview["content_preview"] = raw[:6000]
+                preview["truncated"] = len(raw) > 6000
+                ref: ArtifactRef | None = None
+                try:
+                    ref = await _save_response(box, operation_id, name, raw)
+                except Exception as exc:
+                    # The platform result has already been durably settled.
+                    # Report the local storage failure without retrying the
+                    # remote call or claiming that its effect is unknown.
+                    preview["response_artifact"] = "failed"
+                    preview["artifact_error_type"] = type(exc).__name__
+                else:
+                    preview["response_artifact"] = "available"
+                    preview["artifact_refs"] = [ref.model_dump(mode="json")]
+                vpn_setup = None
+                if not result.get("isError"):
+                    try:
+                        vpn_setup = await ensure_vpn_for_platform_result(
+                            client, name, result, executor_id=settings.executor_id
+                        )
+                    except (CtfyVpnError, CtfyMcpError, httpx.HTTPError) as exc:
+                        vpn_setup = {
+                            "status": "failed",
+                            "error_type": type(exc).__name__,
+                            "message": str(exc) if isinstance(exc, CtfyVpnError) else "CTFy VPN setup failed",
+                        }
+                    except Exception as exc:
+                        # The platform result is already durable. Surface the
+                        # local failure without replaying the remote action.
+                        vpn_setup = {
+                            "status": "failed",
+                            "error_type": type(exc).__name__,
+                            "message": "Unexpected CTFy VPN setup failure",
+                        }
+                if vpn_setup is not None:
+                    preview["vpn_setup"] = vpn_setup
+                    if vpn_setup["status"] != "ready":
+                        preview["summary"] = "CTFy 实例已启动；Kali VPN 尚未就绪，先核对配置与握手，再访问靶机"
+                if preview["response_artifact"] == "failed":
+                    preview["summary"] = (
+                        f"CTFy {name} 平台结果已确认，但本地响应工件保存失败；"
+                        "操作不会重放，请核对本地存储"
+                    )
                 await record_result(
                     box,
                     operation_id=operation_id,
                     job_id=None,
                     status=status,
-                    refs=[ref],
+                    refs=[ref] if ref is not None else None,
                     result_summary=preview,
                 )
                 return json.dumps(preview, ensure_ascii=False)
             except StaleResponseError:
+                if platform_receipt_saved:
+                    return json.dumps(preview, ensure_ascii=False)
                 await record_result(
                     box,
                     operation_id=operation_id,
@@ -212,6 +353,8 @@ async def ctfy_call_tool(
                 )
                 raise
             except asyncio.CancelledError:
+                if platform_receipt_saved:
+                    raise
                 await asyncio.shield(
                     record_result(
                         box,
@@ -227,6 +370,13 @@ async def ctfy_call_tool(
                 )
                 raise
             except (CtfyMcpError, OSError, ValueError) as exc:
+                if platform_receipt_saved:
+                    preview["vpn_setup"] = {
+                        "status": "failed",
+                        "error_type": type(exc).__name__,
+                        "message": "CTFy VPN result update failed; platform receipt is preserved",
+                    }
+                    return json.dumps(preview, ensure_ascii=False)
                 status = "unknown" if client.dispatched and not read_only else "failed"
                 # 不记录异常原文，避免供应商正文或文件异常携带凭据。
                 output = {

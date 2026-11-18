@@ -123,12 +123,16 @@ async def test_native_provider_stops_with_unknown_usage(database, compatible_wor
     manager = await make_manager(database, compatible_worker(hang=True, timeout=100 if mode == "timeout" else 5000))
     first = await manager.delegate("native-stop", DelegationInput(objective="synthetic test"), owner="test-owner", generation=1, control_version=0)
     if mode == "cancel":
-        for _ in range(100):
+        count = 0
+        # The independent initial graph handoff may precede the provider call.
+        # This case tests provider cancellation, so establish that precondition first.
+        for _ in range(500):
             async with database.session() as db:
                 count = await db.scalar(text("SELECT count(*) FROM ultra_worker.model_calls WHERE request_id=:id"), {"id": first.id})
             if count:
                 break
             await asyncio.sleep(0.02)
+        assert count, "Provider call did not start after initial context assembly"
         result = await manager.cancel(first.id)
     else:
         result = await manager.wait(first.id, 5)

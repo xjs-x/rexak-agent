@@ -79,8 +79,6 @@ class EnvSecretStore:
             provider = (
                 key if scheme == "model" else "xiaomi" if key == "XIAOMI_API_KEY" else "bailian"
             )
-            if provider not in {"xiaomi", "bailian"}:
-                raise SecretNotFoundError(secret_ref)
             value = read_model_key(provider)
             if value:
                 return value

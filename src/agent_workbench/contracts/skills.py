@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -33,6 +34,20 @@ class SkillImport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     directory: str | None = None
     zip_base64: str | None = Field(default=None, max_length=45_000_000)
+
+
+class SkillCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=64)
+    description: str = Field(min_length=1, max_length=1024)
+    body: str = Field(min_length=1, max_length=1_000_000)
+
+
+class SkillFilesEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_version_id: UUID | None = None
+    text_files: dict[str, str | None] = Field(default_factory=dict, max_length=1000)
+    binary_files: dict[str, str] = Field(default_factory=dict, max_length=1000)
 
 
 class SkillUpdate(BaseModel):

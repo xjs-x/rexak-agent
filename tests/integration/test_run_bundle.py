@@ -183,13 +183,28 @@ async def test_bundle_includes_continuations_but_not_other_session(database, uni
     assert "non_atomic" in payload["snapshot"]["combined_consistency"]
     directory = write_run_bundle(tmp_path / "private-bundle", payload, store)
     assert verify_run_bundle(directory) == []
-    # 通过真实 CLI 的独立进程导出同一隔离数据库，覆盖参数接线与源码指纹。
+    # 真实 CLI 子进程读取同一隔离库，源码指纹指向固定的小型 Git 树。
+    # 开发目录中无关的大文件不应决定此测试的耗时。
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    (source_root / "fixture.py").write_text("# Synthetic export fixture\n", encoding="utf-8")
+    for args in (
+        ["init"],
+        ["add", "fixture.py"],
+        ["-c", "user.name=Test", "-c", "user.email=test@invalid", "-c", "commit.gpgsign=false",
+         "commit", "-m", "test fixture source"],
+    ):
+        subprocess.run(["git", "-C", str(source_root), *args], check=True, capture_output=True, timeout=10)
+    source_commit = subprocess.run(["git", "-C", str(source_root), "rev-parse", "HEAD"],
+                                   check=True, capture_output=True, text=True, timeout=10).stdout.strip()
     cli_result = await asyncio.to_thread(
         subprocess.run,
         [
             sys.executable,
-            "-m",
-            "agent_workbench.cli",
+            "-c",
+            "import sys; from pathlib import Path; from agent_workbench import cli; "
+            "cli.REPO_ROOT = Path(sys.argv.pop(1)); cli.main()",
+            str(source_root),
             "export-run",
             str(second.id),
             "--bundle",
@@ -206,10 +221,9 @@ async def test_bundle_includes_continuations_but_not_other_session(database, uni
     assert cli_result.returncode == 0, cli_result.stderr
     cli_directory = tmp_path / "cli-export" / str(second.id) / "bundle"
     assert verify_run_bundle(cli_directory) == []
-    assert (
-        json.loads((cli_directory / "exporter-source.json").read_text(encoding="utf-8"))["status"]
-        == "available"
-    )
+    fingerprint = json.loads((cli_directory / "exporter-source.json").read_text(encoding="utf-8"))
+    assert fingerprint["status"] == "available"
+    assert fingerprint["source_commit"] == source_commit
     async with database.transaction() as db:
         current = await db.get(LeadRow, lead.id)
         assert current is not None

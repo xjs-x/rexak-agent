@@ -7,15 +7,20 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from agent_workbench.config.model_settings import read_model_key, validate_endpoint
+from agent_workbench.config.model_settings import (
+    model_ref_matches,
+    read_model_key,
+    validate_endpoint,
+)
 from agent_workbench.config.settings import Settings
-from agent_workbench.models.provider import resolve_provider_profile
+from agent_workbench.models.provider import resolve_provider_profile, transport_adapter
 
 
 class WorkerModelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["openai-compatible"] = "openai-compatible"
-    provider: Literal["bailian", "xiaomi"]
+    provider: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+    adapter: Literal["bailian", "xiaomi", "generic"] | None = None
     model: str = Field(min_length=1, max_length=128)
     base_url: str
     api_key: SecretStr
@@ -33,7 +38,7 @@ class WorkerModelConfig(BaseModel):
 
     def transport_value(self) -> dict[str, object]:
         """Only for the trusted local child environment, never log or send via A2A."""
-        return {**self.model_dump(mode="json"), "api_key": self.api_key.get_secret_value()}
+        return {**self.model_dump(mode="json", exclude_none=True), "api_key": self.api_key.get_secret_value()}
 
 
 def worker_model_path(settings: Settings) -> Path:
@@ -52,16 +57,34 @@ def shared_worker_model(settings: Settings, snapshot: dict | None = None) -> Wor
             timeout = settings.model_request_timeout_seconds
         else:
             binding = ModelBinding.from_snapshot(snapshot)
-            profile, temperature, timeout = binding.profile, binding.temperature, binding.request_timeout_seconds
-        key = read_model_key(profile.provider_id, settings)
+            profile, temperature, timeout = (
+                binding.profile,
+                binding.temperature,
+                binding.request_timeout_seconds,
+            )
+        if not model_ref_matches(profile.provider_id, profile.secret_ref):
+            raise ValueError("Worker 模型绑定的凭据引用无效")
+        slot = (
+            profile.secret_ref.removeprefix("model:")
+            if profile.secret_ref.startswith("model:")
+            else profile.provider_id
+        )
+        key = read_model_key(slot, settings)
         if not key:
             raise ValueError("请先在模型设置中保存所选供应商的 Key")
-        return WorkerModelConfig.model_validate({
-            "provider": profile.provider_id, "model": profile.model_name,
-            "base_url": profile.base_url, "api_key": key, "temperature": temperature,
-            "max_tokens": profile.effective_output_limit, "context_window": profile.context_limit,
-            "timeout_ms": timeout * 1000,
-        })
+        return WorkerModelConfig.model_validate(
+            {
+                "provider": profile.provider_id,
+                "adapter": transport_adapter(profile),
+                "model": profile.model_name,
+                "base_url": profile.base_url,
+                "api_key": key,
+                "temperature": temperature,
+                "max_tokens": profile.effective_output_limit,
+                "context_window": profile.context_limit,
+                "timeout_ms": timeout * 1000,
+            }
+        )
 
 
 def read_worker_model(settings: Settings) -> WorkerModelConfig:
@@ -78,9 +101,10 @@ def configure_worker_model(settings: Settings, provider: str, model: str) -> Non
     )
 
     with configuration_lock:
-        resolve_provider_profile(provider, model, settings)
-        if not read_model_key(provider, settings):
+        profile = resolve_provider_profile(provider, model, settings)
+        if not read_model_key(profile.secret_ref.removeprefix("model:"), settings):
             raise ValueError("请先在模型设置中保存对应供应商的 Key")
         preferences = read_preferences(settings)
         preferences.default_provider, preferences.default_model = provider, model
+        preferences.revision += 1
         save_preferences(preferences, settings)

@@ -1,5 +1,29 @@
 # 实现状态（P0–P9）
 
+## 2026-11-14：RUN-bd74b0 题目定位回退
+
+`The Last 3 Minutes` 在 Agent Track 与 Human-AI Track 使用同一 `AUTHORED-6953BB87`；平台单题接口即使带比赛 ID 仍返回 404，未限定比赛的附件列表返回 403。当前账号在 Agent Track 有 1 个运行中实例，比赛题目列表可读。`ctfy_call_tool` 对单题与附件元数据增加唯一活跃比赛的只读回退，真实令牌只读验证两项均成功。Run 当前暂停，尚未恢复或测试靶机；运行中服务未重载。详见 [排查记录](../reports/run-bd74b0-challenge-lookup-20261114.md)。
+
+## 2026-11-14：桌面启动时的 CTFy 握手误报
+
+桌面入口只检查 Agent、数据库、SSH、Executor 和 Worker 的启动状态；旧赛事 VPN 配置的近期握手改由显式 `vpn-status` 检查。当前截图中的服务已启动，缺少握手不应作为普通启动警告。修改了 `scripts/kali_docker.py` 与 VPN 文档；专项 4 项、Ruff、Pyright、编码通过。原桌面入口 HTTP 200，Kali 已安装的 27 个 Executor 文件哈希与本机一致、身份匹配。只读验收时有 1 个运行中 Run 和 1 个 Executor Job，因此保留当前控制台和容器；下一次正常启动时加载新启动脚本。当前赛事 VPN 连通性没有重新验证。
+
+## 2026-11-13：CTFy 回执丢失后的 recovering 预防与诊断
+
+CTFy 平台返回后先持久化最小结果和实例 ID，再保存完整响应及接续本地 VPN；首次本地写入失败仅重试台账，不重发平台调用，工件或 VPN 失败不再把已知平台结果留在 `accepted`。恢复 API 对无 Job 未决操作要求显式确认，Session 快照显示具体工具和操作 ID。隔离故障注入与 API 专项 35 项通过，静态检查、编码与前端构建通过；本轮未连接赛事 VPN、访问靶机、重启服务或调用模型，当前运行中服务尚未加载新代码。旧 RUN-93cf62 缺少平台原始回执，保持 `recovering`，不能自动结算。详见 [修复与边界](../reports/ctfy-recovering-prevention-20261113.md)。
+
+## 2026-11-13：RUN-93cf62 实时启动故障修复
+
+修复 Runner 路径下加载 Kali VPN 部署脚本失败，先持久化 `start_instance` 平台回执再执行本地接续；修复 Kali 重建后旧 SSH 转发端口导致的确定性连接失败。真实 Run 单次启动 `SAMPLE-006` 成功，配置自动切换成功；隔离真实 SSH/HTTP 重连与确定性 Main/Pi/Kali 验收通过。切换手机热点并重建 WireGuard 接口后握手成功，Kali 的 DNS、curl、Python HTTP 和 Windows→SSH→Executor 访问靶机均得到 HTTP 200。恢复的真实 Agent 连续三次对该 `.internal` 靶机执行 curl，工具成功且退出码为 0；题目求解效果未验证。Run 随后进入 `recovering`，因早先三次 `start_instance` 仅有本地异常而没有保存平台回执，台账保持 `accepted`，不能擅自重放或标记终态。重复的 `SAMPLE-*` 题号使当前 MCP 附件接口缺少比赛上下文；带比赛 ID 的平台 REST 请求可读。详见 [RUN-93cf62 诊断](../reports/run-93cf62-repair-20261113.md)。
+
+## 2026-11-13：CTFy 实例启动后的自动 VPN 接续
+
+按最新 Platform Playground Run 的失败证据补上部署层接续：`start_instance` 返回 VPN 实例后，控制端在必要时只读查询 `get_instance` 获得非空 `config_url`，用平台令牌下载配置，确认 Kali 无运行命令后保留旧配置并重建 Kali，向 Agent 返回独立的 `vpn_setup` 就绪状态。最新 Run 所需 `172.16.13.0/24` 与先前安装的 `172.16.12.0/24` 不同。两个现存实例的认证下载及实际 Kali 配置切换已验证，但两个 WireGuard 端点均未返回握手，`.internal` 解析与靶机访问未通过，回连未测；单次真实 `start_instance` 到接续仍待验。详见[自动接续验收](../reports/ctfy-vpn-auto-20261113.md)。
+
+## 2026-11-13：CTFy Kali Docker WireGuard 部署层
+
+新增 Kali 容器内 WireGuard 可选 Compose 叠加层，以受保护文件挂载赛事配置，使用 `NET_ADMIN` 与 TUN，按赛事 `AllowedIPs` 建路由并分流 `.internal` DNS；`wg0` 入站默认仅接受已建立流量，回连端口需显式配置。Windows Docker Desktop 的接口建立、路由、普通外网与 Docker DNS、SSH 隧道、Executor、确定性 Main 与 Pi Worker 工具代理、重启持久化已验收。示例靶场已停止，无法取得有效握手，`.internal` 解析、题目 HTTP、平台回连端到端及真实 Linux VPS 尚未验证，不能标为通过。详见 [部署与验收记录](../reports/ctfy-vpn-20261113.md)。
+
 当前公开交付结果见 [v1.0 验收摘要](validation-v1.md)。本页按时间保留各阶段记录，历史部署状态与测试范围不代表后续状态。
 
 ## 2026-11-12：新任务锁定 Ultra 模式
@@ -563,3 +587,24 @@ Earth 自然目标测试尚未完成：10 次成功 HTTP 操作和 25 个哈希�
 ## 2026-11-04：Ultra Goal 最终审查五项 P1 修复
 
 已定向修复历史 HTTP 头凭据、NUL 阻断终态、工具明确拒绝误判未知、Main 自然 END 清理时序及补充消息乱序。兼容 54 项、故障窗口补验 9 项、实际 create_agent END 补验 3 项分别通过，未重跑最终全量。部署与数据保留已核对；具备用户开展小范围真实 CTF 测试的工程条件，真实效果未验证。见 [修复报告](../reports/ultra-goal-final-review-fixes/repair-report.md)。
+
+## Worker 轨迹与技能库恢复验收
+
+- 已完成长篇可见消息的 Artifact 归档和按需读取。实时草稿保留有界预览。完整正文归档失败时显示预览和正文不可用状态。隔离 PostgreSQL 验证了重复归档、脱敏、控制端重启后读取和跨会话拒绝。旧内联轨迹仍可读取。
+- 技能库拒绝同名新建，版本冲突保留原草稿供对照。内置浏览器在隔离服务中验证了 Esc、键盘焦点、重复创建及双窗口版本竞争。任务详情仅展示当前 Main 的加载状态，全局创建和编辑从技能库进入。
+- 导出测试使用临时 Git 仓库校验实际 CLI 的源码指纹。完整本机工作树的哈希仍需读取全部内容，已有大型非忽略文件可能使导出耗时较长。
+- 本轮验收使用假模型、隔离数据库和无害文本。没有重启日常控制端或执行岛，没有调用真实模型或目标。任务创建时的软推荐与完整运行联合验收仍未交付。
+- Python 单元与隔离集成回归 1312 通过、3 跳过、3 排除。隔离 Worker 测试 57 通过，Web 测试 86 通过。全仓 Pyright 通过。
+
+
+## 2026-11-18：P1 Session 双图共享感知与渐进检索
+
+已实现 Main/Pi 共用的纯读取 graph_overview、graph_query、read_shared_graph；确定性全局索引、完整统计、稳定分页、revision/游标检查、图边与真实 entity_refs 递进展开。按各自模型预算提供 full/overview/omitted；动态图不改写固定 System。Worker 新委派通过现有身份/控制通道获得只读权限，不具备 update_graph；来源经已有 Artifact 读取，Operation 先解析到授权证据目录。
+
+原 JSONB 权威、get_graph/update_graph、历史同步、page_id、GraphReview 与写入 Schema 保留；概览不确认历史。没有新图数据库、Planner、总结 Agent 或 Worker 写图。P0 前端与原桌面入口源码未改动。
+
+最终对全部 183 个 Python 单元/集成模块做三个不重叠的隔离库分批回归：1363 passed、0 failed、3 skipped、3 deselected（真实模型/执行岛按用户范围排除）；其中单元 764 passed/3 skipped，隔离集成 599 passed。Worker 隔离数据库套件 60 passed/1 skipped；Web 65 passed，构建通过。Pyright、项目源码范围 Ruff、UTF-8 编码检查通过；全仓 Ruff 的既有无关目录问题保留，不能标成全仓通过。
+
+原生 Main 假模型及真实 A2A/Pi/控制端 HTTP 用无害合成图验证了未展示节点查询、跨图关系、证据读取、Main revision 7→8 后 Worker 更新读取及读前后无图写副作用。Kali 已安装 27 个执行端文件与本机哈希一致。按用户本轮指令未部署生产服务、未提交 Git、未进行真实模型或目标实验；不自动进入 P2。
+
+完整文件清单、Prompt 审计、失败修复过程、性能/Token 估算与运行态证据见 [P1 交付报告](../reports/shared-graph-p1/implementation-report.md) 和 [decision 0027](decisions/0027-shared-graph-awareness.md)。

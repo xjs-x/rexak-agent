@@ -33,7 +33,7 @@ async def graph_context(
             )
             if receipt is None:
                 names = {x["name"] for x in completed.tool_calls}
-                if names - {"get_graph", "update_graph"}:
+                if names - {"get_graph", "update_graph", "graph_overview", "graph_query", "read_shared_graph"}:
                     row.completed_rounds += 1
                 db.add(
                     SessionGraphReceiptRow(
@@ -156,7 +156,7 @@ async def graph_context(
             ),
             or_(
                 EventRow.payload["tool"].astext.is_(None),
-                EventRow.payload["tool"].astext.not_in(["get_graph", "update_graph"]),
+                EventRow.payload["tool"].astext.not_in(["get_graph", "update_graph", "graph_overview", "graph_query", "read_shared_graph"]),
             ),
         )
         remaining_count = (
@@ -216,7 +216,7 @@ async def graph_context(
                 payload = event.payload or {}
                 if not event.type.startswith(("tool.", "job.", "operation.")):
                     continue
-                if payload.get("tool") in {"get_graph", "update_graph"}:
+                if payload.get("tool") in {"get_graph", "update_graph", "graph_overview", "graph_query", "read_shared_graph"}:
                     continue
                 candidates = [payload]
                 if payload.get("scope") == "job_wakeup" and isinstance(

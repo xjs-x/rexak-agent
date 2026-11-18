@@ -30,6 +30,10 @@ async def test_console_timeout_on_absent_api_still_requests_guarded_startup(tmp_
     from agent_workbench.tsecbench import launcher
 
     actual_client = httpx.AsyncClient
+    activations = []
+    monkeypatch.setattr(
+        launcher, "configure_docker_executor", lambda **kw: activations.append(kw)
+    )
 
     def unavailable(request):
         raise httpx.ConnectTimeout("local listener unavailable", request=request)
@@ -42,6 +46,8 @@ async def test_console_timeout_on_absent_api_still_requests_guarded_startup(tmp_
 
     def spawn(args, **_kwargs):
         assert "--api-only" in args
+        assert "--no-recover" in args
+        assert activations == [{"start": True}]
         raise RuntimeError("guarded startup requested")
 
     monkeypatch.setattr(launcher.subprocess, "Popen", spawn)

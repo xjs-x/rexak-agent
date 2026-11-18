@@ -135,6 +135,7 @@ class HttpExecutorClient:
         self._control: httpx.AsyncClient | None = None
         self._data: httpx.AsyncClient | None = None
         self._preflight: ExecutorCapabilities | None = None
+        self._rebind_lock = asyncio.Lock()
 
     # ---------------- 生命周期 ----------------
 
@@ -194,13 +195,16 @@ class HttpExecutorClient:
                 method, path, params=params, json=json_body, timeout=timeout
             )
         except (httpx.TransportError, httpx.TimeoutException) as exc:
-            # A lost mutation response is not permission to send it again. The caller
-            # owns reconciliation by stable operation identity (including after a fence change).
-            if method.upper() != "GET":
+            # A failed TCP connect to our local forwarded port cannot have
+            # dispatched the request. Other mutation transport failures may
+            # have reached Executor and must be reconciled by operation ID.
+            before_connect = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+            if method.upper() != "GET" and not before_connect:
                 raise ExecutorConnectionError(f"执行请求响应不确定：{type(exc).__name__}: {exc}") from exc
-            # 隧道可能已断；尝试一次退避重建后重试（**不加创建新 job 的副作用**）
+            # The stale SSH listener is gone after Kali is recreated. Rebind
+            # once; a POST is retried only for a definite connect failure.
             try:
-                await self._rebind()
+                await self._rebind(failed_client=client)
             except TunnelUnavailable as tunnel_error:
                 raise ExecutorConnectionError(
                     f"执行岛不可达：{type(exc).__name__}: {exc}；重建隧道失败：{tunnel_error}"
@@ -215,28 +219,31 @@ class HttpExecutorClient:
                 ) from second
         return response
 
-    async def _rebind(self) -> None:
+    async def _rebind(self, *, failed_client: httpx.AsyncClient | None = None) -> None:
         """隧道重建后把已有的 HTTP 客户端重新指向新的本地端口。"""
-        old_control, old_data = self._control, self._data
-        base_url = await self._tunnel.reconnect_with_backoff()
-        headers = {"Authorization": f"Bearer {self._token}"}
-        self._control = httpx.AsyncClient(
-            base_url=base_url,
-            headers=headers,
-            trust_env=False,
-            timeout=httpx.Timeout(30.0, connect=10.0),
-            limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
-        )
-        self._data = httpx.AsyncClient(
-            base_url=base_url,
-            headers=headers,
-            trust_env=False,
-            timeout=httpx.Timeout(300.0, connect=10.0),
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
-        )
-        for client in (old_control, old_data):
-            if client is not None:
-                await client.aclose()
+        async with self._rebind_lock:
+            if failed_client is not None and failed_client not in (self._control, self._data):
+                return  # another request has already replaced the failed pool
+            old_control, old_data = self._control, self._data
+            base_url = await self._tunnel.reconnect_with_backoff()
+            headers = {"Authorization": f"Bearer {self._token}"}
+            self._control = httpx.AsyncClient(
+                base_url=base_url,
+                headers=headers,
+                trust_env=False,
+                timeout=httpx.Timeout(30.0, connect=10.0),
+                limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+            )
+            self._data = httpx.AsyncClient(
+                base_url=base_url,
+                headers=headers,
+                trust_env=False,
+                timeout=httpx.Timeout(300.0, connect=10.0),
+                limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            )
+            for client in (old_control, old_data):
+                if client is not None:
+                    await client.aclose()
 
     @staticmethod
     def _raise_for_status(response: httpx.Response, *, context: str) -> None:

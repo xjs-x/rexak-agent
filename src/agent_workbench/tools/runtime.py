@@ -124,6 +124,7 @@ class Toolbox:
     working_context: dict[str, Any] | None = None
     graph_sync_snapshot: dict[str, Any] | None = None
     graph_review_window_id: str | None = None
+    graph_awareness_initialized: bool = False
     #: Runner 注入，只读已提交 checkpoint 的规划头，不持有第二份可写计划。
     planning_head_reader: Any = None
     #: 本次请求的低权限历史参考来源清单，不是可写记忆。

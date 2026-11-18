@@ -1,13 +1,15 @@
 """Supervise SSHD and the existing non-root Executor; retain disk state only."""
 
 # Linux-only container entrypoint, checked from the Windows control host.
-# pyright: reportAttributeAccessIssue=false
+# pyright: reportAttributeAccessIssue=false, reportMissingImports=false
 
 import os
 import signal
 import subprocess
 import time
 from pathlib import Path
+
+from rexak_vpn import start as start_vpn
 
 ROOT = Path("/opt/rexak-executor")
 children = []
@@ -22,6 +24,7 @@ def stop(_signum, _frame):
 def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    vpn_dns, bridge_address = start_vpn()
     host_root = Path("/var/lib/rexak-ssh")
     host_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     key = host_root / "ssh_host_ed25519_key"
@@ -47,8 +50,10 @@ def main():
     config.write_bytes(Path("/etc/rexak/executor.env").read_bytes())
     config.chmod(0o600)
     os.chown(config, 1000, 1000)
-    subprocess.run(["/usr/sbin/sshd", "-t"], check=True)
-    ssh = subprocess.Popen(["/usr/sbin/sshd", "-D", "-e"])
+    # Do not expose the management SSH listener on the CTFy tunnel address.
+    ssh_options = ["-o", f"ListenAddress={bridge_address}"]
+    subprocess.run(["/usr/sbin/sshd", "-t", *ssh_options], check=True)
+    ssh = subprocess.Popen(["/usr/sbin/sshd", "-D", "-e", *ssh_options])
     children.append(ssh)
     env = dict(os.environ, HOME="/home/kali")
     descriptor = os.open(
@@ -63,6 +68,8 @@ def main():
         stderr=subprocess.STDOUT,
     )
     children.append(executor)
+    if vpn_dns is not None:
+        children.append(vpn_dns)
     try:
         while not stopping and all(child.poll() is None for child in children):
             time.sleep(0.5)

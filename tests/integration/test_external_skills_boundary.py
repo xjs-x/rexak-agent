@@ -61,7 +61,7 @@ async def test_library_get_never_imports_and_explicit_refresh_never_publishes_me
         assert len(rows) == 1 and rows[0].source == "user:fixture-skill"
 
 
-async def test_empty_external_inventory_does_not_scan_publish_or_write_run_state(database, unique_name, tmp_path):
+async def test_empty_external_inventory_is_snapshotted_without_implicit_import(database, unique_name, tmp_path):
     box = await fixture(database, unique_name)
     settings = database.settings.model_copy(update={"owner_id": unique_name, "skills_root": tmp_path / "user"})
     box.settings = settings
@@ -76,12 +76,14 @@ async def test_empty_external_inventory_does_not_scan_publish_or_write_run_state
     assert await prepare_skill_context({}, box) is None
     assert box.skill_context == "" and box.skill_manifest == []
     async with database.session() as db:
-        assert (await db.get(RunRow, box.run_id)).config_snapshot == before
-        assert (await db.execute(select(func.count()).select_from(ArtifactRow))).scalar_one() == artifacts
+        config = (await db.get(RunRow, box.run_id)).config_snapshot
+        assert config["skill_catalog_artifact_id"] and config["skill_policy_version"] == 1
+        assert {key: value for key, value in config.items() if key not in {"skill_catalog_artifact_id", "skill_policy_version"}} == before
+        assert (await db.execute(select(func.count()).select_from(ArtifactRow))).scalar_one() == artifacts + 1
     rows, errors = await service.rescan()  # 用户显式刷新后才能成为外部扩展。
     assert not errors and len(rows) == 1 and rows[0].source == "user:fixture-skill"
     box.skill_catalog = None
-    assert len(await service.catalog(box.run_id)) == 1
+    assert await service.catalog(box.run_id) == []  # 固定为空目录的 Run 不受后续安装影响。
 
 
 async def test_legacy_builtin_is_not_discoverable_executable_or_reenabled(database, unique_name, tmp_path):
@@ -116,9 +118,8 @@ async def test_legacy_builtin_is_not_discoverable_executable_or_reenabled(databa
     box.skill_catalog = None
     result = await prepare_skill_context({"messages": [HumanMessage(content="原指令", id="legacy-choice",
         additional_kwargs={"skill_refs": [card.skill_id]})]}, box)
-    assert result is not None and result["active_skills"][card.skill_id] is None
-    assert result["active_skills"][external.skill_id]["source"] == "explicit"
-    assert "外部第三方方法" in box.skill_context and "固定的技能指导" not in box.skill_context
+    assert result is None  # 后发布的包不进入既有 Run 的版本快照。
+    assert box.skill_context == ""
 
 
 async def test_old_pending_skill_hook_resumes_through_inert_bridge_without_tool_replay():
@@ -222,14 +223,14 @@ async def test_runner_first_input_and_default_factory_do_not_restore_builtin_met
         saved = (await graph.aget_state(cast(Any, config))).values
     assert model.requests
     assert "search_methods" not in model.tool_names  # 盲测默认不注入跨 Session 方法检索
-    assert not {"load_skill", "search_skills", "read_skill_resource", "run_skill_script"} & set(model.tool_names)
+    assert {"load_skill", "search_skills", "read_skill_resource", "run_skill_script"} <= set(model.tool_names)
     assert all(marker not in request for request in model.requests
                for marker in ("可用技能目录", "用户接入的外部 Skill", "search_skills", "load_skill"))
     assert not saved.get("active_skills") and not saved.get("skill_directives")
     assert not context.toolbox.skill_context and not context.toolbox.skill_manifest
     async with database.session() as db:
         stored = await db.get(RunRow, run.id)
-        assert stored is not None and "skill_catalog_artifact_id" not in stored.config_snapshot
+        assert stored is not None and stored.config_snapshot["skill_catalog_artifact_id"]
         assert (
             await db.execute(select(func.count()).select_from(SkillInstallationRow))
         ).scalar_one() == installations_before

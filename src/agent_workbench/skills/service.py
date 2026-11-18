@@ -85,6 +85,14 @@ def read_directory(root: Path) -> dict[str, bytes]:
     return validate_files(files)
 
 
+class SkillVersionConflict(ValueError):
+    """An edit was based on a version that is no longer current."""
+
+
+class SkillAlreadyInstalled(ValueError):
+    """A new installation would reuse an existing name."""
+
+
 class SkillService:
     def __init__(self, database: Database, settings: Settings | None = None) -> None:
         self.db = database
@@ -104,7 +112,8 @@ class SkillService:
             summary=summary,
         )
 
-    async def publish(self, files: dict[str, bytes], source: str) -> SkillRead:
+    async def publish(self, files: dict[str, bytes], source: str, *,
+                      base_version_id: UUID | None = None, create_only: bool = False) -> SkillRead:
         if not is_external_source(source):
             raise ValueError("skill_source_denied: 只接受用户主动接入的外部 Skill，不发布宿主设计或内置方法")
         spec = parse_skill(validate_files(files))
@@ -112,15 +121,26 @@ class SkillService:
         archive = encode_package(files)
         # 短事务 advisory lock 防止首次发布和版本刷新并发覆盖。
         async with self.db.transaction() as db:
-            lock = int.from_bytes(hashlib.sha256(f"{self.settings.owner_id}:{source}".encode()).digest()[:8], "big", signed=True)
-            await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock})
+            for identity in (f"name:{spec['name']}", source):
+                lock = int.from_bytes(
+                    hashlib.sha256(f"{self.settings.owner_id}:{identity}".encode()).digest()[:8], "big", signed=True)
+                await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock})
             row = (await db.execute(select(SkillInstallationRow).where(
                 SkillInstallationRow.owner_id == self.settings.owner_id,
                 SkillInstallationRow.source == source,
-            ))).scalar_one_or_none()
+            ).with_for_update())).scalar_one_or_none()
+            if create_only:
+                taken = await db.scalar(select(SkillInstallationRow.id).where(
+                    SkillInstallationRow.owner_id == self.settings.owner_id,
+                    SkillInstallationRow.name == spec["name"], SkillInstallationRow.archived.is_(False),
+                ).limit(1))
+                if row is not None or taken is not None:
+                    raise SkillAlreadyInstalled("已存在同名技能。请选择其他名称，或从现有技能进入版本编辑。")
+            if base_version_id is not None and (row is None or row.current_version_id != base_version_id):
+                raise SkillVersionConflict("当前版本已变化。请重新打开技能，查看最新版本后再编辑。")
             if row is None:
                 row = SkillInstallationRow(id=uuid4(), owner_id=self.settings.owner_id,
-                    source=source, name=spec["name"], enabled=True, project_ids=[], default_for_projects=[])
+                    source=source, name=spec["name"], enabled=False, project_ids=[], default_for_projects=[])
                 db.add(row)
                 await db.flush()
             version = (await db.execute(select(SkillVersionRow).where(
@@ -137,6 +157,28 @@ class SkillService:
             row.current_version_id = version.id
             return self.card(row, version)
 
+    async def edit_files(self, skill_id: str, text_files: dict[str, str | None],
+                         binary_files: dict[str, bytes], *, base_version_id: UUID | None = None) -> SkillRead:
+        card, files, _spec = await self.files(skill_id, enforce_enabled=False)
+        if not is_external_source(card.source) or card.source.startswith("user:archived:"):
+            raise ValueError("skill_retired")
+        if base_version_id is not None and card.version_id != str(base_version_id):
+            raise SkillVersionConflict("当前版本已变化。请重新打开技能，查看最新版本后再编辑。")
+        for path, value in text_files.items():
+            safe_skill_path(path)
+            if value is None:
+                if path == "SKILL.md":
+                    raise ValueError("skill_package_invalid: 不能删除 SKILL.md")
+                files.pop(path, None)
+            else:
+                files[path] = value.encode("utf-8")
+        for path, value in binary_files.items():
+            safe_skill_path(path)
+            if path == "SKILL.md":
+                raise ValueError("skill_package_invalid: SKILL.md 必须为 UTF-8 文本")
+            files[path] = value
+        return await self.publish(files, card.source, base_version_id=UUID(card.version_id))
+
     @staticmethod
     def card(row: SkillInstallationRow, version: SkillVersionRow) -> SkillRead:
         return SkillRead(skill_id=str(row.id), name=version.spec["name"],
@@ -150,8 +192,16 @@ class SkillService:
             rows = (await db.execute(select(SkillInstallationRow, SkillVersionRow).join(
                 SkillVersionRow, SkillInstallationRow.current_version_id == SkillVersionRow.id
             ).where(SkillInstallationRow.owner_id == self.settings.owner_id, external_sources())
+                .where(SkillInstallationRow.archived.is_(False))
                 .order_by(SkillInstallationRow.name, SkillInstallationRow.id))).all()
-            return [self.card(row, version) for row, version in rows]
+            cards = []
+            for row, version in rows:
+                card = self.card(row, version)
+                artifact = await db.get(ArtifactRow, version.artifact_id)
+                if artifact is None or artifact.availability != "available" or not self.store.verify(artifact.relative_key, artifact.sha256):
+                    card.diagnostics.append("resource_unavailable: 版本工件缺失或校验失败")
+                cards.append(card)
+            return cards
 
     async def rescan(self) -> tuple[list[SkillRead], list[str]]:
         errors: list[str] = []
@@ -182,6 +232,8 @@ class SkillService:
 
     async def files(self, skill_id: str, version_id: str | None = None,
                     project_id: str | None = None, *, enforce_enabled: bool = True) -> tuple[SkillRead, dict[str, bytes], dict[str, Any]]:
+        # Kept for callers of the old project-scoped API; availability is global now.
+        del project_id
         async with self.db.session() as db:
             row = await db.get(SkillInstallationRow, UUID(skill_id))
             if row is None or row.owner_id != self.settings.owner_id:
@@ -190,8 +242,6 @@ class SkillService:
                 raise ValueError("skill_retired: 宿主内置方法已退出 Skill，仍通过原 methods 使用")
             if enforce_enabled and not row.enabled:
                 raise ValueError("skill_disabled")
-            if project_id and row.project_ids and project_id not in row.project_ids:
-                raise ValueError("skill_disabled: 当前项目不可见")
             version = await db.get(SkillVersionRow, UUID(version_id) if version_id else row.current_version_id)
             if version is None or version.installation_id != row.id:
                 raise ValueError("skill_version_missing")
@@ -210,8 +260,7 @@ class SkillService:
             session = await db.get(SessionRow, session_id)
             if session is None or session.status == "deleted":
                 raise ValueError("skill_not_found: 会话不存在")
-            project = str(session.project_id)
-        return await self.files(skill_id, version_id, project_id=project)
+        return await self.files(skill_id, version_id)
 
     async def validate_references(self, references: list[str], project_id: str) -> None:
         if len(references) > 20:
@@ -237,6 +286,8 @@ class SkillService:
                 raise ValueError("skill_not_found")
             if not is_external_source(row.source):
                 raise ValueError("skill_retired: 历史内置转换项不能重新启用或绑定项目")
+            if row.archived:
+                raise ValueError("skill_archived")
             if "version_id" in values:
                 version = await db.get(SkillVersionRow, UUID(values.pop("version_id")))
                 if version is None or version.installation_id != row.id:
@@ -254,17 +305,6 @@ class SkillService:
             session = await db.get(SessionRow, run.session_id)
             if session is None:
                 raise ValueError("skill_not_found: 会话不存在")
-            project = str(session.project_id)
-            rows = (await db.execute(select(SkillInstallationRow, SkillVersionRow).join(
-                SkillVersionRow, SkillInstallationRow.current_version_id == SkillVersionRow.id
-            ).where(SkillInstallationRow.owner_id == self.settings.owner_id,
-                    SkillInstallationRow.enabled.is_(True), external_sources())
-                .order_by(SkillInstallationRow.name, SkillInstallationRow.id))).all()
-            items = [self.card(row, version).model_dump() for row, version in rows
-                     if not row.project_ids or project in row.project_ids]
-            if not items:
-                # 空扩展不产生目录工件或新的 run 配置，不触碰原循环状态。
-                return []
             snapshot_id = config.get("skill_catalog_artifact_id")
             if snapshot_id:
                 artifact = await db.get(ArtifactRow, UUID(snapshot_id))
@@ -272,11 +312,30 @@ class SkillService:
                     raise ValueError("skill_version_missing: 运行目录快照不可用")
                 return [item for item in json.loads(self.store.read_bytes(artifact.relative_key))
                         if is_external_source(item.get("source", ""))]
+            rows = (await db.execute(select(SkillInstallationRow, SkillVersionRow).join(
+                SkillVersionRow, SkillInstallationRow.current_version_id == SkillVersionRow.id
+            ).where(SkillInstallationRow.owner_id == self.settings.owner_id,
+                    SkillInstallationRow.enabled.is_(True), external_sources())
+                .where(SkillInstallationRow.archived.is_(False))
+                .order_by(SkillInstallationRow.name, SkillInstallationRow.id))).all()
+            items = [self.card(row, version).model_dump() for row, version in rows]
             artifact = await self._artifact(db, json.dumps(items, ensure_ascii=False).encode(), "Skill 运行目录快照")
             config["skill_catalog_artifact_id"] = str(artifact.id)
             config["skill_policy_version"] = 1
             run.config_snapshot = config
             return items
+
+    async def archive(self, skill_id: str) -> None:
+        async with self.db.transaction() as db:
+            row = (await db.execute(select(SkillInstallationRow).where(
+                SkillInstallationRow.id == UUID(skill_id), SkillInstallationRow.owner_id == self.settings.owner_id
+            ).with_for_update())).scalar_one_or_none()
+            if row is None or not is_external_source(row.source):
+                raise ValueError("skill_not_found")
+            if row.archived:
+                return
+            row.archived = True
+            row.source = f"user:archived:{row.id}"
 
     async def legacy_ids(self, references: dict[str, Any]) -> set[str]:
         if not references:

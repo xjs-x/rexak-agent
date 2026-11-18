@@ -23,7 +23,15 @@ def materialize(settings: Any, payload: dict[str, Any]) -> dict[str, Any]:
     if not re.fullmatch(r"[a-f0-9]{64}", digest) or not re.fullmatch(r"[a-f0-9]{32}", output_key):
         raise ValueError("skill_package_invalid: 哈希或输出标识无效")
     # 使用与 command runtime 相同的 workspace root/session 归属。
+    worker = payload.get("worker_workspace_id")
     workspace = settings.workspace_root / session
+    if worker is not None:
+        workspace = workspace / ".rexak" / "workers" / str(UUID(str(worker)))
+    root_resolved = settings.workspace_root.resolve()
+    if any(part.is_symlink() for part in (workspace, *workspace.parents) if part == settings.workspace_root or settings.workspace_root in part.parents):
+        raise ValueError("skill_path_denied: Worker 工作区不能经过链接")
+    if workspace.resolve() != workspace.absolute() or not workspace.resolve().is_relative_to(root_resolved):
+        raise ValueError("skill_path_denied: Worker 工作区不能跳转")
     workspace.mkdir(parents=True, exist_ok=True)
     if workspace.is_symlink() or not workspace.resolve().is_relative_to(settings.workspace_root.resolve()):
         raise ValueError("skill_path_denied")

@@ -3,7 +3,8 @@ import { createAssistantMessageEventStream, type AssistantMessage, type Model } 
 import { stream as streamCompletions } from '@earendil-works/pi-ai/api/openai-completions';
 
 export interface WorkerModelConfig {
-  kind: 'openai-compatible'; provider: 'bailian' | 'xiaomi'; model: string;
+  kind: 'openai-compatible'; provider: string; model: string;
+  adapter?: 'bailian' | 'xiaomi' | 'generic';
   base_url: string; api_key: string; temperature: number; max_tokens: number;
   context_window: number; timeout_ms: number;
 }
@@ -20,7 +21,9 @@ export interface CallHooks {
 }
 export function validateModelConfig(value: unknown): WorkerModelConfig {
   const c = value as WorkerModelConfig;
-  if (!c || c.kind !== 'openai-compatible' || !['bailian', 'xiaomi'].includes(c.provider)
+  if (!c || c.kind !== 'openai-compatible' || typeof c.provider !== 'string'
+      || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(c.provider)
+      || (c.adapter !== undefined && !['bailian', 'xiaomi', 'generic'].includes(c.adapter))
       || typeof c.model !== 'string' || !c.model.trim() || c.model.length > 128
       || typeof c.api_key !== 'string' || !c.api_key.trim()
       || !Number.isFinite(c.temperature) || c.temperature < 0 || c.temperature > 2
@@ -28,17 +31,22 @@ export function validateModelConfig(value: unknown): WorkerModelConfig {
       || !Number.isSafeInteger(c.context_window) || c.context_window <= c.max_tokens
       || !Number.isSafeInteger(c.timeout_ms) || c.timeout_ms <= 0) throw new Error('Invalid Worker model configuration');
   const url = new URL(c.base_url);
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash
-      || (c.provider === 'bailian' && !url.pathname.endsWith('/compatible-mode/v1'))) throw new Error('Invalid Worker model endpoint');
+  const local = url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if ((url.protocol !== 'https:' && !local) || url.username || url.password || url.search || url.hash) {
+    throw new Error('Invalid Worker model endpoint');
+  }
   return Object.freeze({ ...c });
 }
 export function providerModel(c: WorkerModelConfig): Model<'openai-completions'> {
-  return { id: c.model, name: c.model, api: 'openai-completions', provider: c.provider,
+  const adapter = c.adapter ?? (c.provider === 'xiaomi' || c.provider === 'bailian' ? c.provider : 'generic');
+  return { id: c.model, name: c.model, api: 'openai-completions',
+    provider: adapter === 'generic' ? 'openai-compatible' : adapter,
     baseUrl: c.base_url, reasoning: false, input: ['text'], contextWindow: c.context_window, maxTokens: c.max_tokens,
     // No price catalog has been configured. Zero Pi cost is never used as billing evidence.
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: false,
-      supportsUsageInStreaming: true, maxTokensField: 'max_tokens', requiresReasoningContentOnAssistantMessages: true },
+      supportsUsageInStreaming: true, maxTokensField: 'max_tokens',
+      requiresReasoningContentOnAssistantMessages: adapter !== 'generic' },
   };
 }
 function failure(message: string, aborted: boolean, timedOut: boolean): string {

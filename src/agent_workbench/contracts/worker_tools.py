@@ -12,7 +12,7 @@ class WorkerToolRequest(BaseModel):
     worker_id: UUID
     context_id: UUID
     tool_call_id: str = Field(min_length=1, max_length=256)
-    tool: Literal["read", "write", "edit", "bash", "grep", "find"]
+    tool: Literal["read", "write", "edit", "bash", "grep", "find", "skill_script"]
     phase: Literal["begin", "step", "poll", "finish", "settle"]
     arguments: dict[str, Any] = Field(default_factory=dict)
     step: int = Field(default=0, ge=0, le=128)

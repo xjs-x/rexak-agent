@@ -1,0 +1,20 @@
+services:
+  kali:
+    environment:
+      CTFY_CALLBACK_PORTS: ${CTFY_CALLBACK_PORTS:-}
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./data/kali-docker/ctfy/wg0.conf:/etc/rexak/ctfy-wg.conf:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/rexak-executor/.venv/bin/python -c "import httpx; r=httpx.get('http://127.0.0.1:8791/health'); r.raise_for_status(); assert r.json()['executor_id']=='kali-docker-01'"
+          && wg show wg0
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 45s

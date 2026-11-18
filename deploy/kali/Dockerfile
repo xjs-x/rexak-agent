@@ -11,6 +11,8 @@ RUN sed -i "s|http://http.kali.org/kali|${KALI_MIRROR}|g" /etc/apt/sources.list.
     && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* \
     && useradd -m -s /bin/bash kali && passwd -d kali \
     && mkdir -p /opt/rexak-executor /run/sshd
+RUN apt-get update && apt-get install -y --no-install-recommends wireguard-tools dnsmasq iptables ripgrep \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/rexak-executor
 COPY --from=executor-python /usr/local /usr/local
 RUN ldconfig && test "$(id -u kali)" = 1000 && ln -s /usr/bin/python3 /usr/local/bin/pwn-python
@@ -22,6 +24,7 @@ COPY executor/ /tmp/executor/
 RUN .venv/bin/pip install --no-cache-dir --no-deps /tmp/executor && rm -rf /tmp/executor
 COPY deploy/executor_control.py executor-control.py
 COPY deploy/kali/entrypoint.py /usr/local/lib/rexak-entrypoint.py
+COPY deploy/kali/vpn.py /usr/local/lib/rexak_vpn.py
 COPY deploy/kali/sshd_config /etc/ssh/sshd_config
 RUN chmod 755 /opt/rexak-executor
 EXPOSE 22

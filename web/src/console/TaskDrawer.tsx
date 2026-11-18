@@ -57,7 +57,6 @@ export function TaskDrawer({
   onTab,
   onClose,
   sessionId,
-  projectId,
   sessionTitle,
   snapshot,
   modelSettings,
@@ -71,7 +70,6 @@ export function TaskDrawer({
   onTab: (tab: DrawerTab) => void;
   onClose: () => void;
   sessionId: string;
-  projectId: string;
   sessionTitle: string;
   snapshot: Snapshot | null;
   modelSettings: ModelSettings | null;
@@ -405,18 +403,7 @@ export function TaskDrawer({
         )}
 
         {sessionId && tab === "skills" && (
-          <>
-            <p className="drawer-sub">
-              技能库用于导入、启停和查看版本。当前后端在消息接口里拒绝 skill_refs，因此这里的选择不会随消息注入。
-            </p>
-            <SkillLibrary
-              sessionId={sessionId}
-              projectId={projectId}
-              selected={[]}
-              onSelected={() => onToast("当前阶段后端暂不启用技能注入；技能只用于查看与管理。")}
-              note="当前阶段后端拒绝 skill_refs：这里只用于导入、启停和查看版本，不会随消息注入。"
-            />
-          </>
+          <SkillLibrary sessionId={sessionId} sessionOnly />
         )}
       </div>
     </aside>

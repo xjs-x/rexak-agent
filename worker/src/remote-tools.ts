@@ -15,7 +15,7 @@ export function remoteTools(channel: EvidenceChannel, abortAgent: () => void) {
   let outputRefsTruncated = false;
   const base = validateControlUrl(channel.controlUrl);
   const signature = createHmac('sha256', channel.token).update(`tools:v1:${channel.requestId}:${channel.taskId}:${channel.workerId}:${channel.contextId}`).digest('hex');
-  async function rpc(tool: Name, id: string, phase: string, args: object = {}, extra: object = {}, signal?: AbortSignal): Promise<any> {
+  async function rpc(tool: Name | 'skill_script', id: string, phase: string, args: object = {}, extra: object = {}, signal?: AbortSignal): Promise<any> {
     let response: Response;
     try { response = await fetch(`${base}/api/internal/delegations/${channel.requestId}/tools`, {
       method: 'POST', redirect: 'error', headers: { Authorization: `Bearer ${signature}`, 'Content-Type': 'application/json' },
@@ -130,7 +130,22 @@ export function remoteTools(channel: EvidenceChannel, abortAgent: () => void) {
       finally { current.delete(id); }
     } } as AgentTool;
   });
-  return { tools, settle, outputRefs, get outputRefsTruncated() { return outputRefsTruncated; }, get uncertain() { return uncertain; } };
+  async function runSkillScript(id: string, args: Record<string, unknown>, signal?: AbortSignal) {
+    await channel.ensureActive();
+    const begin = await rpc('skill_script', id, 'begin', args, {}, signal);
+    if (begin.cached) return begin.cached;
+    let value = await rpc('skill_script', id, 'step', { action: 'run', ...args }, { step: 1 }, signal);
+    while (value.pending) {
+      await delay(150, undefined, { signal });
+      value = await rpc('skill_script', id, 'poll', {}, { operation_id: value.operation_id }, signal);
+    }
+    const result = { content: [{ type: 'text' as const, text: JSON.stringify(value) }],
+      details: { executor_artifact_ids: value.artifact_id ? [value.artifact_id] : [], output_refs: value.output_refs ?? [] },
+      ...(value.error || value.ok === false || value.data?.exit_code !== 0 ? { isError: true } : {}) };
+    await rpc('skill_script', id, 'finish', {}, { result }, signal);
+    return result;
+  }
+  return { tools, settle, runSkillScript, outputRefs, get outputRefsTruncated() { return outputRefsTruncated; }, get uncertain() { return uncertain; } };
 }
 
 function canonical(value: any): any {

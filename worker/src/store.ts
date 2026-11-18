@@ -1,4 +1,4 @@
-import { snapshot, restore, visibleEvent, visibleDigest, HistoryUnavailable } from './history.js';
+import { snapshot, restore, visibleEvent, visibleDigest, redact, HistoryUnavailable } from './history.js';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
@@ -133,6 +133,22 @@ export class WorkerStore implements TaskStore {
         [requestId, sequence])).rows[0];
       if (!prior || prior.sha256 !== event.sha256) throw new Error('Worker visible event claim or digest conflict');
     }
+  }
+  async writeVisibleEvent(requestId: string, sequence: number, role: string,
+                          message: Record<string, unknown>, phase: 'streaming' | 'complete', revision: number): Promise<void> {
+    this.assertOwner();
+    const safe = redact(message);
+    const digest = visibleDigest(safe);
+    await this.pool.query(`INSERT INTO ultra_worker.visible_events
+      (request_id,sequence,role,message,sha256,phase,revision)
+      SELECT $1,$2,$3,$4,$5,$6,$7 WHERE EXISTS
+        (SELECT 1 FROM ultra_worker.requests WHERE request_id=$1 AND phase='running')
+      ON CONFLICT(request_id,sequence) DO UPDATE SET
+        role=EXCLUDED.role,message=EXCLUDED.message,sha256=EXCLUDED.sha256,
+        phase=EXCLUDED.phase,revision=EXCLUDED.revision,updated_at=now()
+      WHERE ultra_worker.visible_events.phase<>'complete'
+        AND ultra_worker.visible_events.revision<EXCLUDED.revision`,
+      [requestId, sequence, role, safe, digest, phase, revision]);
   }
   async visibleHistory(requestId: string, sessionId: unknown) {
     const request = (await this.pool.query('SELECT payload FROM ultra_worker.requests WHERE request_id=$1', [requestId])).rows[0];

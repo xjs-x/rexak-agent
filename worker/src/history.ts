@@ -20,7 +20,7 @@ function checkJsonb(value: any): void {
     for (const [key, item] of Object.entries(value)) { checkJsonb(key); checkJsonb(item); }
   }
 }
-function redact(value: any): any {
+export function redact(value: any): any {
   if (typeof value === 'string') return value
     // A header's entire value (including folded continuation) is sensitive. In inline
     // shell/JSON text the boundary is ambiguous, so conservatively remove the rest of that line.
@@ -51,14 +51,14 @@ export function visibleEvent(message: AgentMessage): { role: string; message: Re
   let projected: Record<string, unknown>;
   if (m.role === 'user') projected = { content: bounded(m.content), timestamp: m.timestamp };
   else if (m.role === 'assistant') projected = { content: (m.content ?? []).filter((p: any) => p.type === 'text' || p.type === 'toolCall').map((p: any) =>
-    p.type === 'text' ? { type: 'text', text: bounded(p.text) } : { type: 'toolCall', id: p.id, name: p.name, arguments: bounded(p.arguments) }),
+    p.type === 'text' ? { type: 'text', text: redact(jsonSafe(p.text)) } : { type: 'toolCall', id: p.id, name: p.name, arguments: bounded(p.arguments) }),
     stopReason: m.stopReason, timestamp: m.timestamp };
   else if (m.role === 'toolResult') projected = { toolCallId: m.toolCallId, toolName: m.toolName,
     content: bounded(m.content), isError: m.isError, timestamp: m.timestamp,
     artifactRefs: bounded(m.details?.output_refs ?? m.details?.executor_artifact_ids ?? []) };
   else return undefined;
-  if (Buffer.byteLength(JSON.stringify(projected)) > 16384) projected = { timestamp: m.timestamp,
-    truncated: true, preview: Array.from(JSON.stringify(projected)).slice(0, 8000).join('') };
+  // The visible transcript is a dedicated durable table, not a checkpoint or task metadata.
+  // Model output is retained here; tool output remains bounded and points at Executor artifacts.
   checkJsonb(projected);
   return { role: m.role, message: projected, sha256: digest(projected) };
 }

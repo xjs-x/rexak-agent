@@ -10,7 +10,9 @@ from pydantic import Field
 
 from agent_workbench.agent.context import RunContext
 from agent_workbench.contracts.graph_errors import GraphValidationError
+from agent_workbench.contracts.graph_read import GraphQuery, GraphRead
 from agent_workbench.contracts.session_graph import GraphOperation
+from agent_workbench.domain.graph_read import read_shared
 from agent_workbench.domain.graph_sync import graph_context, present_page
 from agent_workbench.domain.session_graph import read_graph
 from agent_workbench.domain.session_graph import update_graph as commit_graph
@@ -145,4 +147,33 @@ async def update_graph(
 # 官方BaseTool先校验参数；只替换该工具的失败呈现，不修改输入接受条件。
 update_graph.handle_validation_error = format_graph_schema_error
 
+@tool
+async def graph_overview(runtime: ToolRuntime[RunContext],
+                         token_budget: Annotated[int, Field(ge=0, le=8192)] = 4096,
+                         category_limit: Annotated[int, Field(ge=0, le=20)] = 4) -> str:
+    """确定性全局图索引：统计、分类样本、端点、来源与未展示数量；不是完整图，不确认历史页。"""
+    return await _read(runtime, GraphRead(action="overview", token_budget=token_budget, category_limit=category_limit))
+
+
+@tool
+async def graph_query(runtime: ToolRuntime[RunContext], query: GraphQuery) -> str:
+    """只读查询全 Session 图：ID/关键词/状态/结果过滤、分页、方向/1至4跳展开与真实跨图引用。返回 revision、total、has_more、来源；旧游标明确拒绝。"""
+    return await _read(runtime, GraphRead(action="query", query=query))
+
+
+@tool
+async def read_shared_graph(runtime: ToolRuntime[RunContext],
+                            token_budget: Annotated[int, Field(ge=0, le=8192)] = 4096) -> str:
+    """按实际序列化估算与预算读取双图；返回 full / overview / omitted。无历史核对或写入副作用，大图可用 graph_query 分页完整读取。"""
+    return await _read(runtime, GraphRead(action="read", token_budget=token_budget))
+
+
+async def _read(runtime: ToolRuntime[RunContext], value: GraphRead) -> str:
+    box = runtime.context.toolbox
+    async with box.db.session() as db:
+        result = await read_shared(db, box.session_id, value, box.settings)
+    return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+
+
 GRAPH_TOOLS = [get_graph, update_graph]
+GRAPH_READ_TOOLS = [graph_overview, graph_query, read_shared_graph]

@@ -19,6 +19,9 @@ import {
 import { maxOf, summarize, ATTEMPT_OUTCOME_VALUES, RELATION_STATUS_VALUES } from "./graphStats";
 import type { GraphKey, SessionGraphDocument } from "./graphSchema";
 
+type OverviewItem = { id: string; nodeId: string; name: string; edgeId?: string };
+type JumpToItem = (graph: GraphKey, nodeId: string, edgeId?: string) => void;
+
 function Bar({ value, max, tone }: { value: number; max: number; tone: string }) {
   const width = max > 0 ? Math.max(value > 0 ? 2 : 0, Math.round((value / max) * 100)) : 0;
   return (
@@ -58,9 +61,9 @@ function Issue({
 }: {
   title: string;
   hint: string;
-  items: { id: string; name: string }[];
+  items: OverviewItem[];
   kind: GraphKey;
-  onJump: (graph: GraphKey, id: string) => void;
+  onJump: JumpToItem;
 }) {
   if (!items.length) return null;
   return (
@@ -73,7 +76,7 @@ function Issue({
       <ul className="gissue-list">
         {items.map((item) => (
           <li key={item.id}>
-            <button type="button" className="glink" onClick={() => onJump(kind, item.id)}>
+            <button type="button" className="glink" onClick={() => onJump(kind, item.nodeId, item.edgeId)}>
               {item.name}
             </button>
           </li>
@@ -88,7 +91,7 @@ export function GraphOverview({
   onJump,
 }: {
   document: SessionGraphDocument;
-  onJump: (graph: GraphKey, id: string) => void;
+  onJump: JumpToItem;
 }) {
   const stats = useMemo(() => summarize(document), [document]);
 
@@ -99,14 +102,16 @@ export function GraphOverview({
     {
       title: "实体没有任何证据来源",
       hint: "这些实体只有模型登记的标签，没有可追溯的 operation 或 artifact。不能据此认定事实。",
-      items: stats.entitiesWithoutEvidence.map((node) => ({ id: node.id, name: node.label })),
+      items: stats.entitiesWithoutEvidence.map((node) => ({ id: node.id, nodeId: node.id, name: node.label })),
       kind: "information" as const,
     },
     {
       title: "关系是假设且没有来源",
       hint: "状态为 hypothesis 但 source_refs 为空，属于纯推断，使用时需要先补证据。",
       items: stats.unsourcedHypotheses.map((edge) => ({
-        id: edge.from_id,
+        id: edge.id,
+        edgeId: edge.id,
+        nodeId: edge.from_id,
         name: edge.relation,
       })),
       kind: "information" as const,
@@ -114,19 +119,19 @@ export function GraphOverview({
     {
       title: "实体没有任何关系",
       hint: "既没有入边也没有出边。可能是刚登记还没连上，也可能确实是孤立对象。",
-      items: stats.relationlessEntities.map((node) => ({ id: node.id, name: node.label })),
+      items: stats.relationlessEntities.map((node) => ({ id: node.id, nodeId: node.id, name: node.label })),
       kind: "information" as const,
     },
     {
       title: "攻击状态没有关联实体",
       hint: "这些状态没有 entity_refs，无法从信息图追溯它依据的是哪个对象。",
-      items: stats.statesWithoutEntities.map((state) => ({ id: state.id, name: state.summary })),
+      items: stats.statesWithoutEntities.map((state) => ({ id: state.id, nodeId: state.id, name: state.summary })),
       kind: "attack" as const,
     },
     {
       title: "尝试结果无法确认",
       hint: "unknown 既不能证明发生过成功，也不能证明没发生。恢复与后续判断都不能据此推进。",
-      items: stats.undecidedAttempts.map((edge) => ({ id: edge.from_id, name: edge.action })),
+      items: stats.undecidedAttempts.map((edge) => ({ id: edge.id, edgeId: edge.id, nodeId: edge.from_id, name: edge.action })),
       kind: "attack" as const,
     },
   ].filter((issue) => issue.items.length > 0);

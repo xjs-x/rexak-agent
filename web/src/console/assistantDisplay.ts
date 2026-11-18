@@ -1,3 +1,14 @@
+/** Protocol fields are optional on historical or flattened payloads. */
+export function isInternalAssistantContent(value: {
+  role?: unknown;
+  type?: unknown;
+  channel?: unknown;
+}): boolean {
+  return [value.role, value.type, value.channel].some(
+    marker => marker === "reasoning" || marker === "thinking",
+  );
+}
+
 /** Display only: retain raw streaming text and model/checkpoint history. */
 export function assistantDisplayText(text: string): string {
   let remaining = text;

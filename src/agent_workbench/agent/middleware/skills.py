@@ -50,10 +50,9 @@ async def prepare_skill_context(state: dict[str, Any], toolbox: Any) -> dict[str
     if consumed.get("defaults_run") != run_key and f"defaults:{run_key}" not in previous:
         from sqlalchemy import select
 
-        from agent_workbench.persistence.tables import RunRow, SessionRow
+        from agent_workbench.persistence.tables import RunRow
 
         async with toolbox.db.session() as db:
-            project = (await db.execute(select(SessionRow.project_id).where(SessionRow.id == toolbox.session_id))).scalar_one()
             run_config = (await db.execute(select(RunRow.config_snapshot).where(RunRow.id == toolbox.run_id))).scalar_one()
         initial_refs = (run_config or {}).get("initial_skill_refs", [])
         retired.update(await service.legacy_ids(dict.fromkeys(initial_refs)))
@@ -64,9 +63,6 @@ async def prepare_skill_context(state: dict[str, Any], toolbox: Any) -> dict[str
             if found is None:
                 raise ValueError(f"skill_not_found: 用户指定技能不可用：{skill_id}")
             active[skill_id] = {**found, "source": "explicit"}
-        for item in catalog:
-            if str(project) in item.get("default_for_projects", []) and item["skill_id"] not in active:
-                active[item["skill_id"]] = {**item, "source": "project_default"}
     consumed["defaults_run"] = run_key
     toolbox.skill_context, toolbox.skill_manifest = await render_skills(
         service, catalog, active, toolbox.settings, session_id=toolbox.session_id)

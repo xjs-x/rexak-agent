@@ -35,7 +35,7 @@ from agent_workbench.tools.history import search_history
 from agent_workbench.tools.http import HTTP_TOOLS
 from agent_workbench.tools.jobs import JOB_TOOLS
 from agent_workbench.tools.knowledge import KNOWLEDGE_TOOLS
-from agent_workbench.tools.session_graph import GRAPH_TOOLS
+from agent_workbench.tools.session_graph import GRAPH_READ_TOOLS, GRAPH_TOOLS
 from agent_workbench.tools.skills import SKILL_TOOLS
 from agent_workbench.tools.task import TASK_TOOLS
 from agent_workbench.tools.terminals import TERMINAL_TOOLS
@@ -62,7 +62,7 @@ class ToolSelection:
     graph: bool = True
     legacy_memory: bool = False
     #: 用户显式发布的外部扩展，与宿主 knowledge/methods 独立。
-    skills: bool = False
+    skills: bool = True
     #: 旧配置兼容字段；即使为 True 也不再注册退役结束工具。
     completion: bool = False
     verification: bool = False
@@ -150,12 +150,11 @@ def default_selection(
     _ = cfg
     reasons: dict[str, str] = {
         "browser": "浏览器工具已实现；若执行岛没有可用浏览器，动作会返回 browser_unavailable。",
-        "skills": "第一阶段最小闭环暂不启用 Skills。",
         "verification": "第一阶段专用结果 Verification 暂停启用；候选不自动确认。",
         "coverage": "第一阶段停止维护 Coverage 协议，仅保留历史读取。",
     }
     if capabilities is None:
-        return ToolSelection(ctfy_mcp=cfg.ctfy_mcp_enabled, knowledge=not cfg.blind_test, graph=cfg.session_graph_enabled, legacy_memory=not cfg.session_graph_enabled, disabled_reasons=reasons)
+        return ToolSelection(ctfy_mcp=cfg.ctfy_mcp_enabled, knowledge=not cfg.blind_test, graph=cfg.session_graph_enabled, legacy_memory=not cfg.session_graph_enabled, skills=True, disabled_reasons=reasons)
 
     execution_declared = bool(capabilities.execution)
     trusted = capabilities.execution_mode == "trusted" and execution_declared
@@ -193,6 +192,7 @@ def default_selection(
         terminals=pty_ok,
         environment=execution_declared,
         templates=command_ok,
+        skills=True,
         disabled_reasons=reasons,
     )
 
@@ -236,7 +236,7 @@ def build_tools(selection: ToolSelection | None = None) -> list[Any]:
     if chosen.task:
         tools.extend(TASK_TOOLS)
     if chosen.graph:
-        tools.extend(GRAPH_TOOLS)
+        tools.extend([*GRAPH_TOOLS, *GRAPH_READ_TOOLS])
     if chosen.knowledge:
         tools.extend(KNOWLEDGE_TOOLS)
     if chosen.skills:

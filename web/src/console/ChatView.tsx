@@ -11,10 +11,11 @@ import {
   type WeaknessItem,
 } from "../api/client";
 import { Icon } from "./Icon";
-import { ExecutionModeLabel } from "./Ultra";
+import { DelegationPanel, ExecutionModeLabel } from "./Ultra";
 import { AttachmentCards, PendingAttachments, useAttachments, formatSize, type AttachmentSend } from "./Attachments";
 import { MarkdownText } from "./Markdown";
-import { assistantDisplayText } from "./assistantDisplay";
+import { isArchivedDraft, visibleAssistantDraft, type AssistantDraft } from "./assistantStream";
+import { assistantDisplayText, isInternalAssistantContent } from "./assistantDisplay";
 import type { ModelOption } from "./useWorkbench";
 import {
   canStop,
@@ -41,10 +42,11 @@ type TimelineItem =
 /** 裁掉思考后没有可见正文、也没有更多内容的轮次不占位，避免时间线出现空档。 */
 function isInvisibleEntry(entry: ConversationEntry): boolean {
   if (entry.role === "user") return false;
+  if (isInternalAssistantContent(entry)) return true;
   if (entry.role === "assistant" && entry.preview.includes("【host_context_update")) {
     return !assistantDisplayText(entry.preview).trim();
   }
-  return !entry.has_more && !assistantDisplayText(entry.preview).trim();
+  return !entry.has_more && !(entry.role === "assistant" ? assistantDisplayText(entry.preview) : entry.preview).trim();
 }
 
 function buildTimeline(conversation: ConversationEntry[], tools: ToolActivityItem[]): TimelineItem[] {
@@ -115,14 +117,75 @@ export function Composer({
   const [menu, setMenu] = useState(false);
   const [modelMenu, setModelMenu] = useState(false);
   const [modelMenuRight, setModelMenuRight] = useState(0);
+  const [skillChoices, setSkillChoices] = useState<Awaited<ReturnType<typeof api.skills>>['skills']>([]);
+  const [skillIndex, setSkillIndex] = useState(0);
+  const [pendingSkill, setPendingSkill] = useState<string | null>(null);
+  const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
+  const [skillStatus, setSkillStatus] = useState('');
   const textarea = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const modelButton = useRef<HTMLButtonElement>(null);
   const queue = useAttachments(sessionId, onPrepareAttachments, attachmentsEnabled, executionMode);
   const submitting = useRef(false);
   const pendingMessage = useRef<{ signature: string; key: string } | null>(null);
-  const current = models.find((model) => model.key === modelKey) ?? models[0];
+  const current = models.find((model) => model.key === modelKey) ?? (modelLocked ? undefined : models[0]);
+  const separator = modelKey.indexOf("/");
+  const pinnedModel = modelLocked && separator >= 0 ? modelKey.slice(separator + 1) : undefined;
+  const modelName = current?.model ?? pinnedModel;
+  const providerLabel = current?.providerLabel ?? (pinnedModel ? modelKey.slice(0, separator) : undefined);
   const limits = queue.capabilities;
+  const slash = /^\/([a-z0-9-]*)$/i.exec(value);
+  const skillMatches = slash ? skillChoices.filter(item => {
+    const search = (slash[1] ?? '').toLowerCase();
+    return item.enabled && (!search || 'skill'.startsWith(search) || item.name.toLowerCase().includes(search));
+  }).sort((a, b) => {
+    const search = (slash[1] ?? '').toLowerCase();
+    return Number(b.name.toLowerCase().startsWith(search)) - Number(a.name.toLowerCase().startsWith(search));
+  }).slice(0, 12) : [];
+
+  useEffect(() => {
+    if (!slash) return;
+    let active = true;
+    const load = sessionId ? api.sessionSkillCatalog(sessionId) : api.skills();
+    void load.then(page => { if (active) setSkillChoices(page.skills); })
+      .catch(cause => { if (active) setSkillStatus(`Skill 目录读取失败：${String(cause)}`); });
+    return () => { active = false; };
+  }, [sessionId, !!slash]);
+
+  useEffect(() => {
+    if (!sessionId || !selectedSkill || skillStatus !== '装配中') return;
+    let active = true;
+    const deadline = Date.now() + 30000;
+    let timer: number;
+    const check = async () => {
+      try {
+        const page = await api.activeSkills(sessionId);
+        const selected = (page.active ?? []).find(ref => ref.skill_id === selectedSkill);
+        if (active && selected) {
+          setSkillStatus(selected.status === 'unavailable' ? String(selected.reason ?? '当前版本不可用') : '已装配');
+          return;
+        }
+      } catch {
+        // A temporary transport failure does not establish whether assembly completed.
+      }
+      if (active && Date.now() < deadline) timer = window.setTimeout(() => void check(), 1500);
+    };
+    const deadlineTimer = window.setTimeout(() => {
+      if (active) setSkillStatus('装配结果暂未确认，可在技能库查看当前 Main');
+    }, 30000);
+    void check();
+    return () => { active = false; window.clearTimeout(timer); window.clearTimeout(deadlineTimer); };
+  }, [sessionId, selectedSkill, skillStatus]);
+
+  const chooseSkill = (item: typeof skillChoices[number]) => {
+    if (skillStatus === '装配中') return;
+    setValue(''); setSelectedSkill(item.skill_id); setSkillIndex(0);
+    if (!sessionId) { setPendingSkill(item.skill_id); setSkillStatus('等待创建会话'); return; }
+    setSkillStatus('装配中');
+    void onSend(`请加载并按需使用 Skill：${item.name}`, [], undefined, crypto.randomUUID(), [item.skill_id])
+      .then(ok => { if (!ok) setSkillStatus('装配请求失败'); })
+      .catch(cause => setSkillStatus(`装配请求失败：${String(cause)}`));
+  };
   const attachTitle = limits
     ? `添加文件 · 普通附件 ≤ ${formatSize(limits.max_bytes)}；真实 PE/ELF ≤ ${formatSize(limits.binary_max_bytes)}。只读静态分析，不执行。`
     : "添加文件";
@@ -145,11 +208,13 @@ export function Composer({
     submitting.current = true;
     try {
       const payload = await queue.payload();
-      const signature = JSON.stringify([text, payload.ids, payload.session]);
+      const signature = JSON.stringify([text, payload.ids, payload.session, pendingSkill]);
       if (pendingMessage.current?.signature !== signature)
         pendingMessage.current = { signature, key: crypto.randomUUID() };
-      const ok = await onSend(text, payload.ids, payload.session, pendingMessage.current.key);
+      const ok = await onSend(text, payload.ids, payload.session, pendingMessage.current.key,
+        pendingSkill ? [pendingSkill] : undefined);
       if (ok) {
+        if (pendingSkill) { setSkillStatus('装配中'); setPendingSkill(null); }
         setValue(""); queue.clear(); pendingMessage.current = null;
         if (textarea.current) textarea.current.style.height = "auto";
       }
@@ -168,7 +233,7 @@ export function Composer({
       }}
     >
       <span className="mm-main">
-        <span className="mm-name">{option.model}</span>
+        <span className="mm-name" title={option.model}>{option.displayName || option.model}</span>
         <span className="mm-provider">
           {option.providerLabel}
           {option.isDefault ? " · 默认" : ""}
@@ -275,6 +340,14 @@ export function Composer({
         event.target.value = "";
       }} />
       <PendingAttachments queue={queue} onError={onToast} disabled={busy || disabled} />
+      {slash && skillMatches.length > 0 && <div className="skill-picker" role="listbox" aria-label="选择 Skill">
+        {skillMatches.map((item, index) => <button type="button" key={item.skill_id} role="option"
+          aria-selected={index === skillIndex} className={index === skillIndex ? 'active' : ''}
+          onMouseDown={e => e.preventDefault()} onClick={() => chooseSkill(item)}>
+          <strong>/{item.name}</strong><small>{item.description}</small>
+        </button>)}
+      </div>}
+      {skillStatus && <small role="status">Skill {skillStatus}</small>}
       <textarea
         ref={textarea}
         rows={1}
@@ -288,6 +361,17 @@ export function Composer({
           event.target.style.height = `${Math.min(event.target.scrollHeight, 150)}px`;
         }}
         onKeyDown={(event) => {
+          if (slash && skillMatches.length && ['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)) {
+            event.preventDefault();
+            if (event.key === 'ArrowDown') setSkillIndex(index => (index + 1) % skillMatches.length);
+            else if (event.key === 'ArrowUp') setSkillIndex(index => (index + skillMatches.length - 1) % skillMatches.length);
+            else if (event.key === 'Enter') {
+              const chosen = skillMatches[Math.min(skillIndex, skillMatches.length - 1)];
+              if (chosen) chooseSkill(chosen);
+            }
+            else setValue('');
+            return;
+          }
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
             void submit();
@@ -322,8 +406,8 @@ export function Composer({
           title={modelLocked ? "当前运行阶段固定模型" : "切换模型"}
         >
           {modelLocked && <Icon name="lock" size="sm" />}
-          <span className="mc-name">{current?.model ?? "选择模型"}</span>
-          {current && <span className="mc-provider">{current.providerLabel}</span>}
+          <span className="mc-name" title={modelName}>{current?.displayName || modelName || "选择模型"}</span>
+          {providerLabel && <span className="mc-provider">{providerLabel}</span>}
           <Icon name="chev-d" size="sm" />
         </button>
         {stopper && !value.trim() && !queue.files.length ? (
@@ -400,7 +484,7 @@ function MessageBody({ sessionId, entry }: { sessionId: string; entry: Conversat
       </div>
     );
   }
-  const visibleBody = assistantDisplayText(body || entry.preview);
+  const visibleBody = entry.role === "assistant" ? assistantDisplayText(body) : body;
   if (!visibleBody && !entry.has_more) return null;
   return (
     <div className="msg">
@@ -637,7 +721,6 @@ function WeaknessDigest({
 function StateCard({
   run,
   inputRequired,
-  tools,
   onControl,
   onAck,
   onOpenDrawer,
@@ -646,7 +729,6 @@ function StateCard({
 }: {
   run: RunItem;
   inputRequired: AgentEvent | null;
-  tools: ToolActivityItem[];
   onControl: (action: "pause" | "resume" | "cancel") => void;
   onAck: () => void;
   onOpenDrawer: (tab: string) => void;
@@ -654,9 +736,6 @@ function StateCard({
   onCreateReportBusy: boolean;
 }) {
   const payload = (inputRequired?.payload ?? {}) as Record<string, unknown>;
-  const pendingTools = tools.filter((item) =>
-    ["preparing", "accepted", "received", "starting", "running"].includes(item.status),
-  ).length;
 
   if (run.status === "waiting_tool" && run.model_response_saved) {
     return (
@@ -666,9 +745,7 @@ function StateCard({
           <div>
             <h4>模型回复已保存，执行状态待核对</h4>
             <p>
-              本轮模型文本已经落库，
-              {pendingTools ? `但仍有 ${pendingTools} 个工具操作没有返回终态。` : "但仍有工具操作没有返回终态。"}
-              这不能算任务成功，也不能据此判断远端没有副作用。
+              本轮模型文本已经落库。后端仍在等待作业结果或执行条件，具体状态可查看执行资源。
             </p>
           </div>
         </div>
@@ -803,8 +880,9 @@ export function ChatView({
   run,
   conversation,
   tools,
-  assistantText,
-  assistantStartedAt,
+  assistantDraft,
+  assistantModelCallId,
+  lastActivityAt,
   modelPhase,
   inputRequired,
   weaknesses,
@@ -830,6 +908,7 @@ export function ChatView({
   onToast,
   onCreateReport,
   onCreateReportBusy,
+  onOpenWorker,
 }: {
   attachmentsEnabled: boolean;
   onPrepareAttachments: () => Promise<string>;
@@ -838,8 +917,9 @@ export function ChatView({
   run: RunItem | null;
   conversation: ConversationEntry[];
   tools: ToolActivityItem[];
-  assistantText: string;
-  assistantStartedAt: string | null;
+  assistantDraft: AssistantDraft | null;
+  assistantModelCallId?: string;
+  lastActivityAt?: string;
   modelPhase: string | null;
   inputRequired: AgentEvent | null;
   weaknesses: WeaknessItem[];
@@ -865,9 +945,11 @@ export function ChatView({
   onToast: (message: string) => void;
   onCreateReport: () => void;
   onCreateReportBusy: boolean;
+  onOpenWorker: (id: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
 
   const visibleTools = useMemo(() => {
     const runIds = new Set(conversation.map((entry) => entry.run_id).filter((id): id is string => !!id));
@@ -915,21 +997,17 @@ export function ChatView({
     return result;
   }, [timeline]);
 
-  const liveAssistant = useMemo(() => {
-    if (!assistantText || !run) return false;
-    if (!["running", "waiting_tool", "pausing", "paused", "cancelling"].includes(run.status)) return false;
-    return !conversation.some(
-      (entry) =>
-        entry.role === "assistant" &&
-        entry.run_id === run.id &&
-        assistantStartedAt &&
-        Date.parse(entry.occurred_at) >= Date.parse(assistantStartedAt),
-    );
-  }, [assistantStartedAt, assistantText, conversation, run]);
-  const liveAssistantText = assistantDisplayText(assistantText);
+  const liveAssistantText = useMemo(
+    () => visibleAssistantDraft(assistantDraft),
+    [assistantDraft],
+  );
+  const liveAssistant = assistantDraft && liveAssistantText.trim() && run && assistantDraft.runId === run.id &&
+    ["running", "waiting_tool", "pausing", "paused", "cancelling"].includes(run.status) &&
+    !isArchivedDraft(assistantDraft, liveAssistantText, conversation, assistantModelCallId);
 
   useEffect(() => {
     stickRef.current = true;
+    setShowLatest(false);
     const element = scrollRef.current;
     if (element) element.scrollTop = element.scrollHeight;
   }, [sessionId]);
@@ -943,7 +1021,7 @@ export function ChatView({
     jump();
     const timer = window.setTimeout(jump, 160);
     return () => window.clearTimeout(timer);
-  }, [assistantText, conversation.length, sessionId, visibleTools.length]);
+  }, [liveAssistantText, conversation.length, sessionId, visibleTools.length]);
 
   const runningTools = visibleTools.filter((item) =>
     ["preparing", "accepted", "received", "starting", "running"].includes(item.status),
@@ -1000,6 +1078,7 @@ export function ChatView({
         onScroll={(event) => {
           const element = event.currentTarget;
           stickRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
+          setShowLatest(!stickRef.current);
         }}
       >
         <div className="chat-inner">
@@ -1038,11 +1117,13 @@ export function ChatView({
             );
           })}
 
+          <DelegationPanel sessionId={sessionId} mainStatus={run?.status ?? '未启动'} onOpen={onOpenWorker} />
+
           {liveAssistant && (
             <div className="msg">
               <div className="body">
-                {liveAssistantText && <MarkdownText text={liveAssistantText} />}
-                <div className="msg-meta-line"><span>{liveAssistantText ? "正在接收模型输出…" : "模型正在思考…"}</span></div>
+                <MarkdownText text={liveAssistantText.slice(-20000)} />
+                <div className="msg-meta-line"><span>{run?.status === "running" ? "本轮实时输出" : "已收到的模型输出"}</span></div>
               </div>
             </div>
           )}
@@ -1051,7 +1132,6 @@ export function ChatView({
             <StateCard
               run={run}
               inputRequired={inputRequired}
-              tools={visibleTools}
               onControl={onControl}
               onAck={onAck}
               onOpenDrawer={onOpenDrawer}
@@ -1070,11 +1150,16 @@ export function ChatView({
         </div>
       </div>
 
+      {showLatest && <button className="main-latest" onClick={() => {
+        stickRef.current = true; setShowLatest(false);
+        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }}>查看最新消息</button>}
+
       <div className="chat-foot">
         <div className="chat-foot-inner">
           <div className={`run-line ${runLine.tone}`}>
             <span className="pulse" />
-            <span>{runLine.text}</span>
+            <span>{runLine.text}{lastActivityAt && ` · 最近活动 ${formatMessageTime(lastActivityAt)}`}</span>
             {usage && (
               <span className="mono">
                 · {usage.call_count} 次模型请求{cost ? ` · ${cost}` : ""}

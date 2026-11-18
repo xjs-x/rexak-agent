@@ -68,6 +68,8 @@ async def load_skill(runtime: ToolRuntime[RunContext], skill_id: str, version_id
         raise ValueError("skill_not_found: 当前运行目录没有此技能，请 search_skills")
     selected = old or item
     assert selected is not None
+    if version_id is not None and version_id != selected["version_id"]:
+        raise ValueError("skill_version_not_in_run: 只能加载当前运行目录固定的版本")
     version = version_id or selected["version_id"]
     service = SkillService(box.db)
     card, files, _spec = await service.session_files(box.session_id, skill_id, version)

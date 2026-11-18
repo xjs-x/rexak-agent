@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +23,34 @@ TokenEstimationMethod = Literal[
     "chars_div_4",
     "unknown",
 ]
+
+
+def documented_model_limits(base_url: str, model_id: str) -> dict[str, int]:
+    """Exact documented models on official endpoints, independent of user Provider IDs."""
+    if model_id not in {"deepseek-v4.1-flash", "deepseek-v4.1-flash-1017"}:
+        return {}
+    try:
+        url = urlsplit(base_url)
+        port = url.port
+    except ValueError:
+        return {}
+    if url.scheme != "https" or port not in (None, 443) or url.username or url.password:
+        return {}
+    host = url.hostname or ""
+    official = host == "dashscope.aliyuncs.com" or re.fullmatch(
+        r"ws-[a-z0-9]+\.cn-beijing\.maas\.aliyuncs\.com", host
+    )
+    if not official or url.path.rstrip("/") not in {
+        "/compatible-mode/v1",
+        "/compatible-mode/v1/models",
+        "/api/v1/models",
+    }:
+        return {}
+    return {
+        "context_window": 1_000_000,
+        "max_input_tokens": 1_000_000,
+        "max_output_tokens": 393_216,
+    }
 
 
 class ProviderProfile(BaseModel):
@@ -45,6 +75,7 @@ class ProviderProfile(BaseModel):
     max_input_tokens: int | None = Field(default=None, gt=0)
     budget_safety_margin_ratio: float = Field(default=0.1, ge=0, lt=1)
     supports_tools: Capability = "unknown"
+    supports_reasoning: Capability = "unknown"
     supports_streaming: Capability = "unknown"
     supports_images: Capability = "unknown"
     supports_usage: Capability = "unknown"

@@ -1,511 +1,261 @@
-/**
- * 双图 → React Flow 的视图模型构造。
- *
- * 这里只做「位置、尺寸、视觉档位」的派生，不产生任何新的业务语义：
- * 每个节点 / 每条连线都能追溯到 `SessionGraphDocument` 里的一个对象。
- *
- * 布局形式是「焦点 + 入/出两翼」：
- *
- *   入边来源       焦点        出边目标
- *   [实体 A]  ──→  [实体]  ──→  [实体 C]
- *   [实体 B]  ──→          ──→  [实体 D]
- *
- * 也就是把当前焦点对象放在中间，`to_id === 焦点` 的放左边，
- * `from_id === 焦点` 的放右边；自环单独挂在焦点下方。
- *
- * 每一翼最多画 WING_LIMIT 个，多出来的收进一个「还有 N 个」的折叠节点。
- * 这样单个枢纽实体（例如被 9 个对象指向的接口）不会把一列撑到几千像素，
- * 也就不会把整张图缩到看不清。折叠掉的对象仍然可以在详情面板里全部列出、点选。
- */
-
-import { Position, type Edge, type Node } from "@xyflow/react";
+/** Stable full-document layout for the read-only Session graph. */
+import type { Edge, Node, Rect, XYPosition } from "@xyflow/react";
 import type {
-  AttemptEdge,
-  AttemptOutcome,
-  InformationNode,
-  RelationEdge,
-  SessionGraphDocument,
+  AttackNode, AttemptEdge, GraphKey, InformationNode, RelationEdge, SessionGraphDocument,
 } from "./graphSchema";
-import { ATTEMPT_OUTCOME_TONES, RELATION_STATUS_TONES } from "./graphLabels";
 
-export const NODE_WIDTH = 210;
-export const STATE_WIDTH = 220;
-const NODE_HEIGHT = 88;
-const STATE_HEIGHT = 92;
-const FOLD_WIDTH = 210;
-const FOLD_HEIGHT = 64;
+export const NODE_WIDTH = 148;
+export const NODE_HEIGHT = 54;
+const X_GAP = 218;
+const Y_GAP = 134;
+const COMPONENT_GAP = 96;
 
-/** 相邻两行的中心距。要留得下一行边标签，否则标签会压到下一行节点。 */
-const ROW_GAP = 118;
-/** 相邻两列的中心距。节点宽 210 / 220，留 110 给连线与标签。 */
-const COLUMN_GAP = 340;
-/** 单侧最多画几个。超过就折成「还有 N 个」。 */
-export const WING_LIMIT = 6;
-
-/** 选中目标：只用来高亮某条连线，不改变焦点。 */
-export type Selection = { kind: "edge"; graph: "information" | "attack"; id: string } | null;
-
-export type NodeRole = "focus" | "inbound" | "outbound";
-
-/** 折叠节点：这一侧还有多少个没画出来。 */
-export type FoldData = {
-  side: "inbound" | "outbound";
-  hidden: number;
-  total: number;
-} & Record<string, unknown>;
-
-export type EntityNodeData = {
-  entity: InformationNode;
-  relationCount: number;
-  evidenceCount: number;
-  role: NodeRole;
-  dimmed: boolean;
-} & Record<string, unknown>;
-
-export type AttackStateNodeData = {
-  state: { id: string; summary: string; entity_refs: string[] };
-  entityLabels: string[];
-  outcomeCounts: Partial<Record<AttemptOutcome, number>>;
-  attemptCount: number;
-  role: NodeRole;
-  dimmed: boolean;
-} & Record<string, unknown>;
-
-export type RelationEdgeData = {
-  edge: RelationEdge;
-  dimmed: boolean;
-  active: boolean;
-  /** `inbound` 表示箭头指向焦点，`outbound` 表示从焦点指出。 */
-  direction: "inbound" | "outbound" | "loop";
-} & Record<string, unknown>;
-
-export type AttemptEdgeData = {
-  edge: AttemptEdge;
-  loop: boolean;
-  loopDown: boolean;
-  dimmed: boolean;
-  active: boolean;
-  direction: "inbound" | "outbound" | "loop";
-} & Record<string, unknown>;
-
-/** 被折叠掉的对象，供详情面板列全量清单。 */
-export type HiddenItem = { id: string; name: string };
-
+type GraphNode = InformationNode | AttackNode;
+type GraphEdge = RelationEdge | AttemptEdge;
+type NodeData = {
+  object: GraphNode;
+  name: string;
+  degree: number;
+  related?: boolean;
+};
+type EdgeData = {
+  object: GraphEdge;
+  path: string;
+  arrow: string;
+  labelAt: XYPosition;
+  related?: boolean;
+};
+export type FlowNode = Node<NodeData, "sessionNode">;
+export type FlowEdge = Edge<EdgeData, "sessionEdge">;
 export type BuiltFlow = {
-  nodes: Node[];
-  edges: Edge[];
-  focusId: string | null;
-  inbound: number;
-  outbound: number;
-  loops: number;
-  /** 被折叠的对象，按侧分组。 */
-  hidden: { inbound: HiddenItem[]; outbound: HiddenItem[] };
-  /** 引用了不存在节点的边数量。后端写入时会校验，读取历史文档时仍要如实呈现异常。 */
-  dangling: number;
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+  nodeById: Map<string, FlowNode>;
+  edgeById: Map<string, FlowEdge>;
+  incident: Map<string, string[]>;
+  bounds: Rect;
+  components: number;
+  invalidEdges: number;
+  duplicateNodes: number;
+  duplicateEdges: number;
 };
 
-type Handles = {
-  sourceHandle: string;
-  targetHandle: string;
-  sourcePosition: Position;
-  targetPosition: Position;
-};
+const compareIds = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
-/** 左列 → 焦点：从左侧节点右边出，进焦点左边。 */
-const INBOUND_HANDLES: Handles = {
-  sourceHandle: "r-src",
-  targetHandle: "l-tgt",
-  sourcePosition: Position.Right,
-  targetPosition: Position.Left,
-};
+type Component = { ids: string[]; positions: Map<string, XYPosition>; width: number; height: number };
 
-/** 焦点 → 右列：从焦点右边出，进右侧节点左边。 */
-const OUTBOUND_HANDLES: Handles = {
-  sourceHandle: "r-src",
-  targetHandle: "l-tgt",
-  sourcePosition: Position.Right,
-  targetPosition: Position.Left,
-};
-
-/** 自环：从焦点底部出，绕一段回到底部，落在焦点下方。 */
-const LOOP_HANDLES: Handles = {
-  sourceHandle: "b-src",
-  targetHandle: "b-tgt",
-  sourcePosition: Position.Bottom,
-  targetPosition: Position.Bottom,
-};
-
-function columnY(count: number, index: number, centerY: number): number {
-  return centerY + (index - (count - 1) / 2) * ROW_GAP;
-}
-
-/** 三列共用的纵向基准：按左右两列里较长的那个撑开，焦点始终居中。 */
-function columnCenter(rows: number): number {
-  const height = Math.max(rows, 1) * ROW_GAP;
-  return 80 + height / 2;
-}
-
-const LEFT_X = 40 + NODE_WIDTH / 2;
-const MIDDLE_X = LEFT_X + COLUMN_GAP;
-const RIGHT_X = MIDDLE_X + COLUMN_GAP;
-
-/**
- * 三列的横坐标。某一翼为空时整体左移，避免出现「只有右边有东西、
- * 整张图却偏在画布右半侧」的失衡。
- */
-function columnXs(hasInbound: boolean, hasOutbound: boolean) {
-  const middle = hasInbound ? MIDDLE_X : LEFT_X;
-  const right = hasInbound && hasOutbound ? RIGHT_X : MIDDLE_X;
-  return { left: LEFT_X, middle, right };
-}
-
-function nodePosition(center: { x: number; y: number }, width: number, height: number) {
-  return { x: center.x - width / 2, y: center.y - height / 2 };
-}
-
-/**
- * 焦点为空（例如文档里没有任何节点）时返回空图；
- * 焦点 ID 失效时退回第一个对象，保证界面永远有东西可看。
- */
-function resolveFocus<T extends { id: string }>(items: T[], focusId: string | null): T | null {
-  if (!items.length) return null;
-  return items.find((item) => item.id === focusId) ?? items[0] ?? null;
-}
-
-function emptyFlow(): BuiltFlow {
-  return {
-    nodes: [],
-    edges: [],
-    focusId: null,
-    inbound: 0,
-    outbound: 0,
-    loops: 0,
-    hidden: { inbound: [], outbound: [] },
-    dangling: 0,
-  };
-}
-
-/** 折叠节点的 ID 固定，方便点击时识别，也不会和真实对象 ID 冲突。 */
-export const FOLD_ID = {
-  inbound: "__fold_inbound__",
-  outbound: "__fold_outbound__",
-} as const;
-
-function pushFoldNode(
-  nodes: Node[],
-  side: "inbound" | "outbound",
-  hidden: number,
-  total: number,
-  center: { x: number; y: number },
-) {
-  nodes.push({
-    id: FOLD_ID[side],
-    type: "fold",
-    position: nodePosition(center, FOLD_WIDTH, FOLD_HEIGHT),
-    width: FOLD_WIDTH,
-    data: { side, hidden, total } satisfies FoldData,
-    draggable: false,
-    selectable: false,
-  });
-}
-
-export function buildInformationFlow(
-  document: SessionGraphDocument,
-  focusId: string | null,
-  selection: Selection,
-): BuiltFlow {
-  const source = document.information_graph;
-  const focus = resolveFocus(source.nodes, focusId);
-  if (!focus) return emptyFlow();
-
-  const byId = new Map(source.nodes.map((item) => [item.id, item]));
-  const inboundAll = source.edges.filter(
-    (edge) => edge.to_id === focus.id && edge.from_id !== focus.id,
+function positionComponent(ids: string[], neighbors: Map<string, Set<string>>): Component {
+  const root = ids.reduce((best, id) =>
+    neighbors.get(id)!.size > neighbors.get(best)!.size ? id : best,
   );
-  const outboundAll = source.edges.filter(
-    (edge) => edge.from_id === focus.id && edge.to_id !== focus.id,
-  );
-  const loopEdges = source.edges.filter(
-    (edge) => edge.from_id === focus.id && edge.to_id === focus.id,
-  );
+  const order = [root];
+  const depth = new Map([[root, 0]]);
+  const layers: string[][] = [];
+  for (const id of order) {
+    const level = depth.get(id)!;
+    (layers[level] ??= []).push(id);
+    for (const next of neighbors.get(id)!) {
+      if (depth.has(next)) continue;
+      depth.set(next, level + 1);
+      order.push(next);
+    }
+  }
 
-  const inboundEdges = inboundAll.slice(0, WING_LIMIT);
-  const outboundEdges = outboundAll.slice(0, WING_LIMIT);
-  const foldedIn = inboundAll.slice(WING_LIMIT);
-  const foldedOut = outboundAll.slice(WING_LIMIT);
+  const positions = new Map<string, XYPosition>();
+  if (layers.length <= 4 && ids.length <= 48) {
+    // Expand each ring until it can hold its row of cards without collisions.
+    let radius = 0;
+    layers.forEach((layer, level) => {
+      if (level === 0) {
+        positions.set(root, { x: 0, y: 0 });
+        return;
+      }
+      radius = Math.max(radius + 184, layer.length > 1 ? 111 / Math.sin(Math.PI / layer.length) : 0);
+      layer.forEach((id, index) => {
+        const angle = -Math.PI / 2 + 2 * Math.PI * index / layer.length;
+        positions.set(id, { x: Math.round(radius * Math.cos(angle)), y: Math.round(radius * Math.sin(angle)) });
+      });
+    });
+  } else {
+    // Fold long or wide components into a compact serpentine grid in breadth-first order.
+    const columns = Math.ceil(Math.sqrt(order.length * Y_GAP / X_GAP));
+    order.forEach((id, index) => {
+      const row = Math.floor(index / columns);
+      const column = index % columns;
+      positions.set(id, { x: (row % 2 ? columns - 1 - column : column) * X_GAP, y: row * Y_GAP });
+    });
+  }
 
-  const inboundRows = inboundEdges.length + (foldedIn.length > 0 ? 1 : 0);
-  const outboundRows = outboundEdges.length + (foldedOut.length > 0 ? 1 : 0);
-  const rows = Math.max(inboundRows, outboundRows, 1);
-  const centerY = columnCenter(rows);
-  const xs = columnXs(inboundRows > 0, outboundRows > 0);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const { x, y } of positions.values()) {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  for (const point of positions.values()) {
+    point.x -= minX;
+    point.y -= minY;
+  }
+  return { ids, positions, width: maxX - minX + NODE_WIDTH, height: maxY - minY + NODE_HEIGHT };
+}
 
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
-  let dangling = 0;
+function packComponents(ids: string[], neighbors: Map<string, Set<string>>) {
+  const visited = new Set<string>();
+  const components: Component[] = [];
+  for (const id of ids) {
+    if (visited.has(id)) continue;
+    const members = [id];
+    visited.add(id);
+    for (const current of members) {
+      for (const next of neighbors.get(current)!) {
+        if (visited.has(next)) continue;
+        visited.add(next);
+        members.push(next);
+      }
+    }
+    members.sort(compareIds);
+    components.push(positionComponent(members, neighbors));
+  }
+  components.sort((a, b) => b.ids.length - a.ids.length || compareIds(a.ids[0]!, b.ids[0]!));
 
-  const relationCountOf = (id: string) =>
-    source.edges.filter((edge) => edge.from_id === id || edge.to_id === id).length;
+  const area = components.reduce((total, c) => total + (c.width + COMPONENT_GAP) * (c.height + COMPONENT_GAP), 0);
+  const shelfWidth = components.reduce((width, c) => Math.max(width, c.width), Math.sqrt(area * 1.5));
+  const positions = new Map<string, XYPosition>();
+  let x = 0;
+  let y = 0;
+  let shelfHeight = 0;
+  for (const component of components) {
+    if (x > 0 && x + component.width > shelfWidth) {
+      y += shelfHeight + COMPONENT_GAP;
+      x = 0;
+      shelfHeight = 0;
+    }
+    for (const [id, point] of component.positions) positions.set(id, { x: x + point.x, y: y + point.y });
+    x += component.width + COMPONENT_GAP;
+    shelfHeight = Math.max(shelfHeight, component.height);
+  }
+  return { positions, count: components.length };
+}
 
-  const pushNode = (entity: InformationNode, role: NodeRole, center: { x: number; y: number }) => {
-    const data: EntityNodeData = {
-      entity,
-      relationCount: relationCountOf(entity.id),
-      evidenceCount: entity.source_refs.length,
-      role,
-      dimmed: false,
+function cardBorder(center: XYPosition, toward: XYPosition): XYPosition {
+  const dx = toward.x - center.x;
+  const dy = toward.y - center.y;
+  const scale = 1 / Math.max(Math.abs(dx) / (NODE_WIDTH / 2), Math.abs(dy) / (NODE_HEIGHT / 2), 0.001);
+  return { x: center.x + dx * scale, y: center.y + dy * scale };
+}
+
+function routeEdge(edge: GraphEdge, from: XYPosition, to: XYPosition, index: number, count: number) {
+  const center = (p: XYPosition) => ({ x: p.x + NODE_WIDTH / 2, y: p.y + NODE_HEIGHT / 2 });
+  const a = center(from);
+  const b = center(to);
+  if (edge.from_id === edge.to_id) {
+    const extent = 24 + index * 15;
+    return {
+      start: { x: a.x - 19, y: from.y }, end: { x: a.x + 19, y: from.y },
+      c1: { x: a.x - 32 - extent, y: from.y - extent },
+      c2: { x: a.x + 32 + extent, y: from.y - extent },
     };
-    nodes.push({
-      id: entity.id,
-      type: "entity",
-      position: nodePosition(center, NODE_WIDTH, NODE_HEIGHT),
-      width: NODE_WIDTH,
-      data,
-      draggable: false,
-    });
-  };
-
-  // 左列：指向焦点的实体。
-  inboundEdges.forEach((edge, index) => {
-    const other = byId.get(edge.from_id);
-    if (!other) {
-      dangling += 1;
-      return;
-    }
-    pushNode(other, "inbound", { x: xs.left, y: columnY(inboundRows, index, centerY) });
-  });
-  if (foldedIn.length) {
-    pushFoldNode(nodes, "inbound", foldedIn.length, inboundAll.length, {
-      x: xs.left,
-      y: columnY(inboundRows, inboundEdges.length, centerY),
-    });
   }
 
-  // 右列：焦点指向的实体。
-  outboundEdges.forEach((edge, index) => {
-    const other = byId.get(edge.to_id);
-    if (!other) {
-      dangling += 1;
-      return;
-    }
-    pushNode(other, "outbound", { x: xs.right, y: columnY(outboundRows, index, centerY) });
-  });
-  if (foldedOut.length) {
-    pushFoldNode(nodes, "outbound", foldedOut.length, outboundAll.length, {
-      x: xs.right,
-      y: columnY(outboundRows, outboundEdges.length, centerY),
-    });
-  }
-
-  // 中间：焦点。
-  pushNode(focus, "focus", { x: xs.middle, y: centerY });
-
-  const pushEdge = (
-    edge: RelationEdge,
-    direction: "inbound" | "outbound" | "loop",
-    handles: Handles,
-  ) => {
-    const active = selection?.id === edge.id;
-    edges.push({
-      id: edge.id,
-      source: edge.from_id,
-      target: edge.to_id,
-      type: "relation",
-      ...handles,
-      data: { edge, active, dimmed: false, direction } satisfies RelationEdgeData,
-      selected: active,
-      zIndex: active ? 3 : 1,
-      className: `edge-relation edge-${RELATION_STATUS_TONES[edge.status] ?? "superseded"}${
-        active ? " on" : ""
-      }`,
-    });
-  };
-
-  inboundEdges.forEach((edge) => {
-    if (byId.has(edge.from_id)) pushEdge(edge, "inbound", INBOUND_HANDLES);
-  });
-  outboundEdges.forEach((edge) => {
-    if (byId.has(edge.to_id)) pushEdge(edge, "outbound", OUTBOUND_HANDLES);
-  });
-  loopEdges.forEach((edge) => pushEdge(edge, "loop", LOOP_HANDLES));
-
-  return {
-    nodes,
-    edges,
-    focusId: focus.id,
-    inbound: inboundAll.length,
-    outbound: outboundAll.length,
-    loops: loopEdges.length,
-    hidden: {
-      inbound: foldedIn
-        .map((edge) => byId.get(edge.from_id))
-        .filter((item): item is InformationNode => Boolean(item))
-        .map((item) => ({ id: item.id, name: item.label })),
-      outbound: foldedOut
-        .map((edge) => byId.get(edge.to_id))
-        .filter((item): item is InformationNode => Boolean(item))
-        .map((item) => ({ id: item.id, name: item.label })),
-    },
-    dangling,
-  };
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length = Math.hypot(dx, dy);
+  const sign = compareIds(edge.from_id, edge.to_id) < 0 ? 1 : -1;
+  const lane = (index - (count - 1) / 2) * 22 * sign;
+  const shift = { x: -dy / length * lane, y: dx / length * lane };
+  const c1 = { x: a.x + dx * 0.38 + shift.x, y: a.y + dy * 0.38 + shift.y };
+  const c2 = { x: b.x - dx * 0.38 + shift.x, y: b.y - dy * 0.38 + shift.y };
+  return { start: cardBorder(a, c1), end: cardBorder(b, c2), c1, c2 };
 }
 
-export function buildAttackFlow(
-  document: SessionGraphDocument,
-  focusId: string | null,
-  selection: Selection,
-): BuiltFlow {
-  const source = document.attack_graph;
-  const focus = resolveFocus(source.nodes, focusId);
-  if (!focus) return emptyFlow();
-
-  const byId = new Map(source.nodes.map((item) => [item.id, item]));
-  const entityById = new Map(document.information_graph.nodes.map((item) => [item.id, item]));
-
-  const inboundAll = source.edges.filter(
-    (edge) => edge.to_id === focus.id && edge.from_id !== focus.id,
-  );
-  const outboundAll = source.edges.filter(
-    (edge) => edge.from_id === focus.id && edge.to_id !== focus.id,
-  );
-  const loopEdges = source.edges.filter(
-    (edge) => edge.from_id === focus.id && edge.to_id === focus.id,
-  );
-
-  const inboundEdges = inboundAll.slice(0, WING_LIMIT);
-  const outboundEdges = outboundAll.slice(0, WING_LIMIT);
-  const foldedIn = inboundAll.slice(WING_LIMIT);
-  const foldedOut = outboundAll.slice(WING_LIMIT);
-
-  const inboundRows = inboundEdges.length + (foldedIn.length > 0 ? 1 : 0);
-  const outboundRows = outboundEdges.length + (foldedOut.length > 0 ? 1 : 0);
-  const rows = Math.max(inboundRows, outboundRows, 1);
-  const centerY = columnCenter(rows);
-  const xs = columnXs(inboundRows > 0, outboundRows > 0);
-
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
-  let dangling = 0;
-
-  const pushNode = (
-    state: { id: string; summary: string; entity_refs: string[] },
-    role: NodeRole,
-    center: { x: number; y: number },
-  ) => {
-    const touches = source.edges.filter(
-      (edge) => edge.from_id === state.id || edge.to_id === state.id,
-    );
-    const outcomeCounts: Partial<Record<AttemptOutcome, number>> = {};
-    for (const edge of touches) {
-      outcomeCounts[edge.outcome] = (outcomeCounts[edge.outcome] ?? 0) + 1;
+export function buildGraphFlow(document: SessionGraphDocument, graph: GraphKey): BuiltFlow {
+  const slice = graph === "information" ? document.information_graph : document.attack_graph;
+  const objects = new Map<string, GraphNode>();
+  for (const node of slice.nodes) if (!objects.has(node.id)) objects.set(node.id, node);
+  const ids = [...objects.keys()].sort(compareIds);
+  const neighbors = new Map(ids.map(id => [id, new Set<string>()]));
+  const incident = new Map(ids.map(id => [id, [] as string[]]));
+  const bundles = new Map<string, GraphEdge[]>();
+  const seen = new Set<string>();
+  let invalidEdges = 0;
+  let duplicateEdges = 0;
+  for (const edge of [...slice.edges].sort((a, b) => compareIds(a.id, b.id))) {
+    if (!objects.has(edge.from_id) || !objects.has(edge.to_id)) {
+      invalidEdges += 1;
+      continue;
     }
-    const entityLabels = state.entity_refs
-      .map((ref) => entityById.get(ref)?.label)
-      .filter((label): label is string => Boolean(label));
-    const data: AttackStateNodeData = {
-      state,
-      entityLabels,
-      outcomeCounts,
-      attemptCount: touches.length,
-      role,
-      dimmed: false,
+    if (seen.has(edge.id)) {
+      duplicateEdges += 1;
+      continue;
+    }
+    seen.add(edge.id);
+    incident.get(edge.from_id)!.push(edge.id);
+    if (edge.from_id !== edge.to_id) {
+      incident.get(edge.to_id)!.push(edge.id);
+      neighbors.get(edge.from_id)!.add(edge.to_id);
+      neighbors.get(edge.to_id)!.add(edge.from_id);
+    }
+    const key = JSON.stringify([edge.from_id, edge.to_id].sort(compareIds));
+    const bundle = bundles.get(key);
+    if (bundle) bundle.push(edge);
+    else bundles.set(key, [edge]);
+  }
+
+  const { positions, count: components } = packComponents(ids, neighbors);
+  const nodes: FlowNode[] = ids.map(id => {
+    const object = objects.get(id)!;
+    const name = "label" in object ? object.label : object.summary;
+    return {
+      id, type: "sessionNode", position: positions.get(id)!, width: NODE_WIDTH, height: NODE_HEIGHT,
+      ariaLabel: name, draggable: false, data: { object, name, degree: incident.get(id)!.length },
     };
-    nodes.push({
-      id: state.id,
-      type: "attackState",
-      position: nodePosition(center, STATE_WIDTH, STATE_HEIGHT),
-      width: STATE_WIDTH,
-      data,
-      draggable: false,
-    });
-  };
-
-  inboundEdges.forEach((edge, index) => {
-    const other = byId.get(edge.from_id);
-    if (!other) {
-      dangling += 1;
-      return;
-    }
-    pushNode(other, "inbound", { x: xs.left, y: columnY(inboundRows, index, centerY) });
   });
-  if (foldedIn.length) {
-    pushFoldNode(nodes, "inbound", foldedIn.length, inboundAll.length, {
-      x: xs.left,
-      y: columnY(inboundRows, inboundEdges.length, centerY),
-    });
+
+  let minX = 0;
+  let minY = 0;
+  let maxX = 1;
+  let maxY = 1;
+  for (const { position } of nodes) {
+    maxX = Math.max(maxX, position.x + NODE_WIDTH);
+    maxY = Math.max(maxY, position.y + NODE_HEIGHT);
   }
 
-  outboundEdges.forEach((edge, index) => {
-    const other = byId.get(edge.to_id);
-    if (!other) {
-      dangling += 1;
-      return;
-    }
-    pushNode(other, "outbound", { x: xs.right, y: columnY(outboundRows, index, centerY) });
-  });
-  if (foldedOut.length) {
-    pushFoldNode(nodes, "outbound", foldedOut.length, outboundAll.length, {
-      x: xs.right,
-      y: columnY(outboundRows, outboundEdges.length, centerY),
+  const edges: FlowEdge[] = [];
+  for (const bundle of bundles.values()) {
+    bundle.forEach((object, index) => {
+      const { start, end, c1, c2 } = routeEdge(object, positions.get(object.from_id)!, positions.get(object.to_id)!, index, bundle.length);
+      const labelAt = {
+        x: (start.x + 3 * c1.x + 3 * c2.x + end.x) / 8,
+        y: (start.y + 3 * c1.y + 3 * c2.y + end.y) / 8 - 6,
+      };
+      const angle = Math.atan2(end.y - c2.y, end.x - c2.x);
+      const back = { x: end.x - 8 * Math.cos(angle), y: end.y - 8 * Math.sin(angle) };
+      const side = { x: 3.5 * Math.sin(angle), y: -3.5 * Math.cos(angle) };
+      minX = Math.min(minX, c1.x, c2.x, labelAt.x - 110);
+      minY = Math.min(minY, c1.y, c2.y, labelAt.y - 13);
+      maxX = Math.max(maxX, c1.x, c2.x, labelAt.x + 110);
+      maxY = Math.max(maxY, c1.y, c2.y, labelAt.y + 4);
+      edges.push({
+        id: object.id, type: "sessionEdge", source: object.from_id, target: object.to_id,
+        ariaLabel: "relation" in object ? object.relation : object.action, reconnectable: false,
+        data: {
+          object, labelAt,
+          path: ['M', start.x, start.y, 'C', c1.x, c1.y, c2.x, c2.y, end.x, end.y].join(' '),
+          arrow: [[end.x, end.y], [back.x + side.x, back.y + side.y], [back.x - side.x, back.y - side.y]].map(p => p.join(",")).join(" "),
+        },
+      });
     });
   }
-
-  pushNode(focus, "focus", { x: xs.middle, y: centerY });
-
-  const pushEdge = (
-    edge: AttemptEdge,
-    direction: "inbound" | "outbound" | "loop",
-    handles: Handles,
-  ) => {
-    const active = selection?.id === edge.id;
-    const loop = direction === "loop";
-    edges.push({
-      id: edge.id,
-      source: edge.from_id,
-      target: edge.to_id,
-      type: "attempt",
-      ...handles,
-      data: {
-        edge,
-        loop,
-        loopDown: true,
-        active,
-        dimmed: false,
-        direction,
-      } satisfies AttemptEdgeData,
-      selected: active,
-      zIndex: active ? 3 : 1,
-      className: `edge-attempt edge-${ATTEMPT_OUTCOME_TONES[edge.outcome] ?? "unknown"}${
-        active ? " on" : ""
-      }`,
-    });
-  };
-
-  inboundEdges.forEach((edge) => {
-    if (byId.has(edge.from_id)) pushEdge(edge, "inbound", INBOUND_HANDLES);
-  });
-  outboundEdges.forEach((edge) => {
-    if (byId.has(edge.to_id)) pushEdge(edge, "outbound", OUTBOUND_HANDLES);
-  });
-  loopEdges.forEach((edge) => pushEdge(edge, "loop", LOOP_HANDLES));
 
   return {
-    nodes,
-    edges,
-    focusId: focus.id,
-    inbound: inboundAll.length,
-    outbound: outboundAll.length,
-    loops: loopEdges.length,
-    hidden: {
-      inbound: foldedIn
-        .map((edge) => byId.get(edge.from_id))
-        .filter((item): item is (typeof source.nodes)[number] => Boolean(item))
-        .map((item) => ({ id: item.id, name: item.summary })),
-      outbound: foldedOut
-        .map((edge) => byId.get(edge.to_id))
-        .filter((item): item is (typeof source.nodes)[number] => Boolean(item))
-        .map((item) => ({ id: item.id, name: item.summary })),
-    },
-    dangling,
+    nodes, edges, incident, components, invalidEdges, duplicateEdges,
+    duplicateNodes: slice.nodes.length - nodes.length,
+    nodeById: new Map(nodes.map(node => [node.id, node])),
+    edgeById: new Map(edges.map(edge => [edge.id, edge])),
+    bounds: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
   };
 }

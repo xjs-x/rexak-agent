@@ -2,9 +2,11 @@
 
 import json
 from types import SimpleNamespace
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+from langchain_core.tools import StructuredTool
 from sqlalchemy import text
 
 from agent_workbench.evidence.artifacts import ArtifactStore
@@ -22,7 +24,9 @@ def runtime(database, settings, manager):
 
 
 async def read(database, settings, manager, artifact_id, **kwargs):
-    return json.loads(await read_artifact.coroutine(
+    coroutine = cast(StructuredTool, read_artifact).coroutine
+    assert coroutine is not None
+    return json.loads(await coroutine(
         runtime=runtime(database, settings, manager), artifact_id=artifact_id, **kwargs))
 
 

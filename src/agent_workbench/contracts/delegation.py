@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -98,6 +98,7 @@ class WorkerTaskPackage(DelegationInput):
     session_id: UUID | None = None
     context_sources: list[ContextSource] = Field(max_length=16)
     evidence_access: Literal["session_read_v1"] | None = None
+    graph_access: Literal["session_graph_read_v1"] | None = None
     execution_access: Literal["pi_tools_v1"] | None = None
     collaboration_access: Literal["collaboration_v1"] | None = None
     input_files: list["WorkerInputFile"] = Field(default_factory=list, max_length=16)
@@ -185,3 +186,32 @@ class DelegationList(BaseModel):
     tasks: list[DelegationRead]
     runtime: Literal["pi"] = "pi"
     note: str = "新子任务可使用独立 Kali 工作区的六个基础工具及历史证据读取；不支持 Pi 断点续跑。"
+
+
+class WorkerVisibleEvent(BaseModel):
+    sequence: int
+    revision: int
+    phase: str
+    role: str
+    message: dict[str, Any]
+    at: datetime
+    updated_at: datetime
+
+
+class WorkerTrajectoryFinding(BaseModel):
+    id: UUID
+    at: datetime
+    summary: str
+    evidence_refs: list[str]
+    delivery_status: str
+
+
+class WorkerTrajectoryRead(BaseModel):
+    delegation: DelegationRead
+    events: list[WorkerVisibleEvent]
+    findings: list[WorkerTrajectoryFinding]
+    has_more: bool
+    next_cursor: int
+    history_incomplete: bool
+    resume_from_delegation_id: str | None = None
+    stream_cursor: str | None = None

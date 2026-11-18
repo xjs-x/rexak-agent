@@ -73,6 +73,7 @@ class SkillInstallationRow(Base):
     source: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(PgUUID(as_uuid=True))
     project_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     default_for_projects: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)

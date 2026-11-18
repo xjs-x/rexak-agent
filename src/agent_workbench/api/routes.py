@@ -55,8 +55,6 @@ from agent_workbench.contracts.identity import (
     SessionCreate,
 )
 from agent_workbench.contracts.models import (
-    ModelSettingsRead,
-    ModelSettingsUpdate,
     SessionSnapshotRead,
 )
 from agent_workbench.contracts.organization import NameUpdate, SessionList
@@ -344,15 +342,9 @@ async def create_session(
     settings = get_settings()
     preferences = read_preferences(settings)
     selected_provider = payload.provider_id or preferences.default_provider
-    if payload.initial_skill_refs:
-        raise ApiError(ErrorCode.VALIDATION_FAILED, "第一阶段暂不启用 Skills；请直接描述任务目标")
-    selected_model = payload.model_name or (
-        preferences.default_model
-        if selected_provider == preferences.default_provider
-        else get_settings().model_for_provider(selected_provider)
-    )
     try:
-        profile = resolve_provider_profile(selected_provider, selected_model, settings)
+        profile = resolve_provider_profile(selected_provider, payload.model_name, settings)
+        selected_model = profile.model_name
     except ProviderConfigurationError as exc:
         raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from None
     initial_scope = scope_from_instructions(supplied_scope, [payload.initial_objective])
@@ -545,23 +537,11 @@ async def post_message(
         from agent_workbench.domain.run_state import find_active_run
 
         active = await find_active_run(session, session_id)
-        if skill_refs:
-            raise ApiError(
-                ErrorCode.VALIDATION_FAILED, "第一阶段暂不启用 Skills；请直接追加任务指令"
-            )
         preferences = read_preferences(settings)
         selected_provider = provider_id or (
             active.provider_id if active else preferences.default_provider
         )
-        selected_model = model_name or (
-            active.model_name
-            if active
-            else (
-                preferences.default_model
-                if selected_provider == preferences.default_provider
-                else settings.model_for_provider(selected_provider)
-            )
-        )
+        selected_model = model_name or (active.model_name if active else None)
         if active and (selected_provider, selected_model) != (
             active.provider_id,
             active.model_name,
@@ -576,11 +556,14 @@ async def post_message(
         if active is None:
             try:
                 profile = resolve_provider_profile(selected_provider, selected_model, settings)
+                selected_model = profile.model_name
             except ProviderConfigurationError as exc:
                 raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from None
             config["model_binding"] = ModelBinding(
                 profile=profile, request_timeout_seconds=settings.model_request_timeout_seconds
             ).to_snapshot()
+        else:
+            selected_model = active.model_name
         receipt = await submit_message(
             session,
             session_id=session_id,
@@ -683,7 +666,7 @@ async def resume_run(
             if unresolved:
                 raise ApiError(
                     ErrorCode.CONFLICT,
-                    "该 run 处于 recovering：启动核对未能确认远端副作用是否已经发生。"
+                    "该 run 处于 recovering：仍有操作结果无法确认。"
                     "请先确认这些任务的实际影响，再带 acknowledge_unknown_operations=true 恢复；"
                     "系统不会自动重跑未知任务。",
                     details={
@@ -721,7 +704,7 @@ async def resume_run(
 
 
 async def _unresolved_jobs(session: Any, run_id: UUID) -> list[str]:
-    """该 run 名下无法确认终态的 job 明细（供 resume 拒绝时给出具体对象）。"""
+    """该 run 名下无法确认终态的 Job 和无 Job 操作。"""
     from agent_workbench.persistence.tables import ToolJobRow, ToolOperationRow
 
     rows = (
@@ -732,7 +715,27 @@ async def _unresolved_jobs(session: Any, run_id: UUID) -> list[str]:
             .where(ToolJobRow.state.in_(["unknown"]) | ToolJobRow.sync_status.in_(["uncertain"]))
         )
     ).all()
-    return [f"{job_id}:{state}/{sync_status}" for job_id, state, sync_status in rows]
+    unresolved = [f"job:{job_id}:{state}/{sync_status}" for job_id, state, sync_status in rows]
+    # No-job platform calls can be just as uncertain as Executor jobs. The
+    # finalization gate already blocks them; resume must require the same
+    # explicit acknowledgement instead of silently cycling back to recovering.
+    operations = (
+        await session.execute(
+            select(ToolOperationRow.operation_id, ToolOperationRow.tool_name,
+                   ToolOperationRow.status)
+            .where(ToolOperationRow.run_id == run_id)
+            .where(ToolOperationRow.job_id.is_(None))
+            .where(ToolOperationRow.status.in_(["accepted", "running", "unknown"]))
+            .where(ToolOperationRow.execution_context["worker_tool_aggregate"]
+                   .astext.is_distinct_from("true"))
+            .order_by(ToolOperationRow.created_at, ToolOperationRow.operation_id)
+        )
+    ).all()
+    unresolved.extend(
+        f"operation:{operation_id}:{tool_name}/{status}"
+        for operation_id, tool_name, status in operations
+    )
+    return unresolved
 
 
 async def _control(
@@ -918,6 +921,40 @@ async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]
                           ModelCallRow.model_call_id.desc())
             )
         ).all()}
+        from agent_workbench.persistence.tables import ToolOperationRow
+
+        recovering_ids = [row.id for row in runs if row.status == "recovering" and not row.stop_reason]
+        unresolved_by_run: dict[UUID, list[str]] = {}
+        if recovering_ids:
+            unresolved_rows = (
+                await session.execute(
+                    select(ToolOperationRow.run_id, ToolOperationRow.operation_id,
+                           ToolOperationRow.tool_name, ToolOperationRow.status)
+                    .where(ToolOperationRow.run_id.in_(recovering_ids))
+                    .where(ToolOperationRow.job_id.is_(None))
+                    .where(ToolOperationRow.status.in_(["accepted", "running", "unknown"]))
+                    .where(ToolOperationRow.execution_context["worker_tool_aggregate"]
+                           .astext.is_distinct_from("true"))
+                    .order_by(ToolOperationRow.created_at, ToolOperationRow.operation_id)
+                )
+            ).all()
+            for run_id, operation_id, tool_name, operation_status in unresolved_rows:
+                unresolved_by_run.setdefault(run_id, []).append(
+                    f"{tool_name} ({str(operation_id)[:8]}, {operation_status})"
+                )
+
+    def recovery_reason(row: RunRow) -> str | None:
+        if row.stop_reason:
+            return _redact_api_value(row.stop_reason)
+        pending = unresolved_by_run.get(row.id, [])
+        if row.status == "recovering" and pending:
+            examples = "、".join(pending[:3])
+            suffix = f"等 {len(pending)} 个" if len(pending) > 3 else ""
+            return (
+                f"存在未结算且无法按 Job 查询的操作：{examples}{suffix}。"
+                "请先核对原平台或远端结果；继续不会自动重放。"
+            )
+        return None
 
     return {
         "session": {
@@ -940,7 +977,7 @@ async def session_snapshot(session_id: UUID, request: Request) -> dict[str, Any]
                 "objective": row.objective,
                 "execution_mode": (row.config_snapshot or {}).get("execution_mode", "standard"),
                 "control_version": row.control_version,
-                "stop_reason": _redact_api_value(row.stop_reason),
+                "stop_reason": recovery_reason(row),
                 "owner_generation": row.owner_generation,
                 "created_at": row.created_at.isoformat(),
                 "model_response_saved": bool(
@@ -2332,85 +2369,6 @@ def _report_metadata(row: ReportVersionRow) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # 设置与诊断
 # --------------------------------------------------------------------------- #
-
-
-@router.get("/settings/models", response_model=ModelSettingsRead, tags=["settings"])
-async def get_model_settings(request: Request) -> dict[str, Any]:
-    get_auth().require_session(request)
-    from agent_workbench.config.catalog import default_provider_profiles
-    from agent_workbench.config.model_settings import read_model_key, read_preferences
-    from agent_workbench.domain.prices import current_price_catalog
-    from agent_workbench.persistence.db import get_database
-
-    settings = get_settings()
-    preferences = read_preferences(settings)
-    async with get_database().session() as db:
-        catalog = await current_price_catalog(db)
-    profiles = []
-    for profile in default_provider_profiles().values():
-        endpoint = preferences.endpoints.get(profile.provider_id) or (
-            settings.xiaomi_base_url
-            if profile.provider_id == "xiaomi"
-            else settings.dashscope_base_url
-        )
-        profiles.append(
-            {
-                **profile.model_dump(),
-                "base_url": endpoint,
-                "secret_configured": bool(read_model_key(profile.provider_id, settings)),
-                "request_output_limit": profile.effective_output_limit,
-                "allowed_input_tokens": int(
-                    profile.input_budget_tokens * (1 - profile.budget_safety_margin_ratio)
-                ),
-            }
-        )
-    return {
-        "default_provider": preferences.default_provider,
-        "default_model": preferences.default_model,
-        "profiles": profiles,
-        "price_catalog_version": catalog.version,
-        "effective_scope": "主智能体与子智能体共用此模型设置和 Key，无需分别配置或重启。模型选择用于新阶段，其子智能体跟随该阶段模型；当前任务保留已绑定模型，暂停继续读取新 Key。",
-    }
-
-
-@router.put("/settings/models", response_model=ModelSettingsRead, tags=["settings"])
-async def update_model_settings(request: Request, payload: ModelSettingsUpdate) -> dict[str, Any]:
-    auth = get_auth()
-    auth.check_origin(request)
-    ticket = auth.require_session(request)
-    auth.require_csrf(request, ticket)
-    from agent_workbench.config.catalog import default_provider_profiles
-    from agent_workbench.config.model_settings import (
-        read_preferences,
-        save_preferences,
-        validate_endpoint,
-        write_model_key,
-    )
-
-    if (payload.provider_id, payload.model_name) not in default_provider_profiles():
-        raise ApiError(ErrorCode.VALIDATION_FAILED, "请选择列表中的模型")
-    try:
-        endpoint = validate_endpoint(payload.provider_id, payload.base_url)
-    except ValueError as exc:
-        raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from None
-    key = payload.api_key.get_secret_value().strip() if payload.api_key is not None else None
-    if key is not None and (not key or any(char.isspace() for char in key)):
-        raise ApiError(ErrorCode.VALIDATION_FAILED, "API Key 不能为空或包含空白字符")
-    if payload.delete_api_key and key is not None:
-        raise ApiError(ErrorCode.VALIDATION_FAILED, "删除 Key 时不能同时填写新 Key")
-    from agent_workbench.config.model_settings import configuration_lock
-
-    with configuration_lock:
-        settings = get_settings()
-        preferences = read_preferences(settings)
-        preferences.endpoints[payload.provider_id] = endpoint
-        if payload.set_default:
-            preferences.default_provider = payload.provider_id
-            preferences.default_model = payload.model_name
-        if key is not None or payload.delete_api_key:
-            write_model_key(payload.provider_id, key, settings)
-        save_preferences(preferences, settings)
-    return await get_model_settings(request)
 
 
 @router.get("/settings/prices", response_model=PriceCatalog, tags=["settings"])

@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from agent_workbench.api.app import create_app
 from agent_workbench.api.auth import COOKIE_NAME
+from agent_workbench.config.settings import get_settings
 from agent_workbench.persistence.tables import RunRow
 
 pytestmark = pytest.mark.integration
@@ -80,7 +81,7 @@ async def test_session_reuse_keeps_earlier_pages_csrf_valid(database):
         assert client.cookies.get(COOKIE_NAME) == cookie_after_first
         saved = client.put(
             "/api/settings/models",
-            json=body(api_key=None),
+            json=body(api_key=None, base_url=get_settings().xiaomi_base_url),
             headers={"X-Workbench-CSRF": first["csrf_token"]},
         )
         assert saved.status_code == 200, saved.text
@@ -110,7 +111,7 @@ async def test_session_reuse_does_not_weaken_csrf_check(database):
         assert rejected.status_code == 403
         accepted = client.put(
             "/api/settings/models",
-            json=body(api_key=None),
+            json=body(api_key=None, base_url=get_settings().xiaomi_base_url),
             headers={"X-Workbench-CSRF": fresh["csrf_token"]},
         )
         assert accepted.status_code == 200, accepted.text

@@ -14,6 +14,7 @@ class WorkerEvidenceRequest(BaseModel):
     tool_call_id: str = Field(min_length=1, max_length=256)
     action: Literal["list", "read"]
     artifact_id: UUID | None = None
+    source_operation_id: UUID | None = None
     expected_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=8192, ge=4, le=16384)

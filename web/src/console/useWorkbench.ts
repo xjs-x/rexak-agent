@@ -17,8 +17,10 @@ import {
   type WeaknessItem,
 } from "../api/client";
 import { TERMINAL, latestRun } from "./labels";
+import { appendAssistantDelta, assistantDelta, restoreAssistantDraft, type AssistantDraft } from "./assistantStream";
 
 const EVENT_TYPES = [
+  "skill.activity",
   "run.status",
   "message.delta",
   "message.completed",
@@ -49,13 +51,6 @@ const EVENT_TYPES = [
   "stream.resync_required",
 ];
 
-/** 宿主注入的上下文投影只供模型阅读，不是模型正文；不进入对话气泡。 */
-function isHostProjectionDelta(event: AgentEvent): boolean {
-  if (event.type !== "message.delta") return false;
-  const payload = event.payload as Record<string, unknown>;
-  return /^host_(context_update|history_reference):/.test(String(payload.response_id ?? ""));
-}
-
 export type ConnectionState = "connecting" | "online" | "offline";
 export type ExecutorState = "unknown" | "checking" | "online" | "offline";
 
@@ -68,6 +63,7 @@ export interface ModelOption {
   provider: string;
   providerLabel: string;
   model: string;
+  displayName?: string;
   configured: boolean;
   isDefault: boolean;
 }
@@ -105,8 +101,9 @@ export interface WorkbenchApi {
   usage: UsageSummary | null;
   events: AgentEvent[];
   inputRequired: AgentEvent | null;
-  assistantText: string;
-  assistantStartedAt: string | null;
+  assistantDraft: AssistantDraft | null;
+  assistantModelCallId: string | undefined;
+  lastActivityAt: string | undefined;
   modelPhase: string | null;
   hasMoreMessages: boolean;
   hasMoreTools: boolean;
@@ -135,7 +132,7 @@ export interface WorkbenchApi {
   ensureProjectSessions: (projectId: string) => Promise<void>;
   isProjectLoaded: (projectId: string) => boolean;
   createProject: (name: string, description: string) => Promise<ProjectItem>;
-  send: (text: string, attachments?: string[], attachmentSession?: string, messageKey?: string) => Promise<boolean>;
+  send: (text: string, attachments?: string[], attachmentSession?: string, messageKey?: string, skillRefs?: string[]) => Promise<boolean>;
   prepareAttachmentSession: () => Promise<string>;
   control: (action: "pause" | "resume" | "cancel", acknowledge?: boolean) => Promise<boolean>;
   clearAck: () => void;
@@ -154,9 +151,9 @@ function mergeConversation(previous: ConversationEntry[], next: ConversationEntr
   for (const entry of next) {
     const key = `${entry.source}:${entry.id}`;
     const old = map.get(key);
-    const signature = `${entry.preview.length}|${entry.has_more}|${entry.available}|${entry.response_outcome}|${entry.occurred_at}`;
+    const signature = `${entry.role}|${entry.preview}|${entry.has_more}|${entry.available}|${entry.response_outcome}|${entry.occurred_at}`;
     const oldSignature = old
-      ? `${old.preview.length}|${old.has_more}|${old.available}|${old.response_outcome}|${old.occurred_at}`
+      ? `${old.role}|${old.preview}|${old.has_more}|${old.available}|${old.response_outcome}|${old.occurred_at}`
       : null;
     if (!old || signature !== oldSignature) {
       map.set(key, entry);
@@ -219,8 +216,7 @@ export function useWorkbench(): WorkbenchApi {
   const [leads, setLeads] = useState<LeadItem[]>([]);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
-  const [assistantText, setAssistantText] = useState("");
-  const [assistantStartedAt, setAssistantStartedAt] = useState<string | null>(null);
+  const [assistantDraft, setAssistantDraft] = useState<AssistantDraft | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNoticeState] = useState("");
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
@@ -237,7 +233,6 @@ export function useWorkbench(): WorkbenchApi {
   const refreshRef = useRef<(() => Promise<void>) | null>(null);
   const conversationNextRef = useRef<string | null>(null);
   const toolNextRef = useRef<number | null>(null);
-  const assistantResponseRef = useRef("");
   const bootstrappedRef = useRef(false);
   const loadedProjectsRef = useRef<Set<string>>(new Set());
   const preferredSessionRef = useRef(new URLSearchParams(window.location.search).get("session") ?? "");
@@ -288,18 +283,25 @@ export function useWorkbench(): WorkbenchApi {
     ? `${run.provider_id}/${run.model_name}`
     : selectedModelKey;
   const modelOptions = useMemo<ModelOption[]>(
-    () =>
-      (modelSettings?.profiles ?? []).map((profile) => ({
+    () => {
+      const providers = new Map(modelSettings?.providers?.map((provider) => [
+        provider.provider_id, {
+          name: provider.display_name,
+          models: new Map(provider.models?.map((model) => [model.model_id, model.display_name])),
+        },
+      ]));
+      return (modelSettings?.profiles ?? []).map((profile) => ({
         key: `${profile.provider_id}/${profile.model_name}`,
         provider: profile.provider_id,
-        providerLabel:
-          profile.provider_id === "xiaomi" ? "小米" : profile.provider_id === "bailian" ? "百炼" : profile.provider_id,
+        providerLabel: providers.get(profile.provider_id)?.name ?? profile.provider_id,
         model: profile.model_name,
+        displayName: providers.get(profile.provider_id)?.models.get(profile.model_name),
         configured: profile.secret_configured,
         isDefault:
           profile.provider_id === modelSettings?.default_provider &&
           profile.model_name === modelSettings?.default_model,
-      })),
+      }));
+    },
     [modelSettings],
   );
 
@@ -310,6 +312,18 @@ export function useWorkbench(): WorkbenchApi {
     );
     return candidates.at(-1) ?? null;
   }, [events, run]);
+
+  const { lastActivityAt, assistantModelCallId } = useMemo(() => {
+    const recent = [...events].reverse();
+    const activity = recent.find(event => event.run_id === run?.id &&
+      ["run.status", "tool.accepted", "tool.output", "tool.completed", "usage.updated"].includes(event.type));
+    const quality = assistantDraft?.responseId && recent.find(event =>
+      event.run_id === assistantDraft.runId && event.type === "model.response_quality" &&
+      event.payload?.response_id === assistantDraft.responseId);
+    const callId = quality ? quality.payload?.model_call_id : undefined;
+    return { lastActivityAt: activity?.occurred_at,
+      assistantModelCallId: typeof callId === "string" ? callId : undefined };
+  }, [events, run?.id, assistantDraft?.responseId, assistantDraft?.runId]);
 
   const modelPhase = useMemo(() => {
     if (!run) return null;
@@ -446,8 +460,7 @@ export function useWorkbench(): WorkbenchApi {
       setLeads([]);
       setUsage(null);
       setEvents([]);
-      setAssistantText("");
-      setAssistantStartedAt(null);
+      setAssistantDraft(null);
       conversationNextRef.current = null;
       toolNextRef.current = null;
       setHasMoreMessages(false);
@@ -467,7 +480,9 @@ export function useWorkbench(): WorkbenchApi {
     let lastSeq = 0;
     let lastEventAt = Date.now();
     let recoveryPending = false;
+    let loaded = false;
     let refreshing = false;
+    let refreshRequested = false;
 
     setConnection("connecting");
     setSnapshot(null);
@@ -479,8 +494,7 @@ export function useWorkbench(): WorkbenchApi {
     setLeads([]);
     setUsage(null);
     setEvents([]);
-    setAssistantText("");
-    setAssistantStartedAt(null);
+    setAssistantDraft(null);
     conversationNextRef.current = null;
     toolNextRef.current = null;
     setHasMoreMessages(false);
@@ -497,29 +511,32 @@ export function useWorkbench(): WorkbenchApi {
       });
     };
 
-    const applyConversation = (page: Awaited<ReturnType<typeof api.conversation>>, initial: boolean) => {
+    const applyConversation = (page: Awaited<ReturnType<typeof api.conversation>>) => {
       guard(() => {
-        setConversation((previous) => (initial ? page.entries : mergeConversation(previous, page.entries)));
-        if (initial || conversationNextRef.current === null) {
+        setConversation((previous) => mergeConversation(previous, page.entries));
+        if (conversationNextRef.current === null) {
           conversationNextRef.current = page.next_cursor;
           setHasMoreMessages(!!page.next_cursor);
         }
       });
     };
 
-    const applyTools = (page: Awaited<ReturnType<typeof api.toolActivities>>, initial: boolean) => {
+    const applyTools = (page: Awaited<ReturnType<typeof api.toolActivities>>) => {
       guard(() => {
-        setTools((previous) => (initial ? page.activities : mergeTools(previous, page.activities)));
-        if (initial || toolNextRef.current === null) {
+        setTools((previous) => mergeTools(previous, page.activities));
+        if (toolNextRef.current === null) {
           toolNextRef.current = page.next_offset;
           setHasMoreTools(page.next_offset !== null);
         }
       });
     };
 
-    const refresh = async (initial = false) => {
+    const refresh = async () => {
       if (closed) return;
-      if (refreshing) return;
+      if (refreshing) {
+        refreshRequested = true;
+        return;
+      }
       refreshing = true;
       try {
         const results = await Promise.allSettled([
@@ -536,28 +553,33 @@ export function useWorkbench(): WorkbenchApi {
         const [snap, currentPlan, activity, weak, lead, cost, chat, eventPage] = results;
         if (snap.status === "fulfilled") applySnapshot(snap.value);
         if (currentPlan.status === "fulfilled") guard(() => setPlan(currentPlan.value));
-        if (activity.status === "fulfilled") applyTools(activity.value, initial);
+        if (activity.status === "fulfilled") applyTools(activity.value);
         if (weak.status === "fulfilled") guard(() => setWeaknesses(weak.value.weaknesses));
         if (lead.status === "fulfilled") guard(() => setLeads(lead.value.leads));
         if (cost.status === "fulfilled") guard(() => setUsage(cost.value));
-        if (chat.status === "fulfilled") applyConversation(chat.value, initial);
+        if (chat.status === "fulfilled") applyConversation(chat.value);
         if (eventPage.status === "fulfilled") {
           const page = eventPage.value;
-          guard(() => setEvents((previous) => (initial ? page.events : mergeEvents(previous, page.events))));
-          if (initial) lastSeq = page.events.at(-1)?.session_seq ?? 0;
+          guard(() => setEvents((previous) => mergeEvents(previous, page.events)));
         }
         if (snap.status === "fulfilled") {
           guard(() => setFindings(snap.value.findings));
         }
       } finally {
         refreshing = false;
+        if (refreshRequested) scheduleRefresh();
       }
     };
-    refreshRef.current = () => refresh(false);
+    refreshRef.current = () => refresh();
 
     const scheduleRefresh = () => {
-      if (refreshTimer) window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => void refresh(false), 350);
+      refreshRequested = true;
+      if (refreshTimer !== undefined || refreshing || closed) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = undefined;
+        refreshRequested = false;
+        void refresh();
+      }, 350);
     };
 
     const start = async () => {
@@ -574,38 +596,31 @@ export function useWorkbench(): WorkbenchApi {
         lastSeq = eventPage.events.at(-1)?.session_seq ?? 0;
         applySnapshot(snap);
         guard(() => {
-          setEvents(eventPage.events);
-          setConversation(chat.entries);
+          setEvents(previous => mergeEvents(previous, eventPage.events));
+          setConversation(previous => mergeConversation(previous, chat.entries));
         });
-        conversationNextRef.current = chat.next_cursor;
-        setHasMoreMessages(!!chat.next_cursor);
+        if (!loaded) {
+          conversationNextRef.current = chat.next_cursor;
+          setHasMoreMessages(!!chat.next_cursor);
+          loaded = true;
+        }
 
         const current = latestRun(snap);
-        const deltas = eventPage.events
-          .filter((event) => event.type === "message.delta")
-          .filter((event) => !isHostProjectionDelta(event))
-          .filter((event) => event.run_id === current?.id && current?.status === "running");
-        const responseId = String((deltas.at(-1)?.payload as Record<string, unknown> | undefined)?.response_id ?? "");
-        const latest = responseId
-          ? deltas.filter((event) => (event.payload as Record<string, unknown>).response_id === responseId)
-          : deltas;
-        assistantResponseRef.current = responseId;
-        guard(() => {
-          setAssistantStartedAt(latest[0]?.occurred_at ?? null);
-          setAssistantText(
-            latest.map((event) => String((event.payload as Record<string, unknown>).delta ?? "")).join("").slice(-20000),
-          );
-        });
-
-        await refresh(true);
+        const draft = current && ["running", "waiting_tool", "pausing", "paused", "cancelling"].includes(current.status)
+          ? await restoreAssistantDraft(current, eventPage, cursor => api.eventPage(session, cursor), () => closed)
+          : null;
         if (closed || generation !== genRef.current) return;
+        setAssistantDraft(draft);
+
         lastEventAt = Date.now();
-        source = new EventSource(`/api/sessions/${session}/events?after=${lastSeq}`);
-        source.onopen = () => guard(() => setConnection("online"));
-        source.onerror = () => guard(() => setConnection("offline"));
+        const connection = new EventSource(`/api/sessions/${session}/events?after=${lastSeq}`);
+        source = connection;
+        scheduleRefresh();
+        source.onopen = () => { if (source === connection) guard(() => setConnection("online")); };
+        source.onerror = () => { if (source === connection) guard(() => setConnection("offline")); };
         for (const type of EVENT_TYPES) {
           source.addEventListener(type, (raw) => {
-            if (closed || generation !== genRef.current) return;
+            if (closed || generation !== genRef.current || source !== connection) return;
             let event: AgentEvent;
             try {
               event = JSON.parse((raw as MessageEvent).data) as AgentEvent;
@@ -617,26 +632,16 @@ export function useWorkbench(): WorkbenchApi {
               return;
             }
             if (event.session_seq <= lastSeq) return;
+            if (event.session_seq !== lastSeq + 1) {
+              recover();
+              return;
+            }
             lastSeq = event.session_seq;
             lastEventAt = Date.now();
             guard(() => setEvents((previous) => mergeEvents(previous, [event])));
-            if (isHostProjectionDelta(event)) return;
-            if (event.type === "message.delta") {
-              const payload = event.payload as Record<string, unknown>;
-              const delta = String(payload.delta ?? "");
-              const id = String(payload.response_id ?? event.run_id ?? "");
-              if (id !== assistantResponseRef.current) {
-                assistantResponseRef.current = id;
-                guard(() => {
-                  setAssistantStartedAt(event.occurred_at);
-                  setAssistantText(delta.slice(-20000));
-                });
-              } else {
-                guard(() => setAssistantText((previous) => (previous + delta).slice(-20000)));
-              }
-            } else {
-              scheduleRefresh();
-            }
+            const delta = assistantDelta(event);
+            if (delta) setAssistantDraft(previous => appendAssistantDelta(previous, delta));
+            else if (event.type !== "message.delta" || event.payload?.event === "final_response_saved") scheduleRefresh();
           });
         }
       } catch (cause) {
@@ -663,6 +668,8 @@ export function useWorkbench(): WorkbenchApi {
           if (closed || generation !== genRef.current) return;
           if (!source || source.readyState === EventSource.CLOSED || (value.event_cursor > lastSeq && Date.now() - lastEventAt > 3000)) {
             recover();
+          } else {
+            applySnapshot(value);
           }
         })
         .catch(() => guard(() => setConnection("offline")));
@@ -794,7 +801,7 @@ export function useWorkbench(): WorkbenchApi {
   }, [ensureProjectId, executionMode, modelSettings, refreshProject, selectedModelKey, sessionId]);
 
   const send = useCallback(
-    async (text: string, attachments?: string[], attachmentSession?: string, messageKey?: string) => {
+    async (text: string, attachments?: string[], attachmentSession?: string, messageKey?: string, skillRefs?: string[]) => {
       const content = text.trim();
       if (!content || busy) return false;
       setBusy(true);
@@ -804,7 +811,7 @@ export function useWorkbench(): WorkbenchApi {
         if (targetSession) {
           if (modelLocked) {
             // 活动 run 固定模型；后端也不接受中途换模型。
-            await api.message(targetSession, content, undefined, undefined, attachments, messageKey);
+            await api.message(targetSession, content, undefined, skillRefs, attachments, messageKey);
           } else {
             const chosen = modelSettings?.profiles.find(
               (item) => `${item.provider_id}/${item.model_name}` === selectedModelKey,
@@ -816,7 +823,7 @@ export function useWorkbench(): WorkbenchApi {
             await api.message(targetSession, content, {
               provider_id: chosen.provider_id,
               model_name: chosen.model_name,
-            }, undefined, attachments, messageKey);
+            }, skillRefs, attachments, messageKey);
           }
           if (!sessionId) {
             setSessionId(targetSession);
@@ -846,6 +853,7 @@ export function useWorkbench(): WorkbenchApi {
           provider_id: profile.provider_id,
           model_name: profile.model_name,
           scope: { mode: "instruction", revision: 1, rules: [] },
+          initial_skill_refs: skillRefs ?? [],
         });
         await refreshProject(projectId);
         setSessionId(created.session.id);
@@ -989,8 +997,9 @@ export function useWorkbench(): WorkbenchApi {
     usage,
     events,
     inputRequired,
-    assistantText,
-    assistantStartedAt,
+    assistantDraft,
+    assistantModelCallId,
+    lastActivityAt,
     modelPhase,
     hasMoreMessages,
     hasMoreTools,
@@ -1030,6 +1039,9 @@ export function useWorkbench(): WorkbenchApi {
     deleteSession,
     reloadModels: () => setModelEpoch((value) => value + 1),
     onModelsSaved: (settings) => {
+      if (settings.default_provider !== modelSettings?.default_provider || settings.default_model !== modelSettings?.default_model) {
+        setSelectedModelKey(settings.default_provider ? `${settings.default_provider}/${settings.default_model}` : "");
+      }
       setModelSettings(settings);
       setModelEpoch((value) => value + 1);
     },

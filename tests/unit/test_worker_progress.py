@@ -1,12 +1,12 @@
 """Bounded Worker progress projection with a read-only fake database."""
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from agent_workbench.domain.worker_progress import worker_progress
+from agent_workbench.persistence.tables import AgentDelegationRow
 
 
 class Result:
@@ -42,7 +42,7 @@ class Database:
 
 @pytest.mark.asyncio
 async def test_default_and_paged_history_are_bounded_and_scoped():
-    delegation = SimpleNamespace(id=uuid4(), parent_run_id=uuid4(), parent_session_id=uuid4(),
+    delegation = AgentDelegationRow(id=uuid4(), parent_run_id=uuid4(), parent_session_id=uuid4(),
         objective="inspect fixture", state="working", created_at=datetime.now(UTC))
     events = [{"sequence": index, "role": "assistant", "message": {"content": "x" * 10000},
                "created_at": datetime.now(UTC)} for index in range(1, 13)]
@@ -64,7 +64,7 @@ async def test_default_and_paged_history_are_bounded_and_scoped():
 
 @pytest.mark.asyncio
 async def test_failed_worker_with_no_history_returns_empty():
-    delegation = SimpleNamespace(id=uuid4(), parent_run_id=uuid4(), parent_session_id=uuid4(),
+    delegation = AgentDelegationRow(id=uuid4(), parent_run_id=uuid4(), parent_session_id=uuid4(),
         objective="fixture", state="failed", created_at=datetime.now(UTC))
     result = await worker_progress(Database([]), delegation, cursor=0)
     assert result["state"] == "failed"

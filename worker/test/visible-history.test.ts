@@ -37,6 +37,16 @@ test('event projection redacts secrets and bounds large tool output', () => {
   assert.ok(JSON.stringify(event).includes('artifactRefs'));
 });
 
+test('complete visible assistant text is retained while secrets are redacted', () => {
+  const body = 'a'.repeat(50000) + ' password=fixture-sensitive';
+  const event = visibleEvent({ role: 'assistant', content: [{ type: 'text', text: body }],
+    stopReason: 'stop', timestamp: 1 } as any)!;
+  const saved = (event.message.content as Array<{text: string}>)[0].text;
+  assert.ok(saved.length > 50000);
+  assert.ok(!saved.includes('fixture-sensitive'));
+  assert.equal(event.message.stopReason, 'stop');
+});
+
 test('duplicate sequence accepts same digest and rejects a changed message', async () => {
   const request = randomUUID(), session = randomUUID();
   const events = new Map<number, any>();

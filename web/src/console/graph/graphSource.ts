@@ -151,7 +151,7 @@ export type GraphSource =
   | { status: "loading"; reason: string }
   | { status: "remote"; document: SessionGraphDocument; attackDisabled?: boolean }
   | { status: "demo"; document: SessionGraphDocument; reason: string }
-  | { status: "empty"; reason: string }
+  | { status: "empty"; document: SessionGraphDocument; attackDisabled: boolean; reason: string }
   | { status: "error"; message: string };
 
 /**
@@ -197,10 +197,11 @@ export async function loadSessionGraph(
 
   try {
     const document = normalizeGraphPayload(raw);
+    const attackDisabled = (raw as Record<string, unknown>).attack_graph === undefined;
     if (!document.information_graph.nodes.length && !document.attack_graph.nodes.length) {
-      return { status: "empty", reason: "这个会话还没有登记任何图对象。" };
+      return { status: "empty", document, attackDisabled, reason: "这个会话还没有登记任何图对象。" };
     }
-    return { status: "remote", document, attackDisabled: !(raw as Record<string, unknown>).attack_graph };
+    return { status: "remote", document, attackDisabled };
   } catch (cause) {
     return {
       status: "error",

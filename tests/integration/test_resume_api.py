@@ -144,6 +144,66 @@ async def test_resume_recovering_requires_acknowledgement(
     assert RunStatus(row.status) is RunStatus.QUEUED
 
 
+async def test_unsettled_platform_operation_is_visible_and_requires_acknowledgement(
+    database, unique_name, client: TestClient
+) -> None:
+    scope = ScopeSnapshot(revision=1, rules=[ScopeRule(scheme="http", host="127.0.0.1", port=8899)])
+    async with database.transaction() as session:
+        project = await ProjectRepository(session).create(
+            owner_id="resume-owner",
+            name=unique_name,
+            target_description="resume test",
+            default_scope=scope.model_dump(),
+        )
+        session_row = await SessionRepository(session).create(
+            project_id=project.id,
+            title="unsettled platform operation",
+            scope_snapshot=scope.model_dump(),
+            policy_snapshot=PolicySnapshot().model_dump(),
+        )
+        run = await create_run(
+            session,
+            session_id=session_row.id,
+            objective="x",
+            provider_id="xiaomi",
+            model_name="mimo-v2.6-pro",
+            config_snapshot={},
+        )
+        await set_run_status(session, run_id=run.id, target=RunStatus.RUNNING)
+        await set_run_status(session, run_id=run.id, target=RunStatus.RECOVERING)
+        operation_id = uuid.uuid4()
+        await ToolOperationRepository(session).prepare(
+            operation_id=operation_id,
+            run_id=run.id,
+            session_id=session_row.id,
+            tool_call_id=f"call-{uuid.uuid4().hex[:6]}",
+            tool_name="ctfy_call_tool",
+            request_digest="d",
+            effect_class="side_effecting",
+            policy_revision=1,
+            scope_revision=1,
+        )
+
+    csrf = _csrf(client)
+    snapshot = client.get(f"/api/sessions/{session_row.id}/snapshot")
+    assert snapshot.status_code == 200, snapshot.text
+    reason = snapshot.json()["runs"][0]["stop_reason"]
+    assert "ctfy_call_tool" in reason and str(operation_id)[:8] in reason
+
+    headers = {"X-Workbench-CSRF": csrf, "Idempotency-Key": f"resume-{uuid.uuid4().hex}"}
+    response = client.post(f"/api/runs/{run.id}/resume", headers=headers, json={})
+    assert response.status_code == 409, response.text
+    assert any(
+        str(operation_id) in item for item in response.json()["details"]["unresolved_jobs"]
+    )
+    response = client.post(
+        f"/api/runs/{run.id}/resume",
+        headers=headers,
+        json={"acknowledge_unknown_operations": True},
+    )
+    assert response.status_code == 202, response.text
+
+
 async def test_resume_completed_run_is_rejected(database, unique_name, client: TestClient) -> None:
     """已完成阶段必须走"新 run"，不能 resume（§4.2）。"""
     run, _job_id = await _recovering_run_with_unknown_job(database, unique_name)

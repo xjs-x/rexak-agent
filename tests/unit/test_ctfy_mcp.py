@@ -294,3 +294,238 @@ async def test_tool_transport_failure_records_uncertainty_without_retry(monkeypa
     assert len(receipts) == 1 and receipts[0]["status"] == expected
     assert calls == [name]
     assert "transport timeout" not in json.dumps(output)
+
+
+async def test_platform_start_receipt_survives_local_vpn_import_failure(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from agent_workbench.tools import ctfy
+
+    settings = config(monkeypatch).model_copy(update={"ctfy_mcp_enabled": True})
+    receipts = []
+    operation_id = uuid4()
+    artifact_id = uuid4()
+
+    @asynccontextmanager
+    async def lock(_keys):
+        yield
+
+    async def current():
+        pass
+
+    async def prepare(*_args, **_kwargs):
+        return operation_id, False
+
+    async def save(*_args):
+        return SimpleNamespace(
+            artifact_id=artifact_id,
+            model_dump=lambda **_kwargs: {"artifact_id": str(artifact_id)},
+        )
+
+    async def record(*_args, **kwargs):
+        receipts.append(kwargs)
+
+    async def fail_vpn(*_args, **_kwargs):
+        assert len(receipts) == 1 and receipts[0]["status"] == "succeeded"
+        raise ModuleNotFoundError("No module named 'scripts'")
+
+    class Client:
+        url = settings.ctfy_mcp_url
+        token = "pf_unit_test_only"
+        dispatched = True
+
+        def __init__(self, _config):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def list_tools(self):
+            return [{"name": "start_instance", "inputSchema": {"properties": {}}}]
+
+        async def call_tool(self, _name, _arguments):
+            return {"structuredContent": {"id": str(uuid4()), "surface": {"vpn": {"config_url": ""}}}}
+
+    box = SimpleNamespace(
+        settings=settings,
+        locks=SimpleNamespace(acquire=lock),
+        assert_control_current=current,
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(toolbox=box), tool_call_id="stable-call")
+    monkeypatch.setattr(ctfy, "CtfyMcpClient", Client)
+    monkeypatch.setattr(ctfy, "prepare_operation", prepare)
+    monkeypatch.setattr(ctfy, "_save_response", save)
+    monkeypatch.setattr(ctfy, "record_result", record)
+    monkeypatch.setattr(ctfy, "ensure_vpn_for_platform_result", fail_vpn)
+    call = ctfy.ctfy_call_tool.coroutine  # pyright: ignore[reportAttributeAccessIssue]
+    assert call is not None
+    result = json.loads(await call(runtime=runtime, name="start_instance", arguments={}))
+    assert result["status"] == "succeeded"
+    assert result["vpn_setup"]["status"] == "failed"
+    assert [item["status"] for item in receipts] == ["succeeded", "succeeded"]
+    assert receipts[0]["result_summary"]["instance_id"] == result["instance_id"]
+    assert "pf_unit_test_only" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("first_ledger_write_fails", [False, True])
+async def test_platform_result_survives_response_artifact_failure(
+    monkeypatch, first_ledger_write_fails
+):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from agent_workbench.tools import ctfy
+
+    settings = config(monkeypatch).model_copy(update={"ctfy_mcp_enabled": True})
+    operation_id = uuid4()
+    receipts = []
+    calls = []
+    ledger_attempts = 0
+
+    @asynccontextmanager
+    async def lock(_keys):
+        yield
+
+    async def current():
+        pass
+
+    async def prepare(*_args, **_kwargs):
+        return operation_id, False
+
+    async def record(*_args, **kwargs):
+        nonlocal ledger_attempts
+        ledger_attempts += 1
+        if first_ledger_write_fails and ledger_attempts == 1:
+            raise OSError("transient local ledger failure")
+        receipts.append(kwargs)
+
+    async def fail_save(*_args):
+        assert len(receipts) == 1
+        assert receipts[0]["status"] == "succeeded"
+        raise OSError("local artifact storage unavailable")
+
+    async def vpn(*_args, **_kwargs):
+        calls.append("vpn")
+        return {"status": "ready"}
+
+    class Client:
+        url = settings.ctfy_mcp_url
+        token = "pf_unit_test_only"
+        dispatched = True
+
+        def __init__(self, _config):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def list_tools(self):
+            return [{"name": "start_instance", "inputSchema": {"properties": {}}}]
+
+        async def call_tool(self, _name, _arguments):
+            calls.append("platform")
+            return {"structuredContent": {"id": str(uuid4())}}
+
+    box = SimpleNamespace(
+        settings=settings,
+        locks=SimpleNamespace(acquire=lock),
+        assert_control_current=current,
+    )
+    runtime = SimpleNamespace(context=SimpleNamespace(toolbox=box), tool_call_id="stable-call")
+    monkeypatch.setattr(ctfy, "CtfyMcpClient", Client)
+    monkeypatch.setattr(ctfy, "prepare_operation", prepare)
+    monkeypatch.setattr(ctfy, "record_result", record)
+    monkeypatch.setattr(ctfy, "_save_response", fail_save)
+    monkeypatch.setattr(ctfy, "ensure_vpn_for_platform_result", vpn)
+    call = ctfy.ctfy_call_tool.coroutine  # pyright: ignore[reportAttributeAccessIssue]
+    assert call is not None
+    result = json.loads(await call(runtime=runtime, name="start_instance", arguments={}))
+    assert result["status"] == "succeeded"
+    assert result["instance_id"] == receipts[0]["result_summary"]["instance_id"]
+    assert result["response_artifact"] == "failed"
+    assert result["artifact_error_type"] == "OSError"
+    assert result["vpn_setup"]["status"] == "ready"
+    assert calls == ["platform", "vpn"]
+    assert [item["status"] for item in receipts] == ["succeeded", "succeeded"]
+    assert ledger_attempts == (3 if first_ledger_write_fails else 2)
+    assert receipts[-1]["result_summary"]["response_artifact"] == "failed"
+
+
+async def test_challenge_read_uses_unique_active_competition_listing():
+    from typing import cast
+
+    from agent_workbench.execution.ctfy_mcp import CtfyMcpClient
+    from agent_workbench.tools.ctfy import _recover_challenge_read
+
+    active_competition = "agent-track"
+    calls = []
+
+    class Client:
+        async def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            if name == "get_me":
+                return {"structuredContent": {"competition_teams": [
+                    {"competition_id": "human-track", "running_instances": 0},
+                    {"competition_id": active_competition, "running_instances": 1},
+                ]}}
+            assert name == "list_competition_challenges"
+            assert arguments["competition_id"] == active_competition
+            return {"structuredContent": {"result": [
+                {"id": "AUTHORED-6953BB87", "name": "The Last 3 Minutes",
+                 "attachments": [{"name": "source.zip", "size": 20}]},
+            ]}}
+
+    challenge_error = {
+        "isError": True,
+        "content": [{"type": "text", "text": "challenge_not_found: challenge missing"}],
+    }
+    result = await _recover_challenge_read(
+        cast(CtfyMcpClient, Client()), "get_challenge",
+        {"challenge_id": "AUTHORED-6953BB87"}, challenge_error
+    )
+    assert result["isError"] is False
+    assert result["structuredContent"]["name"] == "The Last 3 Minutes"
+    assert result["rexak_competition_id"] == active_competition
+    assert [call[0] for call in calls] == ["get_me", "list_competition_challenges"]
+
+    attachment_error = {
+        "isError": True,
+        "content": [{"type": "text", "text": "token_competition_forbidden"}],
+    }
+    result = await _recover_challenge_read(
+        cast(CtfyMcpClient, Client()), "list_challenge_attachments",
+        {"challenge_id": "AUTHORED-6953BB87"}, attachment_error,
+    )
+    assert result["structuredContent"]["result"] == [{"name": "source.zip", "size": 20}]
+
+
+async def test_challenge_read_keeps_ambiguous_competitions_unresolved():
+    from typing import cast
+
+    from agent_workbench.execution.ctfy_mcp import CtfyMcpClient
+    from agent_workbench.tools.ctfy import _recover_challenge_read
+
+    class Client:
+        async def call_tool(self, name, _arguments):
+            assert name == "get_me"
+            return {"structuredContent": {"competition_teams": [
+                {"competition_id": "one", "running_instances": 1},
+                {"competition_id": "two", "running_instances": 1},
+            ]}}
+
+    error = {"isError": True, "content": [
+        {"type": "text", "text": "challenge_not_found"},
+    ]}
+    result = await _recover_challenge_read(
+        cast(CtfyMcpClient, Client()), "get_challenge", {"challenge_id": "same-id"}, error
+    )
+    assert result is error

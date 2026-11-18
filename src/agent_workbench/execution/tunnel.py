@@ -128,6 +128,7 @@ class SshTunnel:
 
     async def reconnect_with_backoff(self, *, max_attempts: int = 5) -> str:
         """带退避的重连。**不新建 worker，不重建 job 身份**。"""
+        await self.close()  # ensure() must not reuse the old container's listener
         delay = self._backoff_seconds
         last_error: Exception | None = None
         for _ in range(max_attempts):

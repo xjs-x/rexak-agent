@@ -1,4 +1,4 @@
-import { DelegationPanel } from "./console/Ultra";
+import { DelegationPanel, WorkerPanel } from "./console/Ultra";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
@@ -55,7 +55,12 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [seed, setSeed] = useState({ text: "", nonce: 0 });
   const [reportBusy, setReportBusy] = useState(false);
+  const [selectedWorker, setSelectedWorker] = useState<string | null>(null);
+  const [workerWidth, setWorkerWidth] = useState(() => Number(localStorage.getItem('rexak-worker-width')) || 380);
+  const stageRef = useRef<HTMLDivElement>(null);
   const toastTimer = useRef<number | undefined>(undefined);
+
+  useEffect(() => { setSelectedWorker(null); }, [wb.sessionId]);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -84,6 +89,7 @@ export default function App() {
         setSearchOpen(true);
       }
       if (event.key === "Escape") {
+        if (modal?.kind === "skills") return;
         setSearchOpen(false);
         setDrawerOpen(false);
         setModal(null);
@@ -92,7 +98,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [modal?.kind, wb.clearAck]);
 
   useEffect(() => {
     const over = (event: DragEvent) => event.preventDefault();
@@ -116,7 +122,7 @@ export default function App() {
     return project ? !isFixtureProject(project.name) : true;
   });
 
-  const handleSend = async (text: string, attachments?: string[], attachmentSession?: string, messageKey?: string) => {
+  const handleSend = async (text: string, attachments?: string[], attachmentSession?: string, messageKey?: string, skillRefs?: string[]) => {
     if (!wb.modelLocked) {
       if (!wb.modelSettings) {
         showToast("正在读取模型配置，请稍候再试。");
@@ -134,7 +140,7 @@ export default function App() {
         return false;
       }
     }
-    const ok = await wb.send(text, attachments, attachmentSession, messageKey);
+    const ok = await wb.send(text, attachments, attachmentSession, messageKey, skillRefs);
     if (ok) {
       setView("chat");
       setSeed({ text: "", nonce: 0 });
@@ -283,8 +289,8 @@ export default function App() {
             </div>
           )}
 
-          <div className="stage">
-            {wb.session?.execution_mode === "ultra" && <DelegationPanel sessionId={wb.sessionId} mainStatus={wb.run?.status ?? "未启动"} />}
+          <div className="stage" ref={stageRef}>
+            {view !== 'chat' && wb.session?.execution_mode === "ultra" && <DelegationPanel sessionId={wb.sessionId} mainStatus={wb.run?.status ?? "未启动"} onOpen={id => { setSelectedWorker(id); setView('chat'); }} />}
             {!wb.sessionId && view === "chat" ? (
               <section className="view empty-view">
                 <div className="empty-wrap">
@@ -373,15 +379,17 @@ export default function App() {
                 onOpenWeakness={(id) => setModal({ kind: "weakness", id })}
               />
             ) : wb.sessionId ? (
-              <ChatView
+              <div className={`chat-split${selectedWorker ? ' with-worker' : ''}`}>
+              <div className="chat-main-pane"><ChatView
                 attachmentsEnabled={wb.attachmentsEnabled}
                 sessionId={wb.sessionId}
                 scopeMode={wb.session?.scope?.mode ?? null}
                 run={wb.run}
                 conversation={wb.conversation}
                 tools={wb.tools}
-                assistantText={wb.assistantText}
-                assistantStartedAt={wb.assistantStartedAt}
+                assistantDraft={wb.assistantDraft}
+                assistantModelCallId={wb.assistantModelCallId}
+                lastActivityAt={wb.lastActivityAt}
                 modelPhase={wb.modelPhase}
                 inputRequired={wb.inputRequired}
                 weaknesses={wb.weaknesses}
@@ -408,7 +416,20 @@ export default function App() {
                 onToast={showToast}
                 onCreateReport={() => void createReport()}
                 onCreateReportBusy={reportBusy}
-              />
+                onOpenWorker={setSelectedWorker}
+              /></div>
+              {selectedWorker && <><div className="worker-divider" role="separator" aria-label="调整 Main 与 Worker 宽度" aria-orientation="vertical"
+                onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); }}
+                onPointerMove={event => {
+                  if (!event.currentTarget.hasPointerCapture(event.pointerId) || !stageRef.current) return;
+                  const width = Math.max(320, Math.min(stageRef.current.clientWidth - 420,
+                    stageRef.current.getBoundingClientRect().right - event.clientX));
+                  setWorkerWidth(width);
+                  localStorage.setItem('rexak-worker-width', String(width));
+                }} />
+                <div className="worker-pane" style={{ width: workerWidth }}><WorkerPanel sessionId={wb.sessionId}
+                  delegationId={selectedWorker} onSelect={setSelectedWorker} onClose={() => setSelectedWorker(null)} /></div></>}
+              </div>
             ) : null}
           </div>
         </main>
@@ -494,7 +515,6 @@ export default function App() {
         onTab={setDrawerTab}
         onClose={() => setDrawerOpen(false)}
         sessionId={wb.sessionId}
-        projectId={currentProject?.id ?? wb.defaultProjectId}
         sessionTitle={wb.session?.title ?? ""}
         snapshot={wb.snapshot}
         modelSettings={wb.modelSettings}
@@ -579,9 +599,7 @@ export default function App() {
       {modal?.kind === "skills" && (
         <SkillsDialog
           sessionId={wb.sessionId}
-          projectId={currentProject?.id ?? wb.defaultProjectId}
           onClose={() => setModal(null)}
-          onToast={showToast}
         />
       )}
 

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   api,
   type ArtifactPreview,
@@ -29,6 +29,8 @@ export function BaseModal({
   children,
   actions,
   wide,
+  trapFocus = false,
+  className = "",
 }: {
   title: string;
   sub?: string;
@@ -36,7 +38,36 @@ export function BaseModal({
   children: ReactNode;
   actions?: ReactNode;
   wide?: boolean;
+  trapFocus?: boolean;
+  className?: string;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!trapFocus || !dialog) return;
+    const previous = document.activeElement;
+    const controls = () => Array.from(dialog.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary',
+    )).filter(control => control.getClientRects().length > 0);
+    (controls()[0] ?? dialog).focus();
+    const onTab = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const list = controls();
+      const first = list[0] ?? dialog;
+      const last = list.at(-1) ?? dialog;
+      const focused = document.activeElement;
+      if (!dialog.contains(focused) || focused === (event.shiftKey ? first : last) || focused === dialog) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+    };
+    window.addEventListener("keydown", onTab);
+    return () => {
+      window.removeEventListener("keydown", onTab);
+      if (previous instanceof HTMLElement) previous.focus();
+    };
+  }, [trapFocus]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -47,7 +78,8 @@ export function BaseModal({
 
   return (
     <div className="rk-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className={`rk-modal${wide ? " wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}>
+      <div ref={dialogRef} tabIndex={trapFocus ? -1 : undefined} className={`rk-modal${wide ? " wide" : ""} ${className}`}
+        role="dialog" aria-modal="true" aria-label={title}>
         <div className="rk-modal-head">
           <div style={{ flex: 1 }}>
             <h3>{title}</h3>
@@ -466,25 +498,25 @@ export function ModelDialog({
 
 export function SkillsDialog({
   sessionId,
-  projectId,
   onClose,
-  onToast,
 }: {
   sessionId: string;
-  projectId: string;
   onClose: () => void;
-  onToast: (message: string) => void;
 }) {
+  const [pending, setPending] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
+  function requestClose() {
+    if (!pending) onClose();
+    else setConfirmClose(value => !value);
+  }
   return (
-    <BaseModal title="技能库" sub="当前阶段后端拒绝 skill_refs；这里只用于导入、启停和查看版本。" onClose={onClose} wide
-      actions={<button className="mini-btn" onClick={onClose}>关闭</button>}>
-      <SkillLibrary
-        sessionId={sessionId}
-        projectId={projectId}
-        selected={[]}
-        onSelected={() => onToast("当前阶段后端暂不启用技能注入；技能只用于查看与管理。")}
-        note="当前阶段后端拒绝 skill_refs：这里只用于导入、启停和查看版本，不会随消息注入。"
-      />
+    <BaseModal title="技能库" sub="管理全局技能与版本，查看当前 Main 的加载状态。" onClose={requestClose} className="skill-modal" trapFocus
+      actions={confirmClose && <>
+        <span role="status">仍有未保存的修改。</span>
+        <button type="button" className="mini-btn" onClick={() => setConfirmClose(false)}>继续编辑</button>
+        <button type="button" className="mini-btn" onClick={onClose}>放弃并关闭</button>
+      </>}>
+      <SkillLibrary sessionId={sessionId} onPendingChanges={setPending} />
     </BaseModal>
   );
 }

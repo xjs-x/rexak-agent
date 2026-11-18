@@ -45,9 +45,9 @@ def test_new_state_and_default_graph_do_not_activate_legacy_protocols():
     assert {"record_lead", "record_observation", "propose_finding", "record_weakness"}.isdisjoint(
         legacy_names
     )
-    assert not selected.skills and not selected.verification
+    assert selected.skills and not selected.verification
     assert not (
-        {"propose_completion", "record_weakness", "verify_finding", "load_skill", "verify_public_git_head"}
+        {"propose_completion", "record_weakness", "verify_finding", "verify_public_git_head"}
         & {t.name for t in tools}
     )
     middleware = build_agent_middleware(
@@ -58,4 +58,5 @@ def test_new_state_and_default_graph_do_not_activate_legacy_protocols():
         default_price_catalog(),
     )
     names = {type(item).__name__ for item in middleware}
-    assert not ({"FinishGateMiddleware", "ProgressMiddleware", "StageReportMiddleware", "SkillsMiddleware"} & names)
+    assert "SkillsMiddleware" in names
+    assert not ({"FinishGateMiddleware", "ProgressMiddleware", "StageReportMiddleware"} & names)

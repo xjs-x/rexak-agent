@@ -48,8 +48,8 @@ export function evidenceTools(channel: EvidenceChannel, task: TaskPackage) {
   }
   const tools: AgentTool[] = [{
     name: 'list_evidence', label: 'List session evidence',
-    description: 'List paginated metadata for permitted evidence in the current task Session, including evidence beyond recommended context_refs. Metadata alone does not mean content was read. Use next_cursor for more.',
-    parameters: { type: 'object', properties: { query: { type: 'string', maxLength: 128 }, cursor: { type: 'string', format: 'uuid' } }, additionalProperties: false },
+    description: 'List paginated metadata for permitted evidence in the current Session, including beyond context_refs. source_operation_id resolves an operation source to readable Artifact UUIDs; operation UUIDs are not read_evidence inputs. Metadata is not content. Use next_cursor for more.',
+    parameters: { type: 'object', properties: { query: { type: 'string', maxLength: 128 }, cursor: { type: 'string', format: 'uuid' }, source_operation_id: { type: 'string', format: 'uuid' } }, additionalProperties: false },
     execute: (id, params, signal) => call(id, { ...(params as object), action: 'list' }, signal),
   }, {
     name: 'read_evidence', label: 'Read session evidence',

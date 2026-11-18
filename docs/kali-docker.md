@@ -52,8 +52,8 @@ workbench-kali-hostkeys 卷保存 SSH 主机密钥。Executor 服务日志写数
 Executor 以 kali 用户运行；SSHD/引导监督进程以 root 运行。
 默认无 privileged、Docker socket、宿主 PID namespace 或额外 capability。
 512 MiB /dev/shm 用于 Chromium。工作区分目录是逻辑隔离，trusted 模式不是系统安全沙箱。
-安装基础 shell/HTTP、nmap/sqlmap、gcc/binutils/gdb/checksec/patchelf、系统 pwntools/ROPgadget 和 Chromium。
-不包含完整 Kali 工具集、原虚拟机的个人安装、GEF、桌面 GUI 或 VPN 配置。
+安装基础 shell/HTTP、ripgrep、nmap/sqlmap、gcc/binutils/gdb/checksec/patchelf、系统 pwntools/ROPgadget 和 Chromium。
+不包含完整 Kali 工具集、原虚拟机的个人安装、GEF 或桌面 GUI。CTFy WireGuard 是可选部署叠加层，见 [CTFy VPN 部署](ctfy-vpn.md)。
 调试自己创建的子进程可以测试；附加其它进程、原始网络能力、内核/设备相关工具须按实际需求另验。
 
 VPS 需支持 Docker/Compose、出站依赖下载和题目网络；浏览器与多 Worker 并发所需资源应实测。

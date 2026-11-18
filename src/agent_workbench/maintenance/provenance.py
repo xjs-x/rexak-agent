@@ -36,6 +36,16 @@ def _entry(path: str, mode: str, body: bytes) -> dict[str, Any]:
     }
 
 
+def _file_entry(name: str, mode: str, path: Path) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    byte_size = 0
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+            byte_size += len(chunk)
+    return {"path": name, "mode": mode, "byte_size": byte_size, "sha256": digest.hexdigest()}
+
+
 def _tree_hash(entries: list[dict[str, Any]]) -> str:
     body = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
@@ -89,13 +99,9 @@ def fingerprint_source(
         path = root / name
         if path.is_symlink():
             body = str(path.readlink()).replace("\\", "/").encode("utf-8")
-            mode = "120000"
+            working.append(_entry(name, "120000", body))
         elif path.is_file():
-            body = path.read_bytes()
-            mode = modes.get(name, "100644")
-        else:
-            continue
-        working.append(_entry(name, mode, body))
+            working.append(_file_entry(name, modes.get(name, "100644"), path))
     committed.sort(key=lambda item: item["path"])
     lock = next((item["sha256"] for item in committed if item["path"] == "uv.lock"), None)
     current_lock = next((item["sha256"] for item in working if item["path"] == "uv.lock"), None)

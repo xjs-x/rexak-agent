@@ -147,6 +147,8 @@ class WorkerEvidenceService:
             result: dict[str, Any] = {"ok": True, "receipt_id": str(receipt_id)}
             if value.action == "list":
                 stmt = select(ArtifactRow).where(*visible_evidence(parent.id))
+                if value.source_operation_id:
+                    stmt = stmt.where(ArtifactRow.source_operation_id == value.source_operation_id)
                 if value.cursor:
                     stmt = stmt.where(ArtifactRow.id > value.cursor)
                 if value.query:

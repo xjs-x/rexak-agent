@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type Attachment, type AttachmentSlice } from "../api/client";
 
-export type AttachmentSend = (text: string, ids?: string[], session?: string, key?: string) => Promise<boolean>;
+export type AttachmentSend = (text: string, ids?: string[], session?: string, key?: string, skillRefs?: string[]) => Promise<boolean>;
 type Pending = { key: string; file?: File; name: string; size: number; type: string;
   progress: number; state: "uploading" | "ready" | "failed"; error?: string; attachment?: Attachment };
 

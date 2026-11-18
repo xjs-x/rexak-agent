@@ -87,7 +87,7 @@ test('P1-3 local admission failure has no step; accepted step response loss stay
 });
 
 const enabled = !!process.env.REXAK_TEST_DATABASE_URL;
-test('P1-2 NUL history cannot roll back a real completed task; DB faults still propagate', { skip: !enabled }, async () => {
+test('P1-2 NUL history cannot roll back a real completed task', { skip: !enabled }, async () => {
   const pool = new pg.Pool({ connectionString: process.env.REXAK_TEST_DATABASE_URL });
   try {
     const store = new WorkerStore(pool); const source = randomUUID(), session = randomUUID();
@@ -108,12 +108,30 @@ test('P1-2 NUL history cannot roll back a real completed task; DB faults still p
     await executor.execute({ taskId: successor.record.task_id, contextId: successor.record.payload.context_id } as any, { publish: () => {}, finished: () => {} } as any);
     assert.equal(factoryCalled, false);
     assert.equal((await store.load(successor.record.task_id))?.status?.state, TaskState.TASK_STATE_FAILED);
-    // A real database schema failure during INSERT is not mistaken for malformed history.
+  } finally { await pool.end(); }
+});
+
+// Use a disposable database owner for deliberate DDL; the Worker role cannot rename tables.
+const ddlDatabase = process.env.REXAK_TEST_DDL_DATABASE_URL;
+test('a schema failure during history INSERT rolls back task completion', { skip: !ddlDatabase }, async () => {
+  const pool = new pg.Pool({ connectionString: ddlDatabase });
+  try {
+    const store = new WorkerStore(pool);
+    const saved = await history();
+    const result = Artifact.fromJSON({ artifactId: randomUUID(), parts: [{ data: { summary: 'valid final answer' } }] });
     const next = await store.reserve(randomUUID(), 'db-failure', { objective: 'db', context_refs: [] }); await store.claim(next.record.task_id);
     const conn = await pool.connect();
-    await conn.query('ALTER TABLE ultra_worker.histories RENAME TO histories_fault_fixture');
-    try { await assert.rejects(store.complete(next.record.task_id, TaskState.TASK_STATE_COMPLETED, result, saved.messages), (error: any) => error.code === '42P01'); }
-    finally { await conn.query('ALTER TABLE ultra_worker.histories_fault_fixture RENAME TO histories'); conn.release(); }
+    try {
+      await conn.query('ALTER TABLE ultra_worker.histories RENAME TO histories_fault_fixture');
+      try {
+        await assert.rejects(store.complete(next.record.task_id, TaskState.TASK_STATE_COMPLETED, result, saved.messages),
+          (error: any) => error.code === '42P01');
+      } finally {
+        await conn.query('ALTER TABLE ultra_worker.histories_fault_fixture RENAME TO histories');
+      }
+    } finally {
+      conn.release();
+    }
     assert.equal((await store.byTask(next.record.task_id))?.phase, 'running'); // DB failure must stay visible.
   } finally { await pool.end(); }
 });

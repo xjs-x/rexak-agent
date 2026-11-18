@@ -20,6 +20,8 @@ from agent_workbench.contracts.enums import ErrorCode
 from agent_workbench.contracts.errors import ApiError
 from agent_workbench.contracts.skill_package import decode_package, encode_package
 from agent_workbench.contracts.skills import (
+    SkillCreate,
+    SkillFilesEdit,
     SkillImport,
     SkillList,
     SkillRead,
@@ -29,9 +31,15 @@ from agent_workbench.contracts.skills import (
 )
 from agent_workbench.persistence.bootstrap import open_checkpointer_connection
 from agent_workbench.persistence.db import get_database
-from agent_workbench.persistence.tables import ProjectRow, SessionRow
+from agent_workbench.persistence.tables import (
+    ArtifactRow,
+    ProjectRow,
+    SessionRow,
+    SkillInstallationRow,
+    SkillVersionRow,
+)
 from agent_workbench.skills.parser import parse_skill
-from agent_workbench.skills.service import SkillService
+from agent_workbench.skills.service import SkillAlreadyInstalled, SkillService, SkillVersionConflict
 
 
 class SkillRoute(APIRoute):
@@ -41,6 +49,8 @@ class SkillRoute(APIRoute):
         async def wrapped(request: Request):  # type: ignore[no-untyped-def]
             try:
                 return await handler(request)
+            except (SkillAlreadyInstalled, SkillVersionConflict) as exc:
+                raise ApiError(ErrorCode.CONFLICT, str(exc)) from exc
             except (ValueError, OSError, yaml.YAMLError, zipfile.BadZipFile) as exc:
                 raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from exc
         return wrapped
@@ -92,6 +102,23 @@ async def import_skill(request: Request, payload: SkillImport) -> SkillRead:
         raise ApiError(ErrorCode.VALIDATION_FAILED, str(exc)) from exc
 
 
+@router.post("/skills/create", response_model=SkillRead)
+async def create_skill(request: Request, payload: SkillCreate) -> SkillRead:
+    service = guard(request, write=True)
+    header = "---\n" + yaml.safe_dump({"name": payload.name, "description": payload.description},
+                                        allow_unicode=True, sort_keys=False) + "---\n"
+    return await service.publish({"SKILL.md": (header + payload.body + "\n").encode("utf-8")},
+                                 f"user:web:{payload.name}", create_only=True)
+
+
+@router.put("/skills/{skill_id}/files", response_model=SkillRead)
+async def edit_skill_files(request: Request, skill_id: UUID, payload: SkillFilesEdit) -> SkillRead:
+    service = guard(request, write=True)
+    binaries = {path: base64.b64decode(value, validate=True) for path, value in payload.binary_files.items()}
+    return await service.edit_files(str(skill_id), payload.text_files, binaries,
+                                    base_version_id=payload.base_version_id)
+
+
 @router.get("/skills/{skill_id}/versions", response_model=SkillList)
 async def versions(request: Request, skill_id: UUID) -> SkillList:
     rows = await guard(request).versions(str(skill_id))
@@ -117,6 +144,12 @@ async def update_skill(request: Request, skill_id: UUID, payload: SkillUpdate) -
     await service.update(str(skill_id), values)
     rows = await service.versions(str(skill_id))
     return SkillList(skills=rows, total=len(rows))
+
+
+@router.delete("/skills/{skill_id}")
+async def archive_skill(request: Request, skill_id: UUID) -> dict:
+    await guard(request, write=True).archive(str(skill_id))
+    return {"archived": True, "skill_id": str(skill_id)}
 
 
 @router.get("/skills/{skill_id}/versions/{version_id}/files", response_model=SkillResource)
@@ -151,4 +184,46 @@ async def session_skills(request: Request, session_id: UUID) -> SkillSessionRead
     values: dict[str, Any] = saved.checkpoint.get("channel_values", {}) if saved else {}
     refs = {key: ref for key, ref in (values.get("active_skills") or {}).items() if ref}
     legacy = await service.legacy_ids(refs)
-    return SkillSessionRead(active=[ref for key, ref in refs.items() if key not in legacy])
+    active = []
+    async with service.db.session() as db:
+        for key, ref in refs.items():
+            if key in legacy:
+                continue
+            installed = await db.get(SkillInstallationRow, UUID(key))
+            if installed is None or installed.owner_id != service.settings.owner_id:
+                continue
+            try:
+                version_id = UUID(str(ref.get("version_id")))
+            except ValueError:
+                version_id = None
+            version = await db.get(SkillVersionRow, version_id) if version_id else None
+            valid_version = (version is not None and version.installation_id == installed.id
+                             and version.package_hash == ref.get("package_hash"))
+            artifact = await db.get(ArtifactRow, version.artifact_id) if version and valid_version else None
+            if not installed.enabled:
+                reason = "技能已停用"
+            elif not artifact or artifact.availability != "available" or not service.store.exists(artifact.relative_key):
+                reason = "固定版本的资源不可用"
+            else:
+                reason = ""
+            active.append({**ref, "name": version.spec["name"] if version and valid_version else installed.name,
+                           "status": "unavailable" if reason else "loaded", "reason": reason})
+    return SkillSessionRead(active=active)
+
+
+@router.get("/sessions/{session_id}/skill-catalog", response_model=SkillList)
+async def session_skill_catalog(request: Request, session_id: UUID) -> SkillList:
+    service = guard(request)
+    from agent_workbench.domain.run_state import find_active_run
+
+    async with service.db.session() as db:
+        session = await db.get(SessionRow, session_id)
+        if session is None or session.owner_id != service.settings.owner_id or session.status == "deleted":
+            raise ApiError(ErrorCode.NOT_FOUND, "任务不存在")
+        run = await find_active_run(db, session_id)
+    if run is None:
+        rows = [item for item in await service.list() if item.enabled]
+    else:
+        rows = [SkillRead.model_validate(item) for item in await service.catalog(run.id)
+                if item.get("enabled")]
+    return SkillList(skills=rows, total=len(rows))
